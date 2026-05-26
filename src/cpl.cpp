@@ -78,6 +78,86 @@ std::optional<Cpl> Cpl::parse(const std::filesystem::path& file)
   auto reel_list = find_child(root, "ReelList");
   if(!reel_list)
   {
+    // IMF CPL uses SegmentList instead of ReelList
+    auto segment_list = find_child(root, "SegmentList");
+    if(!segment_list)
+    {
+      xmlFreeDoc(doc);
+      return cpl;
+    }
+
+    // Parse IMF segments as reels
+    for(auto seg_node = segment_list->children; seg_node; seg_node = seg_node->next)
+    {
+      if(seg_node->type != XML_ELEMENT_NODE)
+        continue;
+      if(std::strcmp(reinterpret_cast<const char*>(seg_node->name), "Segment") != 0)
+        continue;
+
+      Reel reel;
+      if(auto node = find_child(seg_node, "Id"))
+        reel.id = get_content(node);
+
+      auto seq_list = find_child(seg_node, "SequenceList");
+      if(!seq_list)
+      {
+        cpl.reels.push_back(std::move(reel));
+        continue;
+      }
+
+      // Find MainImageSequence (with or without namespace prefix)
+      for(auto seq_node = seq_list->children; seq_node; seq_node = seq_node->next)
+      {
+        if(seq_node->type != XML_ELEMENT_NODE)
+          continue;
+        auto name = reinterpret_cast<const char*>(seq_node->name);
+        if(std::strcmp(name, "MainImageSequence") == 0)
+        {
+          auto res_list = find_child(seq_node, "ResourceList");
+          if(res_list)
+          {
+            for(auto res = res_list->children; res; res = res->next)
+            {
+              if(res->type != XML_ELEMENT_NODE)
+                continue;
+              if(auto node = find_child(res, "TrackFileId"))
+                reel.picture.id = get_content(node);
+              if(auto node = find_child(res, "IntrinsicDuration"))
+                reel.picture.duration = parse_int(get_content(node));
+              if(auto node = find_child(res, "EntryPoint"))
+                reel.picture.entry_point = parse_int(get_content(node));
+              if(auto node = find_child(res, "EditRate"))
+                reel.picture.edit_rate = get_content(node);
+              break; // First resource
+            }
+          }
+        }
+        else if(std::strcmp(name, "MainAudioSequence") == 0)
+        {
+          auto res_list = find_child(seq_node, "ResourceList");
+          if(res_list)
+          {
+            for(auto res = res_list->children; res; res = res->next)
+            {
+              if(res->type != XML_ELEMENT_NODE)
+                continue;
+              if(auto node = find_child(res, "TrackFileId"))
+                reel.sound.id = get_content(node);
+              if(auto node = find_child(res, "IntrinsicDuration"))
+                reel.sound.duration = parse_int(get_content(node));
+              if(auto node = find_child(res, "EntryPoint"))
+                reel.sound.entry_point = parse_int(get_content(node));
+              if(auto node = find_child(res, "EditRate"))
+                reel.sound.edit_rate = get_content(node);
+              break;
+            }
+          }
+        }
+      }
+
+      cpl.reels.push_back(std::move(reel));
+    }
+
     xmlFreeDoc(doc);
     return cpl;
   }
