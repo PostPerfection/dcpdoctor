@@ -78,6 +78,9 @@ add_library(dcpdoctor_core STATIC
     src/note.cpp
     src/preferences.cpp
     src/timeline.cpp
+    src/facility_check.cpp
+    src/conformance.cpp
+    src/dci_ctp.cpp
     src/advanced.cpp
     src/server.cpp
     src/kdm.cpp

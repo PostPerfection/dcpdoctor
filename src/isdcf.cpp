@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <chrono>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -127,6 +129,82 @@ std::vector<Note> check_isdcf_naming(const std::string& content_title,
   }
 
   return notes;
+}
+
+std::string generate_isdcf_name(const IsdcfNameParams& params)
+{
+  std::ostringstream name;
+
+  // Field 1: Film title (truncate to 14, remove spaces/underscores)
+  std::string title = params.film_title;
+  std::erase(title, ' ');
+  std::erase(title, '_');
+  if(title.size() > 14)
+    title = title.substr(0, 14);
+  name << title;
+
+  // Field 2: Content type
+  name << "_" << params.content_type;
+
+  // Field 3: Aspect ratio (with optional 3D suffix)
+  name << "_" << params.aspect_ratio;
+  if(params.is_3d)
+    name << "-3D";
+
+  // Field 4: Language
+  name << "_" << params.language;
+
+  // Field 5: Territory
+  name << "_" << params.territory;
+
+  // Field 6: Audio type
+  name << "_" << params.audio_type;
+
+  // Field 7: Resolution
+  name << "_" << params.resolution;
+
+  // Field 8: Studio (optional)
+  if(!params.studio.empty())
+    name << "_" << params.studio;
+
+  // Field 9: Date
+  if(!params.date.empty())
+  {
+    name << "_" << params.date;
+  }
+  else
+  {
+    // Auto-generate today's date
+    auto now = std::chrono::system_clock::now();
+    auto days = std::chrono::floor<std::chrono::days>(now);
+    std::chrono::year_month_day ymd{days};
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04d%02u%02u",
+                  static_cast<int>(ymd.year()),
+                  static_cast<unsigned>(ymd.month()),
+                  static_cast<unsigned>(ymd.day()));
+    name << "_" << buf;
+  }
+
+  // Field 10: Facility (optional)
+  if(!params.facility.empty())
+    name << "_" << params.facility;
+
+  // Field 11: Standard
+  name << "_" << params.standard;
+
+  // Field 12: Package type
+  name << "_" << params.package_type;
+
+  // Optional: luminance field
+  if(!params.luminance.empty())
+    name << "_" << params.luminance;
+
+  // Optional: frame rate
+  if(!params.frame_rate.empty())
+    name << "_" << params.frame_rate;
+
+  return name.str();
 }
 
 } // namespace dcpdoctor

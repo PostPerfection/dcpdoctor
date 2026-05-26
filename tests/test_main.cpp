@@ -28,6 +28,9 @@
 #include "dcpdoctor/qc_report.h"
 #include "dcpdoctor/schema_validate.h"
 #include "dcpdoctor/validate.h"
+#include "dcpdoctor/facility_check.h"
+#include "dcpdoctor/conformance.h"
+#include "dcpdoctor/dci_ctp.h"
 #include <cassert>
 #include <cstring>
 #include <filesystem>
@@ -1576,6 +1579,456 @@ TEST(validate_cpl_hdr_hdr10_cpl)
                                             "/tmp/no_such_video_101.mxf");
   ASSERT(!result.success);
   std::filesystem::remove("/tmp/dcpdoctor_test_cpl3.xml");
+}
+
+// --- ISDCF name generation ---
+TEST(isdcf_generate_basic)
+{
+  dcpdoctor::IsdcfNameParams params;
+  params.film_title = "MyMovie";
+  params.content_type = "FTR";
+  params.aspect_ratio = "F";
+  params.language = "EN";
+  params.territory = "US";
+  params.audio_type = "51";
+  params.resolution = "2K";
+  params.studio = "ST";
+  params.date = "20260101";
+  params.facility = "FAC";
+  params.standard = "SMPTE";
+  params.package_type = "OV";
+  auto name = dcpdoctor::generate_isdcf_name(params);
+  ASSERT(name == "MyMovie_FTR_F_EN_US_51_2K_ST_20260101_FAC_SMPTE_OV");
+}
+
+TEST(isdcf_generate_3d)
+{
+  dcpdoctor::IsdcfNameParams params;
+  params.film_title = "Avatar";
+  params.content_type = "FTR";
+  params.aspect_ratio = "S";
+  params.is_3d = true;
+  params.language = "EN";
+  params.territory = "XX";
+  params.audio_type = "ATMOS";
+  params.resolution = "4K";
+  params.date = "20260601";
+  params.standard = "SMPTE";
+  params.package_type = "OV";
+  auto name = dcpdoctor::generate_isdcf_name(params);
+  ASSERT(name.find("S-3D") != std::string::npos);
+  ASSERT(name.find("ATMOS") != std::string::npos);
+  ASSERT(name.find("4K") != std::string::npos);
+}
+
+TEST(isdcf_generate_truncates_title)
+{
+  dcpdoctor::IsdcfNameParams params;
+  params.film_title = "AVeryLongMovieTitleThatExceedsFourteen";
+  params.content_type = "FTR";
+  params.date = "20260101";
+  auto name = dcpdoctor::generate_isdcf_name(params);
+  // First field should be truncated to 14 chars
+  ASSERT(name.substr(0, 14) == "AVeryLongMovie");
+  ASSERT(name[14] == '_');
+}
+
+TEST(isdcf_generate_removes_spaces)
+{
+  dcpdoctor::IsdcfNameParams params;
+  params.film_title = "My Movie";
+  params.content_type = "TLR";
+  params.date = "20260101";
+  auto name = dcpdoctor::generate_isdcf_name(params);
+  // Spaces removed from title
+  ASSERT(name.find("MyMovie_TLR") == 0);
+}
+
+TEST(isdcf_generate_auto_date)
+{
+  dcpdoctor::IsdcfNameParams params;
+  params.film_title = "Test";
+  params.content_type = "TST";
+  // No date set — should auto-fill with today
+  auto name = dcpdoctor::generate_isdcf_name(params);
+  // Should have an 8-digit date field
+  ASSERT(name.find("2026") != std::string::npos);
+}
+
+TEST(isdcf_generate_with_luminance)
+{
+  dcpdoctor::IsdcfNameParams params;
+  params.film_title = "HDRMovie";
+  params.content_type = "FTR";
+  params.date = "20260101";
+  params.luminance = "PQ";
+  params.frame_rate = "24";
+  auto name = dcpdoctor::generate_isdcf_name(params);
+  ASSERT(name.find("_PQ") != std::string::npos);
+  ASSERT(name.find("_24") != std::string::npos);
+}
+
+// --- Facility readiness check ---
+TEST(facility_check_nonexistent_dir)
+{
+  dcpdoctor::FacilityCheckOptions opts;
+  opts.dcp_dir = "/tmp/no_such_dcp_dir_xyz";
+  auto result = dcpdoctor::run_facility_check(opts);
+  ASSERT(!result.error.empty());
+  ASSERT(!result.ready);
+}
+
+TEST(facility_check_empty_dir)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_facility_test";
+  fs::create_directories(tmp);
+  dcpdoctor::FacilityCheckOptions opts;
+  opts.dcp_dir = tmp;
+  opts.check_hashes = false; // skip hash check for empty dir
+  auto result = dcpdoctor::run_facility_check(opts);
+  ASSERT(!result.ready); // Should fail — no ASSETMAP, no CPL, etc.
+  ASSERT(result.errors > 0);
+  ASSERT(result.checks_total > 0);
+  fs::remove_all(tmp);
+}
+
+TEST(facility_check_json_output)
+{
+  dcpdoctor::FacilityCheckResult result;
+  result.ready = false;
+  result.summary = "3/5 checks passed, 2 error(s)";
+  result.errors = 2;
+  result.warnings = 0;
+  result.checks_passed = 3;
+  result.checks_total = 5;
+  dcpdoctor::CheckItem item;
+  item.category = "structure";
+  item.check_name = "ASSETMAP present";
+  item.passed = true;
+  item.severity = "error";
+  result.items.push_back(item);
+  auto json = dcpdoctor::facility_check_to_json(result);
+  ASSERT(json.find("\"ready\": false") != std::string::npos);
+  ASSERT(json.find("\"checks_total\": 5") != std::string::npos);
+  ASSERT(json.find("ASSETMAP present") != std::string::npos);
+}
+
+TEST(facility_check_valid_dcp)
+{
+  // Create a minimal valid DCP structure
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_facility_valid";
+  fs::create_directories(tmp);
+
+  // ASSETMAP
+  {
+    std::ofstream f(tmp / "ASSETMAP.xml");
+    f << "<?xml version=\"1.0\"?>\n<AssetMap></AssetMap>\n";
+  }
+  // VOLINDEX
+  {
+    std::ofstream f(tmp / "VOLINDEX.xml");
+    f << "<?xml version=\"1.0\"?>\n<VolumeIndex><Index>1</Index></VolumeIndex>\n";
+  }
+  // PKL
+  {
+    std::ofstream f(tmp / "pkl.xml");
+    f << "<?xml version=\"1.0\"?>\n<PackingList></PackingList>\n";
+  }
+  // CPL
+  {
+    std::ofstream f(tmp / "cpl.xml");
+    f << R"(<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:12345678-1234-1234-1234-123456789abc</Id>
+  <ContentTitleText>Test_FTR_F_EN_US_51_2K_ST_20260101_FAC_SMPTE_OV</ContentTitleText>
+  <ContentKind>feature</ContentKind>
+  <IssueDate>2026-01-01</IssueDate>
+  <ReelList>
+    <Reel>
+      <Id>urn:uuid:reel-0001-0000-0000-000000000001</Id>
+      <AssetList>
+        <MainPicture>
+          <Id>urn:uuid:pic-0001-0000-0000-000000000001</Id>
+          <Duration>240</Duration>
+          <IntrinsicDuration>240</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+          <EditRate>24 1</EditRate>
+        </MainPicture>
+        <MainSound>
+          <Id>urn:uuid:snd-0001-0000-0000-000000000001</Id>
+          <Duration>240</Duration>
+          <IntrinsicDuration>240</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+          <EditRate>24 1</EditRate>
+        </MainSound>
+      </AssetList>
+    </Reel>
+  </ReelList>
+</CompositionPlaylist>)";
+  }
+  // Fake MXF
+  {
+    std::ofstream f(tmp / "video.mxf");
+    f << "fake mxf content";
+  }
+
+  dcpdoctor::FacilityCheckOptions opts;
+  opts.dcp_dir = tmp;
+  opts.check_hashes = false; // PKL is empty, skip hash verification
+  opts.strict = false;
+  auto result = dcpdoctor::run_facility_check(opts);
+  ASSERT(result.checks_total > 0);
+  ASSERT(result.checks_passed > 0);
+  // Should find: ASSETMAP, VOLINDEX, PKL, CPL, MXF, reels
+  ASSERT(!result.summary.empty());
+  fs::remove_all(tmp);
+}
+
+// --- Conformance report ---
+TEST(conformance_nonexistent_dir)
+{
+  dcpdoctor::ConformanceOptions opts;
+  opts.dcp_dir = "/tmp/no_such_dcp_xyz";
+  auto report = dcpdoctor::run_conformance_tests(opts);
+  ASSERT(!report.error.empty());
+  ASSERT(!report.conformant);
+}
+
+TEST(conformance_empty_dir)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_conformance_test";
+  fs::create_directories(tmp);
+  dcpdoctor::ConformanceOptions opts;
+  opts.dcp_dir = tmp;
+  auto report = dcpdoctor::run_conformance_tests(opts);
+  ASSERT(!report.conformant);
+  ASSERT(report.tests_failed > 0);
+  ASSERT(report.total_tests > 0);
+  fs::remove_all(tmp);
+}
+
+TEST(conformance_json_output)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_conf_json";
+  fs::create_directories(tmp);
+  {
+    std::ofstream f(tmp / "ASSETMAP.xml");
+    f << "<AssetMap></AssetMap>\n";
+  }
+  dcpdoctor::ConformanceOptions opts;
+  opts.dcp_dir = tmp;
+  auto report = dcpdoctor::run_conformance_tests(opts);
+  auto json = dcpdoctor::conformance_to_json(report);
+  ASSERT(json.find("\"conformant\"") != std::string::npos);
+  ASSERT(json.find("\"structure_tests\"") != std::string::npos);
+  ASSERT(json.find("DCI-STRUCT") != std::string::npos);
+  fs::remove_all(tmp);
+}
+
+TEST(conformance_html_output)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_conf_html";
+  fs::create_directories(tmp);
+  {
+    std::ofstream f(tmp / "ASSETMAP");
+    f << "<AssetMap></AssetMap>\n";
+  }
+  dcpdoctor::ConformanceOptions opts;
+  opts.dcp_dir = tmp;
+  auto report = dcpdoctor::run_conformance_tests(opts);
+  auto html = dcpdoctor::conformance_to_html(report);
+  ASSERT(html.find("DCI Conformance Report") != std::string::npos);
+  ASSERT(html.find("<table>") != std::string::npos);
+  ASSERT(html.find("DCI-STRUCT") != std::string::npos);
+  fs::remove_all(tmp);
+}
+
+TEST(conformance_valid_dcp)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_conf_valid";
+  fs::create_directories(tmp);
+  {
+    std::ofstream f(tmp / "ASSETMAP.xml");
+    f << "<AssetMap></AssetMap>\n";
+  }
+  {
+    std::ofstream f(tmp / "VOLINDEX.xml");
+    f << "<VolumeIndex><Index>1</Index></VolumeIndex>\n";
+  }
+  {
+    std::ofstream f(tmp / "pkl.xml");
+    f << "<?xml version=\"1.0\"?>\n<PackingList></PackingList>\n";
+  }
+  {
+    std::ofstream f(tmp / "cpl.xml");
+    f << R"(<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:11111111-2222-3333-4444-555555555555</Id>
+  <ContentTitleText>Test</ContentTitleText>
+  <ContentKind>test</ContentKind>
+  <IssueDate>2026-05-26</IssueDate>
+  <ReelList>
+    <Reel>
+      <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+      <AssetList>
+        <MainPicture>
+          <Id>urn:uuid:pic00000-0000-0000-0000-000000000001</Id>
+          <Duration>100</Duration>
+          <IntrinsicDuration>100</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+        </MainPicture>
+        <MainSound>
+          <Id>urn:uuid:snd00000-0000-0000-0000-000000000001</Id>
+          <Duration>100</Duration>
+          <IntrinsicDuration>100</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+        </MainSound>
+      </AssetList>
+    </Reel>
+  </ReelList>
+</CompositionPlaylist>)";
+  }
+  {
+    std::ofstream f(tmp / "video.mxf");
+    f << "fake_mxf_data_placeholder";
+  }
+  dcpdoctor::ConformanceOptions opts;
+  opts.dcp_dir = tmp;
+  auto report = dcpdoctor::run_conformance_tests(opts);
+  ASSERT(report.total_tests > 0);
+  ASSERT(report.tests_passed > 0);
+  // Should detect SMPTE standard
+  ASSERT(report.detected_standard == dcpdoctor::Standard::smpte);
+  ASSERT(report.content_title == "Test");
+  ASSERT(!report.report_date.empty());
+  auto json = dcpdoctor::conformance_to_json(report);
+  ASSERT(json.find("\"detected_standard\": \"SMPTE\"") != std::string::npos);
+  fs::remove_all(tmp);
+}
+
+// ===== DCI CTP tests =====
+TEST(test_ctp_nonexistent_dir)
+{
+  dcpdoctor::CtpOptions opts;
+  opts.dcp_dir = "/nonexistent/path";
+  auto result = dcpdoctor::run_ctp_tests(opts);
+  ASSERT(!result.error.empty());
+  ASSERT(result.total == 0);
+}
+
+TEST(test_ctp_empty_dir)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_ctp_empty";
+  fs::create_directories(tmp);
+  dcpdoctor::CtpOptions opts;
+  opts.dcp_dir = tmp;
+  auto result = dcpdoctor::run_ctp_tests(opts);
+  ASSERT(result.error.empty());
+  ASSERT(result.total > 0);
+  // Empty dir should fail packaging checks
+  ASSERT(result.failed > 0);
+  ASSERT(!result.compliant);
+  fs::remove_all(tmp);
+}
+
+TEST(test_ctp_minimal_dcp)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_ctp_minimal";
+  fs::create_directories(tmp);
+  // Create VOLINDEX
+  {
+    std::ofstream f(tmp / "VOLINDEX.xml");
+    f << "<?xml version=\"1.0\"?><VolumeIndex xmlns=\"http://www.smpte-ra.org/schemas/429-9/2007/AM\"><Index>1</Index></VolumeIndex>";
+  }
+  // Create ASSETMAP
+  {
+    std::ofstream f(tmp / "ASSETMAP.xml");
+    f << "<?xml version=\"1.0\"?><AssetMap xmlns=\"http://www.smpte-ra.org/schemas/429-9/2007/AM\"><Id>urn:uuid:00000000-0000-0000-0000-000000000001</Id><AssetList/></AssetMap>";
+  }
+  // Create PKL
+  {
+    std::ofstream f(tmp / "PKL_test.xml");
+    f << "<?xml version=\"1.0\"?><PackingList xmlns=\"http://www.smpte-ra.org/schemas/429-8/2007/PKL\"><Id>urn:uuid:00000000-0000-0000-0000-000000000002</Id></PackingList>";
+  }
+  // Create CPL
+  {
+    std::ofstream f(tmp / "CPL_test.xml");
+    f << "<?xml version=\"1.0\"?>\n"
+         "<CompositionPlaylist xmlns=\"http://www.smpte-ra.org/schemas/429-7/2006/CPL\">\n"
+         "  <Id>urn:uuid:00000000-0000-0000-0000-000000000003</Id>\n"
+         "  <ContentTitleText>CTP Test</ContentTitleText>\n"
+         "  <ContentKind>feature</ContentKind>\n"
+         "  <ReelList>\n"
+         "    <Reel><Id>urn:uuid:00000000-0000-0000-0000-000000000004</Id>\n"
+         "      <AssetList>\n"
+         "        <MainPicture>\n"
+         "          <Id>urn:uuid:00000000-0000-0000-0000-000000000005</Id>\n"
+         "          <EditRate>24 1</EditRate>\n"
+         "          <Duration>100</Duration>\n"
+         "        </MainPicture>\n"
+         "      </AssetList>\n"
+         "    </Reel>\n"
+         "  </ReelList>\n"
+         "</CompositionPlaylist>";
+  }
+  // Create MXF stub (non-empty)
+  {
+    std::ofstream f(tmp / "picture.mxf", std::ios::binary);
+    f << std::string(1024, '\0');
+  }
+
+  dcpdoctor::CtpOptions opts;
+  opts.dcp_dir = tmp;
+  auto result = dcpdoctor::run_ctp_tests(opts);
+  ASSERT(result.error.empty());
+  // Should pass packaging and composition checks
+  ASSERT(result.passed >= 8);
+  ASSERT(result.compliant);
+  fs::remove_all(tmp);
+}
+
+TEST(test_ctp_json_output)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_ctp_json";
+  fs::create_directories(tmp);
+  {
+    std::ofstream f(tmp / "VOLINDEX.xml");
+    f << "<?xml version=\"1.0\"?><VolumeIndex><Index>1</Index></VolumeIndex>";
+  }
+  dcpdoctor::CtpOptions opts;
+  opts.dcp_dir = tmp;
+  auto result = dcpdoctor::run_ctp_tests(opts);
+  auto json = dcpdoctor::ctp_to_json(result);
+  ASSERT(json.find("\"compliant\"") != std::string::npos);
+  ASSERT(json.find("CTP-PKG-001") != std::string::npos);
+  ASSERT(json.find("\"results\"") != std::string::npos);
+  fs::remove_all(tmp);
+}
+
+TEST(test_ctp_category_filter)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_ctp_filter";
+  fs::create_directories(tmp);
+  {
+    std::ofstream f(tmp / "VOLINDEX.xml");
+    f << "<?xml version=\"1.0\"?><VolumeIndex><Index>1</Index></VolumeIndex>";
+  }
+  dcpdoctor::CtpOptions opts;
+  opts.dcp_dir = tmp;
+  opts.test_picture = false;
+  opts.test_audio = false;
+  opts.test_subtitles = false;
+  opts.test_security = false;
+  opts.test_presentation = false;
+  // Only packaging+composition
+  auto result = dcpdoctor::run_ctp_tests(opts);
+  ASSERT(result.error.empty());
+  // Only packaging tests should run (no CPL means no composition subtests beyond CPL-001)
+  auto json = dcpdoctor::ctp_to_json(result);
+  ASSERT(json.find("CTP-PKG") != std::string::npos);
+  ASSERT(json.find("CTP-PIC") == std::string::npos);
+  ASSERT(json.find("CTP-AUD") == std::string::npos);
+  fs::remove_all(tmp);
 }
 
 int main()
