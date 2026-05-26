@@ -1,6 +1,7 @@
 #include <spdlog/spdlog.h>
 #include <array>
 #include <cstdio>
+#include <fstream>
 #include <regex>
 #include <sstream>
 
@@ -200,11 +201,91 @@ HdrValidateResult validate_hdr_metadata(const HdrValidateOptions& opts)
   return result;
 }
 
-HdrValidateResult validate_cpl_hdr(const std::filesystem::path& /*cpl*/,
-                                   const std::filesystem::path& /*video*/)
+HdrValidateResult validate_cpl_hdr(const std::filesystem::path& cpl,
+                                   const std::filesystem::path& video)
 {
   HdrValidateResult result;
-  result.error = "CPL HDR cross-validation not yet implemented";
+  namespace fs = std::filesystem;
+
+  if(!fs::exists(cpl))
+  {
+    result.error = "CPL file not found: " + cpl.string();
+    return result;
+  }
+  if(!fs::exists(video))
+  {
+    result.error = "Video MXF not found: " + video.string();
+    return result;
+  }
+
+  // Read CPL for any color-related metadata
+  std::ifstream cpl_file(cpl);
+  std::string cpl_content((std::istreambuf_iterator<char>(cpl_file)),
+                          std::istreambuf_iterator<char>());
+
+  // Check for TransferCharacteristic in CPL (ST 2067-21 uses these)
+  TransferFunction cpl_transfer = TransferFunction::SDR_BT1886;
+  if(cpl_content.find("SMPTE-ST-2084") != std::string::npos ||
+     cpl_content.find("ST2084") != std::string::npos)
+    cpl_transfer = TransferFunction::PQ;
+  else if(cpl_content.find("ARIB-STD-B67") != std::string::npos ||
+          cpl_content.find("HLG") != std::string::npos)
+    cpl_transfer = TransferFunction::HLG;
+
+  // Check for ColorPrimaries
+  Colorimetry cpl_color = Colorimetry::BT709;
+  if(cpl_content.find("ITU-R-BT.2020") != std::string::npos ||
+     cpl_content.find("BT.2020") != std::string::npos)
+    cpl_color = Colorimetry::BT2020;
+  else if(cpl_content.find("P3-D65") != std::string::npos ||
+          cpl_content.find("SMPTE-RP-431") != std::string::npos)
+    cpl_color = Colorimetry::P3D65;
+  else if(cpl_content.find("P3-DCI") != std::string::npos)
+    cpl_color = Colorimetry::P3DCI;
+
+  // Probe the actual video file
+  HdrValidateOptions opts;
+  opts.video_path = video;
+  opts.expected_transfer = cpl_transfer;
+  opts.expected_colorimetry = cpl_color;
+
+  auto video_result = validate_hdr_metadata(opts);
+
+  // Transfer the detected metadata
+  result.detected = video_result.detected;
+  result.issues = video_result.issues;
+  result.valid = video_result.valid;
+  result.success = video_result.success;
+
+  // Additional cross-check: if CPL declares no HDR but video has HDR
+  if(cpl_transfer == TransferFunction::SDR_BT1886 &&
+     result.detected.transfer != TransferFunction::SDR_BT1886)
+  {
+    HdrIssue issue;
+    issue.field = "CPL Transfer Function";
+    issue.expected = "SDR (no HDR metadata in CPL)";
+    issue.actual = transfer_str(result.detected.transfer) + " (detected in MXF)";
+    issue.severity = "warning";
+    issue.description = "Video contains HDR metadata but CPL does not declare it";
+    result.issues.push_back(issue);
+  }
+
+  // Cross-check: if CPL declares HDR but video is SDR
+  if(cpl_transfer != TransferFunction::SDR_BT1886 &&
+     result.detected.transfer == TransferFunction::SDR_BT1886)
+  {
+    HdrIssue issue;
+    issue.field = "CPL Transfer Function";
+    issue.expected = transfer_str(cpl_transfer) + " (declared in CPL)";
+    issue.actual = "SDR (no HDR in MXF)";
+    issue.severity = "error";
+    issue.description = "CPL declares HDR but video does not contain HDR metadata";
+    result.issues.push_back(issue);
+    result.valid = false;
+  }
+
+  spdlog::info("CPL HDR cross-validation: {} ({} issues)",
+               result.valid ? "PASS" : "FAIL", result.issues.size());
   return result;
 }
 

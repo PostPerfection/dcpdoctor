@@ -1221,6 +1221,60 @@ TEST(auto_qc_nonexistent_video)
   ASSERT(result.issues.empty() || !result.issues.empty());
 }
 
+// --- validate_cpl_hdr ---
+TEST(validate_cpl_hdr_missing_cpl)
+{
+  auto result = dcpdoctor::validate_cpl_hdr("/tmp/no_such_cpl.xml", "/tmp/no_such_video.mxf");
+  ASSERT(!result.success);
+  ASSERT(!result.error.empty());
+}
+
+TEST(validate_cpl_hdr_missing_video)
+{
+  // Create a minimal CPL file
+  std::ofstream cpl("/tmp/dcpdoctor_test_cpl.xml");
+  cpl << "<?xml version=\"1.0\"?>\n<CompositionPlaylist></CompositionPlaylist>\n";
+  cpl.close();
+  auto result = dcpdoctor::validate_cpl_hdr("/tmp/dcpdoctor_test_cpl.xml",
+                                            "/tmp/no_such_video_99.mxf");
+  ASSERT(!result.success);
+  ASSERT(!result.error.empty());
+  std::filesystem::remove("/tmp/dcpdoctor_test_cpl.xml");
+}
+
+TEST(validate_cpl_hdr_sdr_cpl)
+{
+  // CPL with no HDR declarations - should detect SDR
+  std::ofstream cpl("/tmp/dcpdoctor_test_cpl2.xml");
+  cpl << "<?xml version=\"1.0\"?>\n"
+      << "<CompositionPlaylist xmlns=\"http://www.smpte-ra.org/schemas/2067-3/2016\">\n"
+      << "  <EditRate>24 1</EditRate>\n"
+      << "</CompositionPlaylist>\n";
+  cpl.close();
+  // With nonexistent video, should fail at video probe stage
+  auto result = dcpdoctor::validate_cpl_hdr("/tmp/dcpdoctor_test_cpl2.xml",
+                                            "/tmp/no_such_video_100.mxf");
+  ASSERT(!result.success);
+  std::filesystem::remove("/tmp/dcpdoctor_test_cpl2.xml");
+}
+
+TEST(validate_cpl_hdr_hdr10_cpl)
+{
+  // CPL declaring HDR10 (PQ + BT.2020)
+  std::ofstream cpl("/tmp/dcpdoctor_test_cpl3.xml");
+  cpl << "<?xml version=\"1.0\"?>\n"
+      << "<CompositionPlaylist>\n"
+      << "  <TransferCharacteristic>SMPTE-ST-2084</TransferCharacteristic>\n"
+      << "  <ColorPrimaries>ITU-R-BT.2020</ColorPrimaries>\n"
+      << "</CompositionPlaylist>\n";
+  cpl.close();
+  // With nonexistent video, should fail at video probe
+  auto result = dcpdoctor::validate_cpl_hdr("/tmp/dcpdoctor_test_cpl3.xml",
+                                            "/tmp/no_such_video_101.mxf");
+  ASSERT(!result.success);
+  std::filesystem::remove("/tmp/dcpdoctor_test_cpl3.xml");
+}
+
 int main()
 {
   for(int i = 0; i < test_count; ++i)
