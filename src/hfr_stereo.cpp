@@ -182,17 +182,26 @@ MultiCplInfo analyze_multi_cpl(const fs::path& dcp_dir)
     double fps = parse_edit_rate(cpl.edit_rate);
     frame_rates.insert(fps);
 
-    // Count reels
+    // Count reels (DCP: ReelList, IMF: SegmentList)
     for(auto child = root->children; child; child = child->next)
     {
       if(child->type != XML_ELEMENT_NODE)
         continue;
-      if(xmlStrcmp(child->name, BAD_CAST "ReelList") != 0)
-        continue;
-      for(auto reel = child->children; reel; reel = reel->next)
+      if(xmlStrcmp(child->name, BAD_CAST "ReelList") == 0)
       {
-        if(reel->type == XML_ELEMENT_NODE && xmlStrcmp(reel->name, BAD_CAST "Reel") == 0)
-          cpl.reel_count++;
+        for(auto reel = child->children; reel; reel = reel->next)
+        {
+          if(reel->type == XML_ELEMENT_NODE && xmlStrcmp(reel->name, BAD_CAST "Reel") == 0)
+            cpl.reel_count++;
+        }
+      }
+      else if(xmlStrcmp(child->name, BAD_CAST "SegmentList") == 0)
+      {
+        for(auto seg = child->children; seg; seg = seg->next)
+        {
+          if(seg->type == XML_ELEMENT_NODE && xmlStrcmp(seg->name, BAD_CAST "Segment") == 0)
+            cpl.reel_count++;
+        }
       }
     }
 

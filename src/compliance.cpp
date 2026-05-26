@@ -181,8 +181,14 @@ namespace
       }
     }
 
-    // Check ReelList and Reels
+    // Check ReelList (DCP) or SegmentList (IMF)
     auto reel_list = find_child(root, "ReelList");
+    bool is_imf_segments = false;
+    if(!reel_list)
+    {
+      reel_list = find_child(root, "SegmentList");
+      is_imf_segments = (reel_list != nullptr);
+    }
     if(reel_list)
     {
       int reel_idx = 0;
@@ -190,7 +196,8 @@ namespace
       {
         if(reel->type != XML_ELEMENT_NODE)
           continue;
-        if(std::strcmp(reinterpret_cast<const char*>(reel->name), "Reel") != 0)
+        auto node_name = reinterpret_cast<const char*>(reel->name);
+        if(std::strcmp(node_name, "Reel") != 0 && std::strcmp(node_name, "Segment") != 0)
           continue;
         reel_idx++;
 
@@ -199,13 +206,62 @@ namespace
           check_uuid(get_text(reel_id), "Reel " + std::to_string(reel_idx) + " Id", cpl_path,
                      notes);
 
+        // DCP uses AssetList; IMF uses SequenceList
         auto asset_list = find_child(reel, "AssetList");
-        if(!asset_list)
+        xmlNodePtr main_pic = nullptr;
+        xmlNodePtr main_snd = nullptr;
+
+        if(asset_list)
+        {
+          main_pic = find_child(asset_list, "MainPicture");
+          main_snd = find_child(asset_list, "MainSound");
+        }
+        else if(is_imf_segments)
+        {
+          // IMF: Segment/SequenceList/MainImageSequence/ResourceList/Resource
+          auto seq_list = find_child(reel, "SequenceList");
+          if(seq_list)
+          {
+            auto img_seq = find_child(seq_list, "MainImageSequence");
+            if(img_seq)
+            {
+              auto res_list = find_child(img_seq, "ResourceList");
+              if(res_list)
+              {
+                // Use first Resource as the "main picture" for compliance checks
+                for(auto res = res_list->children; res; res = res->next)
+                {
+                  if(res->type == XML_ELEMENT_NODE)
+                  {
+                    main_pic = res;
+                    break;
+                  }
+                }
+              }
+            }
+            auto aud_seq = find_child(seq_list, "MainAudioSequence");
+            if(aud_seq)
+            {
+              auto res_list = find_child(aud_seq, "ResourceList");
+              if(res_list)
+              {
+                for(auto res = res_list->children; res; res = res->next)
+                {
+                  if(res->type == XML_ELEMENT_NODE)
+                  {
+                    main_snd = res;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if(!main_pic)
           continue;
 
-        // Check MainPicture
-        auto main_pic = find_child(asset_list, "MainPicture");
-        if(main_pic)
+        // Check picture element (MainPicture for DCP, Resource for IMF)
         {
           auto edit_rate = find_child(main_pic, "EditRate");
           if(edit_rate && strict)
@@ -233,8 +289,10 @@ namespace
             }
           }
 
-          // Check Duration > 0
+          // Check Duration > 0 (DCP uses Duration, IMF uses IntrinsicDuration)
           auto duration = find_child(main_pic, "Duration");
+          if(!duration)
+            duration = find_child(main_pic, "IntrinsicDuration");
           if(duration)
           {
             int dur = std::atoi(get_text(duration).c_str());
@@ -248,11 +306,12 @@ namespace
 
           // Check IntrinsicDuration >= Duration
           auto intrinsic = find_child(main_pic, "IntrinsicDuration");
+          auto dur_node = find_child(main_pic, "Duration");
           auto entry_pt = find_child(main_pic, "EntryPoint");
-          if(intrinsic && duration && entry_pt)
+          if(intrinsic && dur_node && entry_pt)
           {
             int id_val = std::atoi(get_text(intrinsic).c_str());
-            int dur_val = std::atoi(get_text(duration).c_str());
+            int dur_val = std::atoi(get_text(dur_node).c_str());
             int ep_val = std::atoi(get_text(entry_pt).c_str());
             if(ep_val + dur_val > id_val)
             {
@@ -264,12 +323,15 @@ namespace
           }
         }
 
-        // Check MainSound has matching duration
-        auto main_snd = find_child(asset_list, "MainSound");
-        if(main_snd && main_pic)
+        // Check sound has matching duration
+        if(main_snd)
         {
           auto pic_dur = find_child(main_pic, "Duration");
+          if(!pic_dur)
+            pic_dur = find_child(main_pic, "IntrinsicDuration");
           auto snd_dur = find_child(main_snd, "Duration");
+          if(!snd_dur)
+            snd_dur = find_child(main_snd, "IntrinsicDuration");
           if(pic_dur && snd_dur)
           {
             int pd = std::atoi(get_text(pic_dur).c_str());

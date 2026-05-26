@@ -62,7 +62,8 @@ std::vector<TimelineReel> extract_timeline(const std::filesystem::path& cpl_path
     return reels;
   }
 
-  // Find ReelList
+  // Find ReelList (DCP) or SegmentList (IMF)
+  bool found_reels = false;
   for(auto rl = root->children; rl; rl = rl->next)
   {
     if(rl->type != XML_ELEMENT_NODE)
@@ -70,6 +71,7 @@ std::vector<TimelineReel> extract_timeline(const std::filesystem::path& cpl_path
     if(xmlStrcmp(rl->name, BAD_CAST "ReelList") != 0)
       continue;
 
+    found_reels = true;
     for(auto reel_node = rl->children; reel_node; reel_node = reel_node->next)
     {
       if(reel_node->type != XML_ELEMENT_NODE)
@@ -128,6 +130,95 @@ std::vector<TimelineReel> extract_timeline(const std::filesystem::path& cpl_path
       }
 
       reels.push_back(std::move(reel));
+    }
+  }
+
+  // IMF fallback: parse SegmentList/Segment/SequenceList
+  if(!found_reels)
+  {
+    for(auto sl = root->children; sl; sl = sl->next)
+    {
+      if(sl->type != XML_ELEMENT_NODE)
+        continue;
+      if(xmlStrcmp(sl->name, BAD_CAST "SegmentList") != 0)
+        continue;
+
+      for(auto seg = sl->children; seg; seg = seg->next)
+      {
+        if(seg->type != XML_ELEMENT_NODE)
+          continue;
+        if(xmlStrcmp(seg->name, BAD_CAST "Segment") != 0)
+          continue;
+
+        TimelineReel reel;
+        reel.id = get_text(seg, "Id");
+
+        // Find SequenceList
+        for(auto sql = seg->children; sql; sql = sql->next)
+        {
+          if(sql->type != XML_ELEMENT_NODE)
+            continue;
+          if(xmlStrcmp(sql->name, BAD_CAST "SequenceList") != 0)
+            continue;
+
+          for(auto seq = sql->children; seq; seq = seq->next)
+          {
+            if(seq->type != XML_ELEMENT_NODE)
+              continue;
+            std::string name(reinterpret_cast<const char*>(seq->name));
+
+            if(name == "MainImageSequence")
+            {
+              reel.has_picture = true;
+              // Look in ResourceList for duration info
+              for(auto rl2 = seq->children; rl2; rl2 = rl2->next)
+              {
+                if(rl2->type != XML_ELEMENT_NODE)
+                  continue;
+                if(xmlStrcmp(rl2->name, BAD_CAST "ResourceList") != 0)
+                  continue;
+                for(auto res = rl2->children; res; res = res->next)
+                {
+                  if(res->type != XML_ELEMENT_NODE)
+                    continue;
+                  auto ep = get_text(res, "EntryPoint");
+                  auto dur = get_text(res, "IntrinsicDuration");
+                  if(!ep.empty())
+                    reel.picture_entry = std::stoull(ep);
+                  if(!dur.empty())
+                    reel.picture_duration = std::stoull(dur);
+                  break; // First resource
+                }
+              }
+            }
+            else if(name == "MainAudioSequence")
+            {
+              reel.has_sound = true;
+              for(auto rl2 = seq->children; rl2; rl2 = rl2->next)
+              {
+                if(rl2->type != XML_ELEMENT_NODE)
+                  continue;
+                if(xmlStrcmp(rl2->name, BAD_CAST "ResourceList") != 0)
+                  continue;
+                for(auto res = rl2->children; res; res = res->next)
+                {
+                  if(res->type != XML_ELEMENT_NODE)
+                    continue;
+                  auto ep = get_text(res, "EntryPoint");
+                  auto dur = get_text(res, "IntrinsicDuration");
+                  if(!ep.empty())
+                    reel.sound_entry = std::stoull(ep);
+                  if(!dur.empty())
+                    reel.sound_duration = std::stoull(dur);
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        reels.push_back(std::move(reel));
+      }
     }
   }
 

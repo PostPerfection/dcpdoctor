@@ -1,4 +1,5 @@
 #include "dcpdoctor/dcpdoctor.h"
+#include "dcpdoctor/cpl.h"
 #include "dcpdoctor/j2k.h"
 #include "dcpdoctor/isdcf.h"
 #include "dcpdoctor/subtitle.h"
@@ -314,6 +315,308 @@ TEST(reel_continuity_single_reel)
   }
   auto notes = dcpdoctor::check_reel_continuity(tmp);
   ASSERT(notes.empty()); // Single reel, nothing to check
+  fs::remove(tmp);
+}
+
+// --- IMF CPL parsing tests ---
+// These tests ensure IMF-format CPLs (SegmentList/Segment/SequenceList) are
+// correctly parsed, preventing regressions like the one where only DCP-style
+// ReelList was handled.
+
+TEST(cpl_parse_imf_single_segment)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_test_imf_cpl.xml";
+  {
+    std::ofstream f(tmp);
+    f << R"(<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <ContentTitleText>IMF Test</ContentTitleText>
+  <ContentKind>feature</ContentKind>
+  <SegmentList>
+    <Segment>
+      <Id>urn:uuid:11111111-2222-3333-4444-555555555555</Id>
+      <SequenceList>
+        <MainImageSequence>
+          <ResourceList>
+            <Resource>
+              <TrackFileId>urn:uuid:aaaaaaaa-1111-2222-3333-444444444444</TrackFileId>
+              <IntrinsicDuration>480</IntrinsicDuration>
+              <EntryPoint>0</EntryPoint>
+              <EditRate>24 1</EditRate>
+            </Resource>
+          </ResourceList>
+        </MainImageSequence>
+        <MainAudioSequence>
+          <ResourceList>
+            <Resource>
+              <TrackFileId>urn:uuid:bbbbbbbb-1111-2222-3333-444444444444</TrackFileId>
+              <IntrinsicDuration>480</IntrinsicDuration>
+              <EntryPoint>0</EntryPoint>
+              <EditRate>24 1</EditRate>
+            </Resource>
+          </ResourceList>
+        </MainAudioSequence>
+      </SequenceList>
+    </Segment>
+  </SegmentList>
+</CompositionPlaylist>)";
+  }
+  auto cpl = dcpdoctor::Cpl::parse(tmp);
+  ASSERT(cpl.has_value());
+  ASSERT(cpl->content_title == "IMF Test");
+  ASSERT(cpl->content_kind == "feature");
+  ASSERT(cpl->reels.size() == 1);
+  ASSERT(cpl->reels[0].picture.id == "urn:uuid:aaaaaaaa-1111-2222-3333-444444444444");
+  ASSERT(cpl->reels[0].picture.duration == 480);
+  ASSERT(cpl->reels[0].picture.entry_point == 0);
+  ASSERT(cpl->reels[0].picture.edit_rate == "24 1");
+  ASSERT(cpl->reels[0].sound.id == "urn:uuid:bbbbbbbb-1111-2222-3333-444444444444");
+  ASSERT(cpl->reels[0].sound.duration == 480);
+  fs::remove(tmp);
+}
+
+TEST(cpl_parse_imf_multiple_segments)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_test_imf_multi.xml";
+  {
+    std::ofstream f(tmp);
+    f << R"(<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:12345678-abcd-efab-cdef-123456789abc</Id>
+  <ContentTitleText>Multi Segment IMF</ContentTitleText>
+  <SegmentList>
+    <Segment>
+      <Id>urn:uuid:seg1-0000-0000-0000-000000000001</Id>
+      <SequenceList>
+        <MainImageSequence>
+          <ResourceList>
+            <Resource>
+              <TrackFileId>urn:uuid:pic1-0000-0000-0000-000000000001</TrackFileId>
+              <IntrinsicDuration>240</IntrinsicDuration>
+              <EntryPoint>0</EntryPoint>
+              <EditRate>24 1</EditRate>
+            </Resource>
+          </ResourceList>
+        </MainImageSequence>
+      </SequenceList>
+    </Segment>
+    <Segment>
+      <Id>urn:uuid:seg2-0000-0000-0000-000000000002</Id>
+      <SequenceList>
+        <MainImageSequence>
+          <ResourceList>
+            <Resource>
+              <TrackFileId>urn:uuid:pic2-0000-0000-0000-000000000002</TrackFileId>
+              <IntrinsicDuration>360</IntrinsicDuration>
+              <EntryPoint>48</EntryPoint>
+              <EditRate>24 1</EditRate>
+            </Resource>
+          </ResourceList>
+        </MainImageSequence>
+        <MainAudioSequence>
+          <ResourceList>
+            <Resource>
+              <TrackFileId>urn:uuid:aud2-0000-0000-0000-000000000002</TrackFileId>
+              <IntrinsicDuration>360</IntrinsicDuration>
+              <EntryPoint>0</EntryPoint>
+              <EditRate>48000 1</EditRate>
+            </Resource>
+          </ResourceList>
+        </MainAudioSequence>
+      </SequenceList>
+    </Segment>
+  </SegmentList>
+</CompositionPlaylist>)";
+  }
+  auto cpl = dcpdoctor::Cpl::parse(tmp);
+  ASSERT(cpl.has_value());
+  ASSERT(cpl->reels.size() == 2);
+  // Segment 1: picture only
+  ASSERT(cpl->reels[0].picture.id == "urn:uuid:pic1-0000-0000-0000-000000000001");
+  ASSERT(cpl->reels[0].picture.duration == 240);
+  ASSERT(cpl->reels[0].sound.id.empty());
+  // Segment 2: picture + audio
+  ASSERT(cpl->reels[1].picture.id == "urn:uuid:pic2-0000-0000-0000-000000000002");
+  ASSERT(cpl->reels[1].picture.duration == 360);
+  ASSERT(cpl->reels[1].picture.entry_point == 48);
+  ASSERT(cpl->reels[1].sound.id == "urn:uuid:aud2-0000-0000-0000-000000000002");
+  ASSERT(cpl->reels[1].sound.edit_rate == "48000 1");
+  fs::remove(tmp);
+}
+
+TEST(cpl_parse_imf_empty_segment_list)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_test_imf_empty.xml";
+  {
+    std::ofstream f(tmp);
+    f << R"(<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:empty-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>Empty IMF</ContentTitleText>
+  <SegmentList>
+  </SegmentList>
+</CompositionPlaylist>)";
+  }
+  auto cpl = dcpdoctor::Cpl::parse(tmp);
+  ASSERT(cpl.has_value());
+  ASSERT(cpl->reels.empty());
+  ASSERT(cpl->content_title == "Empty IMF");
+  fs::remove(tmp);
+}
+
+TEST(cpl_parse_imf_segment_no_sequence_list)
+{
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_test_imf_nosq.xml";
+  {
+    std::ofstream f(tmp);
+    f << R"(<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:nosq-0000-0000-0000-000000000000</Id>
+  <SegmentList>
+    <Segment>
+      <Id>urn:uuid:seg-nosq-0000-0000-000000000001</Id>
+    </Segment>
+  </SegmentList>
+</CompositionPlaylist>)";
+  }
+  auto cpl = dcpdoctor::Cpl::parse(tmp);
+  ASSERT(cpl.has_value());
+  // Segment with no SequenceList still produces a reel entry
+  ASSERT(cpl->reels.size() == 1);
+  ASSERT(cpl->reels[0].id == "urn:uuid:seg-nosq-0000-0000-000000000001");
+  ASSERT(cpl->reels[0].picture.id.empty());
+  fs::remove(tmp);
+}
+
+TEST(cpl_parse_dcp_still_works)
+{
+  // Ensure DCP-style CPL still parses correctly after IMF changes
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_test_dcp_cpl.xml";
+  {
+    std::ofstream f(tmp);
+    f << R"(<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:dcp-test-0000-0000-000000000000</Id>
+  <ContentTitleText>DCP Test</ContentTitleText>
+  <ContentKind>trailer</ContentKind>
+  <ReelList>
+    <Reel>
+      <Id>urn:uuid:reel1-0000-0000-0000-000000000001</Id>
+      <AssetList>
+        <MainPicture>
+          <Id>urn:uuid:pic-dcp-0000-0000-000000000001</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>600</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+          <Duration>600</Duration>
+        </MainPicture>
+        <MainSound>
+          <Id>urn:uuid:snd-dcp-0000-0000-000000000001</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>600</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+          <Duration>600</Duration>
+        </MainSound>
+      </AssetList>
+    </Reel>
+  </ReelList>
+</CompositionPlaylist>)";
+  }
+  auto cpl = dcpdoctor::Cpl::parse(tmp);
+  ASSERT(cpl.has_value());
+  ASSERT(cpl->content_title == "DCP Test");
+  ASSERT(cpl->content_kind == "trailer");
+  ASSERT(cpl->reels.size() == 1);
+  ASSERT(cpl->reels[0].picture.duration == 600);
+  ASSERT(cpl->reels[0].sound.duration == 600);
+  fs::remove(tmp);
+}
+
+TEST(cpl_parse_neither_reel_nor_segment)
+{
+  // CPL with no ReelList and no SegmentList should still parse metadata
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_test_no_reels.xml";
+  {
+    std::ofstream f(tmp);
+    f << R"(<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:noreels-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>No Reels</ContentTitleText>
+</CompositionPlaylist>)";
+  }
+  auto cpl = dcpdoctor::Cpl::parse(tmp);
+  ASSERT(cpl.has_value());
+  ASSERT(cpl->content_title == "No Reels");
+  ASSERT(cpl->reels.empty());
+  fs::remove(tmp);
+}
+
+TEST(timeline_extract_imf_cpl)
+{
+  // Verify extract_timeline works with IMF-format CPLs
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_test_imf_timeline.xml";
+  {
+    std::ofstream f(tmp);
+    f << R"(<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:timeline-0000-0000-0000-000000000000</Id>
+  <SegmentList>
+    <Segment>
+      <Id>urn:uuid:seg-tl-0000-0000-000000000001</Id>
+      <SequenceList>
+        <MainImageSequence>
+          <ResourceList>
+            <Resource>
+              <TrackFileId>urn:uuid:pic-tl-0000-0000-000000000001</TrackFileId>
+              <IntrinsicDuration>240</IntrinsicDuration>
+              <EntryPoint>0</EntryPoint>
+              <EditRate>24 1</EditRate>
+            </Resource>
+          </ResourceList>
+        </MainImageSequence>
+      </SequenceList>
+    </Segment>
+  </SegmentList>
+</CompositionPlaylist>)";
+  }
+  auto reels = dcpdoctor::extract_timeline(tmp);
+  // Should parse at least the segment
+  ASSERT(!reels.empty());
+  fs::remove(tmp);
+}
+
+TEST(reel_continuity_imf_cpl)
+{
+  // Verify reel continuity check works with IMF-format CPLs
+  auto tmp = fs::temp_directory_path() / "dcpdoctor_test_imf_cont.xml";
+  {
+    std::ofstream f(tmp);
+    f << R"(<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:cont-0000-0000-0000-000000000000</Id>
+  <SegmentList>
+    <Segment>
+      <Id>urn:uuid:seg-c1-0000-0000-000000000001</Id>
+      <SequenceList>
+        <MainImageSequence>
+          <ResourceList>
+            <Resource>
+              <TrackFileId>urn:uuid:pic-c1-0000-0000-000000000001</TrackFileId>
+              <IntrinsicDuration>240</IntrinsicDuration>
+              <EntryPoint>0</EntryPoint>
+              <EditRate>24 1</EditRate>
+            </Resource>
+          </ResourceList>
+        </MainImageSequence>
+      </SequenceList>
+    </Segment>
+  </SegmentList>
+</CompositionPlaylist>)";
+  }
+  auto notes = dcpdoctor::check_reel_continuity(tmp);
+  // Single segment: no continuity issues expected
+  ASSERT(notes.empty());
   fs::remove(tmp);
 }
 
