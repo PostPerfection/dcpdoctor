@@ -1,0 +1,10 @@
+dcpdoctor (1.0.0-1) unstable; urgency=medium
+
+  * Initial release.
+  * Full DCP/IMF validation against SMPTE ST 429/ST 2067
+  * Hash verification, XML signature checking
+  * J2K bitrate analysis, audio level analysis
+  * JSON, HTML, and text report output
+  * CLI and desktop GUI (Tauri 2)
+
+ -- Post Perfection <dev@postperfection.com>  Mon, 20 Jan 2025 00:00:00 +0000

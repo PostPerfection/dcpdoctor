@@ -1,0 +1,29 @@
+Source: dcpdoctor
+Section: video
+Priority: optional
+Maintainer: Post Perfection <dev@postperfection.com>
+Build-Depends: debhelper-compat (= 13),
+               cargo,
+               rustc (>= 1.75),
+               cmake,
+               pkg-config,
+               libxml2-dev,
+               libssl-dev,
+               libxerces-c-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/PostPerfection/dcpdoctor
+Vcs-Git: https://github.com/PostPerfection/dcpdoctor.git
+Vcs-Browser: https://github.com/PostPerfection/dcpdoctor
+Rules-Requires-Root: no
+
+Package: dcpdoctor
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: DCP/IMF validator and diagnostic tool
+ DcpDoctor validates Digital Cinema Packages and IMF packages against
+ SMPTE ST 429/ST 2067, Interop, and BV2.1 standards with the depth and
+ precision required for theatrical distribution.
+ .
+ Features include structure validation, hash verification, XML digital
+ signature checking, J2K bitrate analysis, audio level analysis, subtitle
+ validation, KDM checking, and comprehensive QC reports.

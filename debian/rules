@@ -1,0 +1,20 @@
+#!/usr/bin/make -f
+
+export OPENSSL_STATIC = 1
+export CARGO_HOME = $(CURDIR)/debian/.cargo
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cd rust && cargo build --release
+
+override_dh_auto_install:
+	install -Dm755 rust/target/release/dcpdoctor debian/dcpdoctor/usr/bin/dcpdoctor
+	install -Dm644 debian/dcpdoctor.desktop debian/dcpdoctor/usr/share/applications/dcpdoctor.desktop
+
+override_dh_auto_test:
+	cd rust && cargo test
+
+override_dh_auto_clean:
+	cd rust && cargo clean || true

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=DCP Doctor
+Comment=DCP/IMF validator and diagnostic tool
+Exec=dcpdoctor-gui
+Icon=dcpdoctor
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;
+Keywords=DCP;IMF;Cinema;Validator;QC;
