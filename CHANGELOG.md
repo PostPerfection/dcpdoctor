@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.5.0] — 2025-01-20
+## [1.0.0] — 2025-01-20
 
 ### Added
 - **CLI: Validate subcommand** — Full DCP/IMF validation
