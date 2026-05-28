@@ -166,7 +166,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let am_path = dir.path().join("ASSETMAP.xml");
         std::fs::write(&am_path, "not xml at all < >").unwrap();
-        // Should return None on invalid XML
-        assert!(AssetMap::parse(&am_path).is_some() || true); // parser is lenient
+        // Should not panic on invalid XML (parser is lenient)
+        let _ = AssetMap::parse(&am_path);
     }
 }

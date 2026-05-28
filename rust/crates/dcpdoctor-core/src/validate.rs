@@ -129,6 +129,36 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             });
         }
 
+        // ContentKind validation (strict mode)
+        if opts.strict_smpte && !cpl.content_kind.is_empty() {
+            const VALID_CONTENT_KINDS: &[&str] = &[
+                "feature",
+                "trailer",
+                "test",
+                "teaser",
+                "rating",
+                "advertisement",
+                "short",
+                "transitional",
+                "psa",
+                "policy",
+                "episode",
+            ];
+            if !VALID_CONTENT_KINDS.contains(&cpl.content_kind.to_lowercase().as_str()) {
+                result.add(Note {
+                    severity: Severity::Error,
+                    code: Code::CplInvalidContentKind,
+                    message: format!(
+                        "Invalid ContentKind '{}' (expected one of: {})",
+                        cpl.content_kind,
+                        VALID_CONTENT_KINDS.join(", ")
+                    ),
+                    file: Some(cpl_path.clone()),
+                    line: 0,
+                });
+            }
+        }
+
         for reel in &cpl.reels {
             if reel.picture.duration <= 0 {
                 result.add(Note {
@@ -150,6 +180,23 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     file: Some(cpl_path.clone()),
                     line: 0,
                 });
+            }
+
+            // EditRate validation (strict mode)
+            if opts.strict_smpte && !reel.picture.edit_rate.is_empty() {
+                const VALID_EDIT_RATES: &[&str] = &["24 1", "25 1", "30 1", "48 1", "50 1", "60 1"];
+                if !VALID_EDIT_RATES.contains(&reel.picture.edit_rate.as_str()) {
+                    result.add(Note {
+                        severity: Severity::Error,
+                        code: Code::CplInvalidEditRate,
+                        message: format!(
+                            "Non-DCI edit rate '{}' (allowed: 24, 25, 30, 48, 50, 60 fps)",
+                            reel.picture.edit_rate
+                        ),
+                        file: Some(cpl_path.clone()),
+                        line: 0,
+                    });
+                }
             }
         }
     }

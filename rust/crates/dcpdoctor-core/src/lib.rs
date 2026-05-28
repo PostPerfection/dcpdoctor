@@ -64,6 +64,7 @@ pub enum Code {
     CplMissingReel,
     CplInvalidFrameRate,
     CplInvalidEditRate,
+    CplInvalidContentKind,
 
     // MXF
     MxfUnreadable,
@@ -141,6 +142,7 @@ impl Code {
             Code::CplMissingReel => "cpl_missing_reel",
             Code::CplInvalidFrameRate => "cpl_invalid_frame_rate",
             Code::CplInvalidEditRate => "cpl_invalid_edit_rate",
+            Code::CplInvalidContentKind => "cpl_invalid_content_kind",
             Code::MxfUnreadable => "mxf_unreadable",
             Code::MxfHashMismatch => "mxf_hash_mismatch",
             Code::MxfInvalidStructure => "mxf_invalid_structure",
