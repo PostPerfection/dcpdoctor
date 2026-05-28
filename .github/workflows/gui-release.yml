@@ -84,6 +84,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENSSL_STATIC: "1"
         with:
           projectPath: gui
           tagName: ${{ github.ref_name }}

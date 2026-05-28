@@ -104,13 +104,56 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 
 ## Installation
 
+### Pre-built binaries (recommended)
+
+Download from the [GitHub Releases](https://github.com/PostPerfection/dcpdoctor/releases/latest) page:
+
+| Platform | CLI | Desktop GUI |
+|----------|-----|-------------|
+| **Linux** (x86_64) | `dcpdoctor-linux-x86_64.tar.gz` | `.deb`, `.AppImage` |
+| **macOS** (Apple Silicon) | `dcpdoctor-macos-aarch64.tar.gz` | `.dmg` |
+| **Windows** (x86_64) | `dcpdoctor-windows-x86_64.zip` | `.msi` |
+
+The CLI binary is fully self-contained (all dependencies statically linked). Extract and run.
+
+### Install from source
+
+#### Linux (Ubuntu/Debian)
+
 ```bash
+sudo apt-get install -y cmake pkg-config libxml2-dev libssl-dev libxerces-c-dev
+# For GUI: also install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+
 cd rust
 cargo build --release
-cargo test
+# Binary at rust/target/release/dcpdoctor
 ```
 
-The Rust workspace uses [postkit](https://github.com/PostPerfection/postkit) as a git dependency.
+#### macOS
+
+```bash
+brew install cmake pkg-config libxml2 openssl@3 xerces-c
+
+export OPENSSL_DIR=$(brew --prefix openssl@3)
+export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$(brew --prefix xerces-c)/lib/pkgconfig"
+export CMAKE_PREFIX_PATH="$(brew --prefix libxml2);$(brew --prefix xerces-c)"
+
+cd rust
+cargo build --release
+```
+
+#### Windows
+
+```powershell
+# Using vcpkg (recommended)
+vcpkg install libxml2 openssl xerces-c --triplet x64-windows
+
+$env:VCPKG_ROOT = "$env:VCPKG_INSTALLATION_ROOT"
+$env:CMAKE_TOOLCHAIN_FILE = "$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+cd rust
+cargo build --release
+```
 
 ## Usage
 

@@ -75,6 +75,8 @@ jobs:
 
       - name: Build release
         working-directory: rust
+        env:
+          OPENSSL_STATIC: "1"
         run: cargo build --release
 
       - name: Strip binary (Linux)
