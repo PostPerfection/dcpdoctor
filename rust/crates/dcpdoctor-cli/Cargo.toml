@@ -15,3 +15,8 @@ dcpdoctor-core = { path = "../dcpdoctor-core" }
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
