@@ -256,6 +256,116 @@ footer a {
     main { padding: 1rem; }
 }
 
+/* DCP Queue Table */
+.dcp-queue {
+    margin-top: 2rem;
+    padding: 1.5rem;
+    background: var(--surface);
+    border-radius: var(--radius);
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+.dcp-queue-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.dcp-queue-header h2 {
+    font-size: 1.3rem;
+}
+
+.dcp-queue-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.dcp-queue-table th {
+    text-align: left;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    color: var(--text-muted);
+    font-weight: 500;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.dcp-queue-table td {
+    padding: 0.7rem 0.75rem;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.dcp-queue-table tr {
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.dcp-queue-table tr:hover {
+    background: var(--surface-hover);
+}
+
+.dcp-queue-table tr.active {
+    background: rgba(77, 166, 255, 0.08);
+    border-left: 3px solid var(--accent-light);
+}
+
+.dcp-queue-table .status-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.dcp-queue-table .status-badge.pending {
+    background: rgba(255,255,255,0.06);
+    color: var(--text-muted);
+}
+
+.dcp-queue-table .status-badge.validating {
+    background: rgba(33,150,243,0.15);
+    color: var(--info);
+}
+
+.dcp-queue-table .status-badge.done {
+    background: rgba(76,175,80,0.15);
+    color: var(--success);
+}
+
+.dcp-queue-table .status-badge.error {
+    background: rgba(244,67,54,0.15);
+    color: var(--error);
+}
+
+.dcp-queue-table .priority-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.dcp-queue-table .priority-cell .move-btn {
+    background: rgba(255,255,255,0.06);
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.75rem;
+}
+
+.dcp-queue-table .priority-cell .move-btn:hover:not(:disabled) {
+    background: rgba(255,255,255,0.12);
+    color: var(--text);
+}
+
+.dcp-queue-table .priority-cell .move-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
 /* Hash Queue */
 .hash-queue {
     margin-top: 2rem;

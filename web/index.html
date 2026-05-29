@@ -30,6 +30,24 @@
             <button id="cancel-btn" class="cancel-btn">Cancel</button>
         </section>
 
+        <section id="dcp-queue" class="dcp-queue hidden">
+            <div class="dcp-queue-header">
+                <h2>📋 Validation Queue</h2>
+                <button id="dcp-add-more" class="btn-secondary">+ Add DCP</button>
+            </div>
+            <table class="dcp-queue-table">
+                <thead>
+                    <tr>
+                        <th>DCP</th>
+                        <th>Files</th>
+                        <th>Status</th>
+                        <th>Priority</th>
+                    </tr>
+                </thead>
+                <tbody id="dcp-queue-body"></tbody>
+            </table>
+        </section>
+
         <section id="results" class="results hidden">
             <div class="result-header" id="result-header">
                 <span class="result-icon" id="result-icon"></span>

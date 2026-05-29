@@ -26,6 +26,11 @@ const resultTitle = document.getElementById('result-title');
 const summary = document.getElementById('summary');
 const notesList = document.getElementById('notes-list');
 
+// DCP Queue DOM
+const dcpQueueSection = document.getElementById('dcp-queue');
+const dcpQueueBody = document.getElementById('dcp-queue-body');
+const dcpAddMore = document.getElementById('dcp-add-more');
+
 // Hash queue DOM
 const hashQueueSection = document.getElementById('hash-queue');
 const hashQueueList = document.getElementById('hash-queue-list');
@@ -38,30 +43,23 @@ const hashOverallProgress = document.getElementById('hash-overall-progress');
 const hashProgressFill = document.getElementById('hash-progress-fill');
 const hashProgressText = document.getElementById('hash-progress-text');
 
-// Abort controller for cancelling in-progress validation
-let abortController = null;
+// === DCP Queue State ===
+let dcpQueue = []; // { id, name, fileCount, status, files, result }
+let selectedDcpId = null;
+let validationAbort = null; // AbortController for current validation
+let nextDcpId = 1;
 
 // Hash queue state
-let hashQueue = []; // { path, size, file (File obj), expectedHash, selected, status, progress }
+let hashQueue = [];
 let hashAbort = null;
 
 cancelBtn.addEventListener('click', () => {
-    if (abortController) {
-        abortController.abort();
+    if (validationAbort) {
+        validationAbort.abort();
     }
-    resetToDropZone();
-});
-
-function resetToDropZone() {
-    abortController = null;
     progress.classList.add('hidden');
-    results.classList.add('hidden');
-    hashQueueSection.classList.add('hidden');
     dropZone.classList.remove('hidden');
-    progressFill.style.width = '0%';
-    progressText.textContent = 'Reading files...';
-    hashQueue = [];
-}
+});
 
 // Drag and drop
 dropZone.addEventListener('dragover', (e) => {
@@ -78,22 +76,22 @@ dropZone.addEventListener('drop', async (e) => {
     dropZone.classList.remove('dragover');
     const items = e.dataTransfer.items;
     if (items.length > 0) {
-        const entry = items[0].webkitGetAsEntry();
-        if (entry && entry.isDirectory) {
-            await processDirectory(entry);
-        } else {
-            // Try using getAsFileSystemHandle for modern browsers
-            if (items[0].getAsFileSystemHandle) {
-                const handle = await items[0].getAsFileSystemHandle();
-                if (handle.kind === 'directory') {
-                    await processDirectoryHandle(handle);
-                }
+        // Collect entries synchronously before any await (DataTransfer clears after yield)
+        const entries = [];
+        for (let i = 0; i < items.length; i++) {
+            const entry = items[i].webkitGetAsEntry();
+            if (entry && entry.isDirectory) {
+                entries.push({ type: 'entry', entry });
             }
+        }
+        // Now process asynchronously
+        for (const { entry } of entries) {
+            await enqueueDcpFromEntry(entry);
         }
     }
 });
 
-// Hidden file input fallback for browsers without showDirectoryPicker (Brave, Firefox, Safari)
+// Hidden file input fallback
 const fileInput = document.createElement('input');
 fileInput.type = 'file';
 fileInput.setAttribute('webkitdirectory', '');
@@ -103,7 +101,7 @@ document.body.appendChild(fileInput);
 
 fileInput.addEventListener('change', async () => {
     if (fileInput.files.length === 0) return;
-    await processFileList(fileInput.files);
+    await enqueueDcpFromFileList(fileInput.files);
     fileInput.value = '';
 });
 
@@ -113,72 +111,50 @@ pickBtn.addEventListener('click', async (e) => {
     if ('showDirectoryPicker' in window) {
         try {
             const dirHandle = await window.showDirectoryPicker();
-            await processDirectoryHandle(dirHandle);
+            await enqueueDcpFromHandle(dirHandle);
         } catch (err) {
-            if (err.name !== 'AbortError') {
-                console.error('Directory picker error:', err);
-            }
+            if (err.name !== 'AbortError') console.error('Directory picker error:', err);
         }
     } else {
-        // Fallback: use hidden file input with webkitdirectory
         fileInput.click();
     }
 });
 
-// Click on drop zone also opens picker
 dropZone.addEventListener('click', (e) => {
-    if (e.target !== pickBtn) {
-        pickBtn.click();
+    if (e.target !== pickBtn) pickBtn.click();
+});
+
+// "Add DCP" button in queue header
+dcpAddMore.addEventListener('click', async () => {
+    if ('showDirectoryPicker' in window) {
+        try {
+            const dirHandle = await window.showDirectoryPicker();
+            await enqueueDcpFromHandle(dirHandle);
+        } catch (err) {
+            if (err.name !== 'AbortError') console.error('Directory picker error:', err);
+        }
+    } else {
+        fileInput.click();
     }
 });
 
-// Process a FileList from <input webkitdirectory> (Brave/Firefox/Safari fallback)
-async function processFileList(fileList) {
-    abortController = new AbortController();
-    showProgress();
+// === Enqueue DCP from various sources ===
+
+async function enqueueDcpFromHandle(dirHandle) {
+    const dcpId = nextDcpId++;
+    const item = { id: dcpId, name: dirHandle.name, fileCount: 0, status: 'reading', files: [], result: null };
+    dcpQueue.push(item);
+    showQueueUI();
+    renderDcpQueue();
+
     const files = [];
-
-    for (let i = 0; i < fileList.length; i++) {
-        if (abortController.signal.aborted) return;
-        const file = fileList[i];
-        // webkitRelativePath gives "DirName/subdir/file.xml"
-        const relPath = file.webkitRelativePath;
-        // Strip the top-level directory name to get paths relative to DCP root
-        const parts = relPath.split('/');
-        const path = parts.slice(1).join('/');
-        if (path.startsWith('.')) continue;
-        updateProgress(`Reading ${path}... (${i + 1}/${fileList.length})`, (i / fileList.length) * 80);
-        // Yield to event loop every file so UI stays responsive
-        await new Promise(r => setTimeout(r, 0));
-        const content = await readFileContent(file, path);
-        files.push(content);
-    }
-
-    if (!abortController.signal.aborted) {
-        await runValidation(files);
-    }
-}
-
-// Process a FileSystemDirectoryHandle (modern API)
-async function processDirectoryHandle(dirHandle) {
-    abortController = new AbortController();
-    showProgress();
-    const files = [];
-    let fileCount = 0;
-
     async function readDir(handle, prefix = '') {
         for await (const [name, entry] of handle.entries()) {
-            if (abortController.signal.aborted) return;
             if (name.startsWith('.')) continue;
             const path = prefix ? `${prefix}/${name}` : name;
             if (entry.kind === 'file') {
-                fileCount++;
-                updateProgress(`Reading ${path}...`, -1);
-                // Yield to event loop so UI stays responsive
-                await new Promise(r => setTimeout(r, 0));
                 const file = await entry.getFile();
-                const content = await readFileContent(file, path);
-                files.push(content);
+                files.push(await readFileContent(file, path));
             } else if (entry.kind === 'directory') {
                 await readDir(entry, path);
             }
@@ -186,32 +162,33 @@ async function processDirectoryHandle(dirHandle) {
     }
 
     await readDir(dirHandle);
-    if (!abortController.signal.aborted) {
-        await runValidation(files);
-    }
+    item.files = files;
+    item.fileCount = files.length;
+    item.status = 'pending';
+    renderDcpQueue();
+    processNextDcp();
 }
 
-// Process a webkitGetAsEntry directory (fallback)
-async function processDirectory(entry) {
-    abortController = new AbortController();
-    showProgress();
-    const files = [];
+async function enqueueDcpFromEntry(entry) {
+    const dcpId = nextDcpId++;
+    const item = { id: dcpId, name: entry.name, fileCount: 0, status: 'reading', files: [], result: null };
+    dcpQueue.push(item);
+    showQueueUI();
+    renderDcpQueue();
 
+    const files = [];
     async function readDir(dirEntry, prefix = '') {
         return new Promise((resolve) => {
             const reader = dirEntry.createReader();
             reader.readEntries(async (entries) => {
-                for (const entry of entries) {
-                    if (abortController.signal.aborted) break;
-                    if (entry.name.startsWith('.')) continue;
-                    const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-                    if (entry.isFile) {
-                        updateProgress(`Reading ${path}...`, -1);
-                        const file = await getFile(entry);
-                        const content = await readFileContent(file, path);
-                        files.push(content);
-                    } else if (entry.isDirectory) {
-                        await readDir(entry, path);
+                for (const e of entries) {
+                    if (e.name.startsWith('.')) continue;
+                    const path = prefix ? `${prefix}/${e.name}` : e.name;
+                    if (e.isFile) {
+                        const file = await new Promise(r => e.file(r));
+                        files.push(await readFileContent(file, path));
+                    } else if (e.isDirectory) {
+                        await readDir(e, path);
                     }
                 }
                 resolve();
@@ -220,13 +197,188 @@ async function processDirectory(entry) {
     }
 
     await readDir(entry);
-    if (!abortController.signal.aborted) {
-        await runValidation(files);
+    item.files = files;
+    item.fileCount = files.length;
+    item.status = 'pending';
+    renderDcpQueue();
+    processNextDcp();
+}
+
+async function enqueueDcpFromFileList(fileList) {
+    // Detect DCP name from first file's webkitRelativePath
+    const firstName = fileList[0]?.webkitRelativePath?.split('/')[0] || 'DCP';
+    const dcpId = nextDcpId++;
+    const item = { id: dcpId, name: firstName, fileCount: 0, status: 'reading', files: [], result: null };
+    dcpQueue.push(item);
+    showQueueUI();
+    renderDcpQueue();
+
+    const files = [];
+    for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        const parts = file.webkitRelativePath.split('/');
+        const path = parts.slice(1).join('/');
+        if (path.startsWith('.')) continue;
+        files.push(await readFileContent(file, path));
+    }
+
+    item.files = files;
+    item.fileCount = files.length;
+    item.status = 'pending';
+    renderDcpQueue();
+    processNextDcp();
+}
+
+// === DCP Queue Processing ===
+
+let processingDcpId = null;
+
+async function processNextDcp() {
+    if (processingDcpId !== null) return; // Already running
+
+    const next = dcpQueue.find(d => d.status === 'pending');
+    if (!next) return;
+
+    processingDcpId = next.id;
+    next.status = 'validating';
+    renderDcpQueue();
+
+    validationAbort = new AbortController();
+
+    if (!wasmReady) await initWasm();
+
+    // Give UI a chance to update
+    await new Promise(r => setTimeout(r, 10));
+
+    if (validationAbort.signal.aborted) {
+        next.status = 'pending';
+        processingDcpId = null;
+        validationAbort = null;
+        renderDcpQueue();
+        processNextDcp();
+        return;
+    }
+
+    const filesForWasm = next.files.map(f => ({
+        path: f.path, content: f.content, is_base64: f.is_base64, size: f.size, skipped: f.skipped
+    }));
+    const filesJson = JSON.stringify(filesForWasm);
+    const resultJson = validate_dcp(filesJson);
+    const result = JSON.parse(resultJson);
+
+    if (validationAbort.signal.aborted) {
+        next.status = 'pending';
+        processingDcpId = null;
+        validationAbort = null;
+        renderDcpQueue();
+        processNextDcp();
+        return;
+    }
+
+    next.result = result;
+    next.status = result.valid ? 'done' : 'error';
+    processingDcpId = null;
+    validationAbort = null;
+    renderDcpQueue();
+
+    // Auto-select the first completed DCP if nothing is selected
+    if (!selectedDcpId) {
+        selectDcp(next.id);
+    }
+
+    // Continue processing
+    processNextDcp();
+}
+
+function interruptValidation() {
+    if (validationAbort) {
+        validationAbort.abort();
+        const current = dcpQueue.find(d => d.id === processingDcpId);
+        if (current) current.status = 'pending';
+        processingDcpId = null;
+        validationAbort = null;
+        renderDcpQueue();
+        // Re-process from new priority order
+        processNextDcp();
     }
 }
 
-function getFile(fileEntry) {
-    return new Promise((resolve) => fileEntry.file(resolve));
+// === DCP Queue UI ===
+
+function showQueueUI() {
+    dropZone.classList.add('hidden');
+    progress.classList.add('hidden');
+    dcpQueueSection.classList.remove('hidden');
+}
+
+function renderDcpQueue() {
+    dcpQueueBody.innerHTML = '';
+    dcpQueue.forEach((item, idx) => {
+        const tr = document.createElement('tr');
+        tr.className = item.id === selectedDcpId ? 'active' : '';
+        tr.dataset.id = item.id;
+
+        const statusClass = item.status === 'done' ? 'done' :
+                           item.status === 'error' ? 'error' :
+                           item.status === 'validating' ? 'validating' : 'pending';
+        const statusText = item.status === 'reading' ? 'Reading…' :
+                          item.status === 'pending' ? 'Pending' :
+                          item.status === 'validating' ? 'Validating…' :
+                          item.status === 'done' ? '✓ Valid' :
+                          item.status === 'error' ? '✗ Issues' : item.status;
+
+        const canMove = item.status === 'pending';
+        tr.innerHTML = `
+            <td><strong>${escapeHtml(item.name)}</strong></td>
+            <td>${item.fileCount || '…'}</td>
+            <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+            <td class="priority-cell">
+                ${canMove ? `
+                    <button class="move-btn" data-idx="${idx}" data-dir="up" ${idx === 0 ? 'disabled' : ''}>▲</button>
+                    <button class="move-btn" data-idx="${idx}" data-dir="down" ${idx === dcpQueue.length - 1 ? 'disabled' : ''}>▼</button>
+                ` : ''}
+            </td>
+        `;
+
+        // Click row to view results
+        tr.addEventListener('click', (e) => {
+            if (e.target.classList.contains('move-btn')) return;
+            selectDcp(item.id);
+        });
+
+        dcpQueueBody.appendChild(tr);
+    });
+
+    // Priority move handlers
+    dcpQueueBody.querySelectorAll('.move-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const idx = parseInt(e.target.dataset.idx);
+            const dir = e.target.dataset.dir;
+            if (dir === 'up' && idx > 0) {
+                [dcpQueue[idx - 1], dcpQueue[idx]] = [dcpQueue[idx], dcpQueue[idx - 1]];
+                interruptValidation();
+            } else if (dir === 'down' && idx < dcpQueue.length - 1) {
+                [dcpQueue[idx], dcpQueue[idx + 1]] = [dcpQueue[idx + 1], dcpQueue[idx]];
+                interruptValidation();
+            }
+            renderDcpQueue();
+        });
+    });
+}
+
+function selectDcp(id) {
+    const item = dcpQueue.find(d => d.id === id);
+    if (!item) return;
+    selectedDcpId = id;
+    renderDcpQueue();
+
+    if (item.result) {
+        showResults(item.result, item.files);
+    } else {
+        results.classList.add('hidden');
+        hashQueueSection.classList.add('hidden');
+    }
 }
 
 // Determine if a file needs its content read (XML metadata) or just path/size (binary essence)
@@ -242,52 +394,11 @@ async function readFileContent(file, path) {
         const text = await file.text();
         return { path, content: text, is_base64: false, size: file.size, skipped: false, file: null };
     } else {
-        // Binary essence file — record path/size, keep File reference for hash queue
         return { path, content: null, is_base64: false, size: file.size, skipped: true, file };
     }
 }
 
-async function runValidation(files) {
-    if (!wasmReady) {
-        await initWasm();
-    }
-
-    updateProgress('Validating DCP...', 50);
-    
-    // Give UI a chance to update
-    await new Promise(r => setTimeout(r, 10));
-
-    // Strip File references before sending to WASM (not serializable)
-    const filesForWasm = files.map(f => ({
-        path: f.path, content: f.content, is_base64: f.is_base64, size: f.size, skipped: f.skipped
-    }));
-    const filesJson = JSON.stringify(filesForWasm);
-    const resultJson = validate_dcp(filesJson);
-    const result = JSON.parse(resultJson);
-
-    updateProgress('Done!', 100);
-    setTimeout(() => {
-        showResults(result);
-        // Populate hash queue from binary files that have expected hashes
-        populateHashQueue(files, result);
-    }, 300);
-}
-
-function showProgress() {
-    dropZone.classList.add('hidden');
-    progress.classList.remove('hidden');
-    results.classList.add('hidden');
-}
-
-function updateProgress(text, percent) {
-    progressText.textContent = text;
-    if (percent >= 0) {
-        progressFill.style.width = `${percent}%`;
-    }
-}
-
-function showResults(result) {
-    progress.classList.add('hidden');
+function showResults(result, files) {
     results.classList.remove('hidden');
 
     // Header
@@ -359,11 +470,18 @@ function showResults(result) {
     btn.style.marginTop = '2rem';
     btn.textContent = 'Validate another DCP';
     btn.onclick = () => {
-        results.classList.add('hidden');
-        hashQueueSection.classList.add('hidden');
-        dropZone.classList.remove('hidden');
+        if ('showDirectoryPicker' in window) {
+            window.showDirectoryPicker().then(h => enqueueDcpFromHandle(h)).catch(() => {});
+        } else {
+            fileInput.click();
+        }
     };
     notesList.appendChild(btn);
+
+    // Populate hash queue for the selected DCP
+    if (files) {
+        populateHashQueue(files, result);
+    }
 }
 
 function escapeHtml(str) {
