@@ -5,6 +5,10 @@ init().then(() => {
     document.getElementById('version').textContent = `v${version()}`;
 }).catch(err => console.error('WASM init failed:', err));
 
+// === Concurrency cap: limit active workers to physical core count ===
+const MAX_WORKERS = Math.max(1, Math.floor((navigator.hardwareConcurrency || 4) / 2));
+let activeWorkers = 0;
+
 // === State ===
 let queue = []; // { id, name, fileCount, status, result, error, worker, files }
 let nextId = 1;
@@ -115,9 +119,9 @@ async function enqueueFromHandle(dirHandle) {
 
     item.files = files;
     item.fileCount = files.length;
-    item.status = 'validating';
+    item.status = 'pending';
     renderQueue();
-    startValidation(item);
+    drainQueue();
 }
 
 async function readDirHandle(handle, prefix, files, item) {
@@ -147,9 +151,9 @@ async function enqueueFromEntry(entry) {
 
     item.files = files;
     item.fileCount = files.length;
-    item.status = 'validating';
+    item.status = 'pending';
     renderQueue();
-    startValidation(item);
+    drainQueue();
 }
 
 function readDirEntry(dirEntry, prefix, files, item) {
@@ -197,9 +201,9 @@ async function enqueueFromFileList(fileList) {
 
     item.files = files;
     item.fileCount = files.length;
-    item.status = 'validating';
+    item.status = 'pending';
     renderQueue();
-    startValidation(item);
+    drainQueue();
 }
 
 // === Helpers ===
@@ -245,9 +249,21 @@ function showQueue() {
     queueSection.classList.remove('hidden');
 }
 
-// === Validation via Web Worker ===
+// === Validation via Web Worker (with concurrency cap) ===
+
+function drainQueue() {
+    while (activeWorkers < MAX_WORKERS) {
+        const next = queue.find(i => i.status === 'pending');
+        if (!next) break;
+        startValidation(next);
+    }
+}
 
 function startValidation(item) {
+    item.status = 'validating';
+    activeWorkers++;
+    renderQueue();
+
     const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
     item.worker = worker;
 
@@ -261,14 +277,18 @@ function startValidation(item) {
             item.status = result.valid ? 'done' : 'failed';
             item.result = result;
             item.worker = null;
+            activeWorkers--;
             worker.terminate();
             renderQueue();
+            drainQueue();
         } else if (type === 'error') {
             item.status = 'failed';
             item.error = error;
             item.worker = null;
+            activeWorkers--;
             worker.terminate();
             renderQueue();
+            drainQueue();
         }
     };
 
@@ -276,7 +296,9 @@ function startValidation(item) {
         item.status = 'failed';
         item.error = err.message || 'Worker error';
         item.worker = null;
+        activeWorkers--;
         renderQueue();
+        drainQueue();
     };
 
     // Send files to worker for validation
@@ -297,9 +319,11 @@ function cancelItem(id) {
     if (item.worker) {
         item.worker.terminate();
         item.worker = null;
+        activeWorkers--;
     }
     item.status = 'cancelled';
     renderQueue();
+    drainQueue();
 }
 
 // === Render ===
