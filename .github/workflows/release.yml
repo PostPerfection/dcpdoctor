@@ -109,8 +109,38 @@ jobs:
             ${{ matrix.artifact }}.tar.gz
             ${{ matrix.artifact }}.zip
 
+  deb:
+    runs-on: ubuntu-24.04
+    name: Build .deb
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libxml2-dev libssl-dev libxerces-c-dev
+          cargo install cargo-deb
+
+      - name: Build .deb package
+        working-directory: rust
+        env:
+          OPENSSL_STATIC: "1"
+        run: cargo deb -p dcpdoctor-cli
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dcpdoctor-deb
+          path: rust/target/debian/*.deb
+
   release:
-    needs: build
+    needs: [build, deb]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -125,3 +155,4 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            artifacts/**/*.deb

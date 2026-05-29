@@ -20,3 +20,19 @@ tracing-subscriber.workspace = true
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+
+[package.metadata.deb]
+name = "dcpdoctor"
+maintainer = "Post Perfection <dev@postperfection.com>"
+section = "video"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/dcpdoctor", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/dcpdoctor/README.md", "644"],
+    ["../../CHANGELOG.md", "usr/share/doc/dcpdoctor/CHANGELOG.md", "644"],
+]
+extended-description = """\
+DcpDoctor validates Digital Cinema Packages and IMF packages against \
+SMPTE ST 429/ST 2067, Interop, and BV2.1 standards. Features include \
+hash verification, J2K bitrate analysis, audio level analysis, and QC reports."""
