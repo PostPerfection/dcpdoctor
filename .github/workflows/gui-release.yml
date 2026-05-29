@@ -80,6 +80,25 @@ jobs:
         working-directory: gui
         run: npm ci
 
+      - name: Build CLI sidecar (Unix)
+        if: runner.os != 'Windows'
+        working-directory: rust
+        env:
+          OPENSSL_STATIC: "1"
+        run: |
+          cargo build --release -p dcpdoctor-cli
+          TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
+          cp target/release/dcpdoctor ../gui/src-tauri/dcpdoctor-${TRIPLE}
+
+      - name: Build CLI sidecar (Windows)
+        if: runner.os == 'Windows'
+        working-directory: rust
+        env:
+          OPENSSL_STATIC: "1"
+        run: |
+          cargo build --release -p dcpdoctor-cli
+          Copy-Item "target/release/dcpdoctor.exe" "../gui/src-tauri/dcpdoctor-x86_64-pc-windows-msvc.exe"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
