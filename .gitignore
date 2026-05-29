@@ -17,3 +17,4 @@ tests/dcps/isdcf/__MACOSX/
 tests/dcps/hfr/*.tar
 tests/dcps/hfr/fox-*
 tests/dcps/synthetic/
+rust/crates/dcpdoctor-wasm/target/

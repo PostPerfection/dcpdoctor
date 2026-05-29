@@ -1,0 +1,25 @@
+[package]
+name = "dcpdoctor-wasm"
+version = "1.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "DCP/IMF validator — WebAssembly build for browser-based validation"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+quick-xml = "0.37"
+sha1 = "0.10"
+base64 = "0.22"
+x509-parser = "0.16"
+time = "0.3"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

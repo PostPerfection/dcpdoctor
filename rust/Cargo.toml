@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/dcpdoctor-core", "crates/dcpdoctor-cli"]
+exclude = ["crates/dcpdoctor-wasm"]
 resolver = "2"
 
 [workspace.package]
