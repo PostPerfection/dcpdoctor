@@ -8,7 +8,11 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #include "dcpdoctor/dcpdoctor.h"
 #include "dcpdoctor/advanced.h"
 #include "dcpdoctor/auto_qc.h"
@@ -872,7 +876,11 @@ int main(int argc, char* argv[])
   opts.strict_smpte = strict;
 
   // Show per-file hash progress on TTY
+#ifdef _WIN32
+  bool is_tty = ::_isatty(_fileno(stderr));
+#else
   bool is_tty = ::isatty(STDERR_FILENO);
+#endif
   if(opts.check_hashes && is_tty && !json)
   {
     opts.hash_progress = [](const std::filesystem::path& file, int file_idx, int total_files,
