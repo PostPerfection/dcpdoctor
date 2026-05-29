@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DcpDoctor — Online DCP Validator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>🎬 DcpDoctor</h1>
+        <p class="subtitle">Browser-based Digital Cinema Package validator — your files never leave your computer</p>
+    </header>
+
+    <main>
+        <section id="drop-zone" class="drop-zone">
+            <div class="drop-content">
+                <div class="drop-icon">📂</div>
+                <h2>Drop your DCP folder here</h2>
+                <p>or <button id="pick-btn" class="pick-btn">choose a folder</button></p>
+                <p class="hint">Validates ASSETMAP, PKL, CPL structure, hash integrity, ISDCF naming, and more</p>
+            </div>
+        </section>
+
+        <section id="progress" class="progress hidden">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <p id="progress-text">Reading files...</p>
+            <button id="cancel-btn" class="cancel-btn">Cancel</button>
+        </section>
+
+        <section id="dcp-queue" class="dcp-queue hidden">
+            <div class="dcp-queue-header">
+                <h2>📋 Validation Queue</h2>
+                <button id="dcp-add-more" class="btn-secondary">+ Add DCP</button>
+            </div>
+            <table class="dcp-queue-table">
+                <thead>
+                    <tr>
+                        <th>DCP</th>
+                        <th>Files</th>
+                        <th>Status</th>
+                        <th>Priority</th>
+                    </tr>
+                </thead>
+                <tbody id="dcp-queue-body"></tbody>
+            </table>
+        </section>
+
+        <section id="results" class="results hidden">
+            <div class="result-header" id="result-header">
+                <span class="result-icon" id="result-icon"></span>
+                <h2 id="result-title"></h2>
+            </div>
+            <div class="summary" id="summary"></div>
+            <div class="notes-list" id="notes-list"></div>
+        </section>
+
+        <section id="hash-queue" class="hash-queue hidden">
+            <div class="hash-queue-header">
+                <h2>🔐 Hash Verification Queue</h2>
+                <p class="hint">Verify SHA-1 hashes of binary assets against the PKL. Files are processed sequentially in chunks.</p>
+            </div>
+            <div class="hash-queue-controls">
+                <button id="hash-start" class="btn-primary" disabled>Verify Selected</button>
+                <button id="hash-cancel" class="btn-cancel hidden">Cancel</button>
+                <button id="hash-select-all" class="btn-secondary">Select All</button>
+                <button id="hash-clear" class="btn-secondary">Deselect All</button>
+                <span id="hash-status" class="hash-status"></span>
+            </div>
+            <div id="hash-queue-list" class="hash-queue-list"></div>
+            <div id="hash-overall-progress" class="hash-overall-progress hidden">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="hash-progress-fill"></div>
+                </div>
+                <p id="hash-progress-text">Preparing...</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>
+            Powered by <a href="https://github.com/PostPerfection/dcpdoctor">dcpdoctor</a> compiled to WebAssembly.
+            <span id="version"></span>
+        </p>
+        <p class="privacy">🔒 All processing happens locally in your browser. No files are uploaded anywhere.</p>
+    </footer>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
