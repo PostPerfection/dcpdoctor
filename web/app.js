@@ -211,39 +211,22 @@ function getFile(fileEntry) {
     return new Promise((resolve) => fileEntry.file(resolve));
 }
 
-// Max file size to read in browser (10 MB). Larger binary files are skipped.
-// XML metadata is always read regardless of size.
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+// Determine if a file needs its content read (XML metadata) or just path/size (binary essence)
+function isMetadataFile(path) {
+    const lower = path.toLowerCase();
+    return lower.endsWith('.xml') || 
+           lower.endsWith('/assetmap') || lower === 'assetmap' ||
+           lower.endsWith('/volindex') || lower === 'volindex';
+}
 
 async function readFileContent(file, path) {
-    const isXml = /\.(xml)$/i.test(path) || 
-                  path === 'ASSETMAP' || path === 'VOLINDEX' ||
-                  path.endsWith('/ASSETMAP') || path.endsWith('/VOLINDEX');
-    
-    if (file.size > MAX_FILE_SIZE && !isXml) {
-        // Too large for browser — record metadata only, skip content
-        return { path, content: null, is_base64: false, size: file.size, skipped: true };
-    }
-
-    if (isXml) {
+    if (isMetadataFile(path)) {
         const text = await file.text();
         return { path, content: text, is_base64: false, size: file.size, skipped: false };
     } else {
-        const buffer = await file.arrayBuffer();
-        const base64 = arrayBufferToBase64(buffer);
-        return { path, content: base64, is_base64: true, size: file.size, skipped: false };
+        // Binary essence file — record path/size only, skip content
+        return { path, content: null, is_base64: false, size: file.size, skipped: true };
     }
-}
-
-function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    let binary = '';
-    const chunkSize = 8192;
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-        const chunk = bytes.subarray(i, i + chunkSize);
-        binary += String.fromCharCode.apply(null, chunk);
-    }
-    return btoa(binary);
 }
 
 async function runValidation(files) {

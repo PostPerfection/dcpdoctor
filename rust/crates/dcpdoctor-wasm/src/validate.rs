@@ -228,7 +228,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
             severity: Severity::Info,
             code: "hashes_skipped".to_string(),
             message: format!(
-                "{hashes_skipped} file(s) too large for browser hash verification (>10 MB)"
+                "{hashes_skipped} binary file(s) skipped for hash verification (use CLI for full check)"
             ),
             file: None,
         });
