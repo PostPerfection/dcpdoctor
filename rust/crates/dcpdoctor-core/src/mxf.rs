@@ -29,6 +29,7 @@ pub struct MxfInfo {
     pub essence_type: String,
     pub picture: Option<PictureDescriptor>,
     pub sound: Option<SoundDescriptor>,
+    pub file_size_bytes: u64,
 }
 
 /// Read MXF file metadata.
@@ -137,12 +138,15 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
         _ => (None, None, "unknown".to_string()),
     };
 
+    let file_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
     MxfInfo {
         valid: true,
         error: String::new(),
         essence_type,
         picture,
         sound,
+        file_size_bytes,
     }
 }
 

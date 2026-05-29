@@ -250,6 +250,35 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 }
             }
 
+            // J2K bitrate validation
+            if let Some(ref pic) = mxf_info.picture
+                && pic.frame_count > 0
+                && pic.frame_rate_num > 0
+                && pic.frame_rate_den > 0
+                && mxf_info.file_size_bytes > 0
+            {
+                let duration_secs =
+                    pic.frame_count as f64 * pic.frame_rate_den as f64 / pic.frame_rate_num as f64;
+                let bitrate_mbps =
+                    (mxf_info.file_size_bytes as f64 * 8.0) / (duration_secs * 1_000_000.0);
+
+                // SMPTE ST 429-4: 250 Mbps for 2K, 500 Mbps for 4K
+                let max_bitrate = if pic.width > 2048 { 500.0 } else { 250.0 };
+
+                if bitrate_mbps > max_bitrate {
+                    result.add(Note {
+                        severity: Severity::Error,
+                        code: Code::J2kBitrateExceeded,
+                        message: format!(
+                            "J2K bitrate {:.1} Mbps exceeds maximum {:.0} Mbps",
+                            bitrate_mbps, max_bitrate
+                        ),
+                        file: Some(full_path.clone()),
+                        line: 0,
+                    });
+                }
+            }
+
             // Sound validation
             if let Some(ref snd) = mxf_info.sound
                 && snd.sample_rate > 0
