@@ -121,6 +121,23 @@ main {
     transition: width 0.3s ease;
 }
 
+.cancel-btn {
+    margin-top: 1rem;
+    padding: 0.5rem 1.5rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+.cancel-btn:hover {
+    border-color: #ef4444;
+    color: #ef4444;
+}
+
 /* Results */
 .results {
     margin-top: 2rem;

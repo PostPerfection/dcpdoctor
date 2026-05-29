@@ -18,12 +18,32 @@ const pickBtn = document.getElementById('pick-btn');
 const progress = document.getElementById('progress');
 const progressFill = document.getElementById('progress-fill');
 const progressText = document.getElementById('progress-text');
+const cancelBtn = document.getElementById('cancel-btn');
 const results = document.getElementById('results');
 const resultHeader = document.getElementById('result-header');
 const resultIcon = document.getElementById('result-icon');
 const resultTitle = document.getElementById('result-title');
 const summary = document.getElementById('summary');
 const notesList = document.getElementById('notes-list');
+
+// Abort controller for cancelling in-progress validation
+let abortController = null;
+
+cancelBtn.addEventListener('click', () => {
+    if (abortController) {
+        abortController.abort();
+    }
+    resetToDropZone();
+});
+
+function resetToDropZone() {
+    abortController = null;
+    progress.classList.add('hidden');
+    results.classList.add('hidden');
+    dropZone.classList.remove('hidden');
+    progressFill.style.width = '0%';
+    progressText.textContent = 'Reading files...';
+}
 
 // Drag and drop
 dropZone.addEventListener('dragover', (e) => {
@@ -96,10 +116,12 @@ dropZone.addEventListener('click', (e) => {
 
 // Process a FileList from <input webkitdirectory> (Brave/Firefox/Safari fallback)
 async function processFileList(fileList) {
+    abortController = new AbortController();
     showProgress();
     const files = [];
 
     for (const file of fileList) {
+        if (abortController.signal.aborted) return;
         // webkitRelativePath gives "DirName/subdir/file.xml"
         const relPath = file.webkitRelativePath;
         // Strip the top-level directory name to get paths relative to DCP root
@@ -111,17 +133,21 @@ async function processFileList(fileList) {
         files.push(content);
     }
 
-    await runValidation(files);
+    if (!abortController.signal.aborted) {
+        await runValidation(files);
+    }
 }
 
 // Process a FileSystemDirectoryHandle (modern API)
 async function processDirectoryHandle(dirHandle) {
+    abortController = new AbortController();
     showProgress();
     const files = [];
     let fileCount = 0;
 
     async function readDir(handle, prefix = '') {
         for await (const [name, entry] of handle.entries()) {
+            if (abortController.signal.aborted) return;
             if (name.startsWith('.')) continue;
             const path = prefix ? `${prefix}/${name}` : name;
             if (entry.kind === 'file') {
@@ -137,11 +163,14 @@ async function processDirectoryHandle(dirHandle) {
     }
 
     await readDir(dirHandle);
-    await runValidation(files);
+    if (!abortController.signal.aborted) {
+        await runValidation(files);
+    }
 }
 
 // Process a webkitGetAsEntry directory (fallback)
 async function processDirectory(entry) {
+    abortController = new AbortController();
     showProgress();
     const files = [];
 
@@ -150,6 +179,7 @@ async function processDirectory(entry) {
             const reader = dirEntry.createReader();
             reader.readEntries(async (entries) => {
                 for (const entry of entries) {
+                    if (abortController.signal.aborted) break;
                     if (entry.name.startsWith('.')) continue;
                     const path = prefix ? `${prefix}/${entry.name}` : entry.name;
                     if (entry.isFile) {
@@ -167,7 +197,9 @@ async function processDirectory(entry) {
     }
 
     await readDir(entry);
-    await runValidation(files);
+    if (!abortController.signal.aborted) {
+        await runValidation(files);
+    }
 }
 
 function getFile(fileEntry) {
