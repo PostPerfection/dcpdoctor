@@ -30,6 +30,7 @@ const notesList = document.getElementById('notes-list');
 const hashQueueSection = document.getElementById('hash-queue');
 const hashQueueList = document.getElementById('hash-queue-list');
 const hashStartBtn = document.getElementById('hash-start');
+const hashCancelBtn = document.getElementById('hash-cancel');
 const hashSelectAll = document.getElementById('hash-select-all');
 const hashClear = document.getElementById('hash-clear');
 const hashStatus = document.getElementById('hash-status');
@@ -399,14 +400,20 @@ function populateHashQueue(files, result) {
 
 function renderHashQueue() {
     hashQueueList.innerHTML = '';
+    const isRunning = hashAbort !== null;
     hashQueue.forEach((item, idx) => {
         const el = document.createElement('div');
         el.className = 'hash-item';
         el.dataset.idx = idx;
+        const canReorder = !isRunning && item.status === 'pending';
         el.innerHTML = `
-            <input type="checkbox" ${item.selected ? 'checked' : ''} data-idx="${idx}" class="hash-cb">
+            <input type="checkbox" ${item.selected ? 'checked' : ''} data-idx="${idx}" class="hash-cb" ${isRunning ? 'disabled' : ''}>
             <span class="hash-item-name" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</span>
             <span class="hash-item-size">${formatSize(item.size)}</span>
+            ${canReorder ? `<span class="priority-btns">
+                <button data-idx="${idx}" data-dir="up" class="move-btn" ${idx === 0 ? 'disabled' : ''}>▲</button>
+                <button data-idx="${idx}" data-dir="down" class="move-btn" ${idx === hashQueue.length - 1 ? 'disabled' : ''}>▼</button>
+            </span>` : '<span></span>'}
             <span class="hash-item-status ${item.status}">${statusLabel(item.status)}</span>
             ${item.status === 'hashing' ? `
             <div class="hash-item-progress">
@@ -422,6 +429,20 @@ function renderHashQueue() {
             const idx = parseInt(e.target.dataset.idx);
             hashQueue[idx].selected = e.target.checked;
             updateHashControls();
+        });
+    });
+
+    // Priority move handlers
+    hashQueueList.querySelectorAll('.move-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const idx = parseInt(e.target.dataset.idx);
+            const dir = e.target.dataset.dir;
+            if (dir === 'up' && idx > 0) {
+                [hashQueue[idx - 1], hashQueue[idx]] = [hashQueue[idx], hashQueue[idx - 1]];
+            } else if (dir === 'down' && idx < hashQueue.length - 1) {
+                [hashQueue[idx], hashQueue[idx + 1]] = [hashQueue[idx + 1], hashQueue[idx]];
+            }
+            renderHashQueue();
         });
     });
 }
@@ -446,8 +467,12 @@ function statusLabel(status) {
 
 function updateHashControls() {
     const selectedCount = hashQueue.filter(i => i.selected).length;
-    hashStartBtn.disabled = selectedCount === 0;
-    hashStatus.textContent = `${selectedCount}/${hashQueue.length} selected`;
+    const isRunning = hashAbort !== null;
+    hashStartBtn.disabled = isRunning || selectedCount === 0;
+    hashStartBtn.textContent = isRunning ? 'Running…' : 'Verify Selected';
+    hashStatus.textContent = isRunning
+        ? 'Verifying...'
+        : `${selectedCount}/${hashQueue.length} selected`;
 }
 
 hashSelectAll.addEventListener('click', () => {
@@ -466,10 +491,19 @@ hashStartBtn.addEventListener('click', () => {
     runHashVerification();
 });
 
+hashCancelBtn.addEventListener('click', () => {
+    if (hashAbort) {
+        hashAbort.abort();
+    }
+});
+
 async function runHashVerification() {
     hashAbort = new AbortController();
     hashStartBtn.disabled = true;
+    hashCancelBtn.classList.remove('hidden');
     hashOverallProgress.classList.remove('hidden');
+    updateHashControls();
+    renderHashQueue();
 
     const selected = hashQueue.filter(i => i.selected && i.status === 'pending');
     const totalBytes = selected.reduce((sum, i) => sum + i.size, 0);
@@ -484,7 +518,7 @@ async function runHashVerification() {
         item.progress = 0;
         renderHashQueue();
 
-        const computed = await hashFileStreaming(item.file, (bytesDone) => {
+        const computed = await hashFileStreaming(item.file, hashAbort.signal, (bytesDone) => {
             item.progress = Math.round((bytesDone / item.size) * 100);
             const overallPct = Math.round(((doneBytes + bytesDone) / totalBytes) * 100);
             hashProgressFill.style.width = `${overallPct}%`;
@@ -494,6 +528,13 @@ async function runHashVerification() {
             if (el) el.style.width = `${item.progress}%`;
         });
 
+        if (hashAbort.signal.aborted) {
+            // Reset current item back to pending
+            item.status = 'pending';
+            item.progress = 0;
+            break;
+        }
+
         doneBytes += item.size;
 
         if (item.expectedHash) {
@@ -501,7 +542,6 @@ async function runHashVerification() {
             if (item.status === 'pass') passCount++;
             else failCount++;
         } else {
-            // No expected hash to compare — just mark as pass (computed successfully)
             item.status = 'pass';
             passCount++;
         }
@@ -509,21 +549,30 @@ async function runHashVerification() {
         renderHashQueue();
     }
 
-    hashProgressFill.style.width = '100%';
-    hashProgressText.textContent = `Done — ${passCount} passed, ${failCount} failed`;
-    hashStartBtn.disabled = false;
+    const cancelled = hashAbort.signal.aborted;
     hashAbort = null;
+    hashCancelBtn.classList.add('hidden');
+    renderHashQueue();
+    updateHashControls();
+
+    if (cancelled) {
+        hashProgressText.textContent = `Cancelled — ${passCount} passed, ${failCount} failed`;
+    } else {
+        hashProgressFill.style.width = '100%';
+        hashProgressText.textContent = `Done — ${passCount} passed, ${failCount} failed`;
+    }
 }
 
 // === Streaming SHA-1 via WASM ===
 
 const CHUNK_SIZE = 1048576; // 1 MB
 
-async function hashFileStreaming(file, onProgress) {
+async function hashFileStreaming(file, signal, onProgress) {
     const hasher = new Sha1Hasher();
     let offset = 0;
 
     while (offset < file.size) {
+        if (signal.aborted) return null;
         const end = Math.min(offset + CHUNK_SIZE, file.size);
         const slice = file.slice(offset, end);
         const buf = await slice.arrayBuffer();
@@ -534,5 +583,6 @@ async function hashFileStreaming(file, onProgress) {
         await new Promise(r => setTimeout(r, 0));
     }
 
+    if (signal.aborted) return null;
     return hasher.finalize();
 }
