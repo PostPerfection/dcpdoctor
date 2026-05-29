@@ -155,6 +155,8 @@ async function enqueueDcpFromHandle(dirHandle) {
             if (entry.kind === 'file') {
                 const file = await entry.getFile();
                 files.push(await readFileContent(file, path));
+                // Yield to event loop so UI stays responsive
+                await new Promise(r => setTimeout(r, 0));
             } else if (entry.kind === 'directory') {
                 await readDir(entry, path);
             }
@@ -187,6 +189,8 @@ async function enqueueDcpFromEntry(entry) {
                     if (e.isFile) {
                         const file = await new Promise(r => e.file(r));
                         files.push(await readFileContent(file, path));
+                        // Yield to event loop so UI stays responsive
+                        await new Promise(r => setTimeout(r, 0));
                     } else if (e.isDirectory) {
                         await readDir(e, path);
                     }
@@ -205,7 +209,6 @@ async function enqueueDcpFromEntry(entry) {
 }
 
 async function enqueueDcpFromFileList(fileList) {
-    // Detect DCP name from first file's webkitRelativePath
     const firstName = fileList[0]?.webkitRelativePath?.split('/')[0] || 'DCP';
     const dcpId = nextDcpId++;
     const item = { id: dcpId, name: firstName, fileCount: 0, status: 'reading', files: [], result: null };
@@ -220,6 +223,8 @@ async function enqueueDcpFromFileList(fileList) {
         const path = parts.slice(1).join('/');
         if (path.startsWith('.')) continue;
         files.push(await readFileContent(file, path));
+        // Yield to event loop every file so UI stays responsive
+        if (i % 5 === 0) await new Promise(r => setTimeout(r, 0));
     }
 
     item.files = files;
