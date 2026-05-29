@@ -213,11 +213,13 @@ function createQueueItem(name) {
         id: nextId++,
         name,
         fileCount: 0,
-        status: 'reading', // reading | validating | done | failed | cancelled
+        status: 'reading', // reading | pending | validating | done | failed | cancelled
         result: null,
         error: null,
         worker: null,
         files: null,
+        progressDetail: null,
+        progressPercent: null,
     };
     queue.push(item);
     renderQueue();
@@ -234,9 +236,9 @@ function isMetadataFile(path) {
 async function readFileEntry(file, path) {
     if (isMetadataFile(path)) {
         const text = await file.text();
-        return { path, content: text, is_base64: false, size: file.size, skipped: false };
+        return { path, content: text, is_base64: false, size: file.size, skipped: false, file: null };
     } else {
-        return { path, content: null, is_base64: false, size: file.size, skipped: true };
+        return { path, content: null, is_base64: false, size: file.size, skipped: true, file };
     }
 }
 
@@ -272,10 +274,14 @@ function startValidation(item) {
 
         if (type === 'progress') {
             item.status = 'validating';
+            item.progressDetail = e.data.detail || null;
+            item.progressPercent = e.data.percent ?? null;
             renderQueue();
         } else if (type === 'done') {
             item.status = result.valid ? 'done' : 'failed';
             item.result = result;
+            item.progressDetail = null;
+            item.progressPercent = null;
             item.worker = null;
             activeWorkers--;
             worker.terminate();
@@ -284,6 +290,8 @@ function startValidation(item) {
         } else if (type === 'error') {
             item.status = 'failed';
             item.error = error;
+            item.progressDetail = null;
+            item.progressPercent = null;
             item.worker = null;
             activeWorkers--;
             worker.terminate();
@@ -301,7 +309,7 @@ function startValidation(item) {
         drainQueue();
     };
 
-    // Send files to worker for validation
+    // Send metadata for WASM validation + raw File objects for hash streaming
     const filesForWasm = item.files.map(f => ({
         path: f.path,
         content: f.content,
@@ -310,7 +318,13 @@ function startValidation(item) {
         skipped: f.skipped,
     }));
 
-    worker.postMessage({ type: 'validate', id: item.id, files: filesForWasm });
+    // Build a map of path -> File for binary files the worker will hash
+    const binaryFiles = {};
+    for (const f of item.files) {
+        if (f.file) binaryFiles[f.path] = f.file;
+    }
+
+    worker.postMessage({ type: 'validate', id: item.id, files: filesForWasm, binaryFiles });
 }
 
 function cancelItem(id) {
@@ -344,6 +358,17 @@ function restartItem(id) {
     drainQueue();
 }
 
+function moveItem(id, direction) {
+    const idx = queue.findIndex(i => i.id === id);
+    if (idx === -1) return;
+    const newIdx = idx + direction;
+    if (newIdx < 0 || newIdx >= queue.length) return;
+    // Only swap between pending items
+    if (queue[newIdx].status !== 'pending') return;
+    [queue[idx], queue[newIdx]] = [queue[newIdx], queue[idx]];
+    renderQueue();
+}
+
 // === Render ===
 
 function renderQueue() {
@@ -365,8 +390,13 @@ function renderQueue() {
         // Progress
         const tdProgress = document.createElement('td');
         tdProgress.className = 'cell-progress';
-        if (item.status === 'reading' || item.status === 'validating') {
-            tdProgress.innerHTML = `<div class="progress-bar-mini"><div class="progress-fill-mini indeterminate"></div></div>`;
+        if (item.status === 'validating' && item.progressPercent != null) {
+            const pct = Math.round(item.progressPercent);
+            const detail = item.progressDetail ? escapeHtml(item.progressDetail) : '';
+            tdProgress.innerHTML = `<div class="progress-bar-mini"><div class="progress-fill-mini" style="width:${pct}%"></div></div><span class="progress-detail">${detail} ${pct}%</span>`;
+        } else if (item.status === 'reading' || item.status === 'validating') {
+            const detail = item.progressDetail ? escapeHtml(item.progressDetail) : '';
+            tdProgress.innerHTML = `<div class="progress-bar-mini"><div class="progress-fill-mini indeterminate"></div></div>${detail ? `<span class="progress-detail">${detail}</span>` : ''}`;
         } else if (item.status === 'cancelled') {
             tdProgress.innerHTML = `<div class="progress-bar-mini"><div class="progress-fill-mini cancelled-bar"></div></div>`;
         } else if (item.status === 'pending') {
@@ -407,6 +437,22 @@ function renderQueue() {
             restartBtn.textContent = 'Restart';
             restartBtn.onclick = (e) => { e.stopPropagation(); restartItem(item.id); };
             tdAction.appendChild(restartBtn);
+        } else if (item.status === 'pending') {
+            const idx = queue.indexOf(item);
+            const upBtn = document.createElement('button');
+            upBtn.className = 'btn-priority';
+            upBtn.textContent = '▲';
+            upBtn.title = 'Move up (higher priority)';
+            upBtn.disabled = idx === 0 || queue[idx - 1]?.status !== 'pending';
+            upBtn.onclick = (e) => { e.stopPropagation(); moveItem(item.id, -1); };
+            const downBtn = document.createElement('button');
+            downBtn.className = 'btn-priority';
+            downBtn.textContent = '▼';
+            downBtn.title = 'Move down (lower priority)';
+            downBtn.disabled = idx === queue.length - 1 || queue[idx + 1]?.status !== 'pending';
+            downBtn.onclick = (e) => { e.stopPropagation(); moveItem(item.id, 1); };
+            tdAction.appendChild(upBtn);
+            tdAction.appendChild(downBtn);
         }
 
         tr.appendChild(tdName);

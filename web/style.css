@@ -218,6 +218,17 @@ main {
     100% { transform: translateX(350%); }
 }
 
+.progress-detail {
+    display: block;
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 180px;
+}
+
 /* Result badges */
 .result-badge {
     display: inline-flex;
@@ -282,6 +293,29 @@ main {
 .btn-restart-small:hover {
     background: rgba(77,166,255,0.1);
     border-color: var(--accent-light);
+}
+
+.btn-priority {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.2);
+    color: var(--text-muted);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin: 0 1px;
+}
+
+.btn-priority:hover:not(:disabled) {
+    background: rgba(255,255,255,0.05);
+    border-color: rgba(255,255,255,0.4);
+    color: var(--text);
+}
+
+.btn-priority:disabled {
+    opacity: 0.3;
+    cursor: default;
 }
 
 /* Tooltip */
