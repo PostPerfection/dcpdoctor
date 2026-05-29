@@ -6,6 +6,7 @@ on:
     paths:
       - 'rust/crates/dcpdoctor-wasm/**'
       - 'web/**'
+      - 'docs/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -37,13 +38,19 @@ jobs:
         working-directory: rust/crates/dcpdoctor-wasm
         run: wasm-pack build --target web --release --out-dir ../../../web/pkg
 
+      - name: Assemble site
+        run: |
+          mkdir -p _site/validate
+          cp -r docs/* _site/
+          cp -r web/* _site/validate/
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: web
+          path: _site
 
   deploy:
     needs: build
