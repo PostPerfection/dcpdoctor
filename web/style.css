@@ -362,3 +362,126 @@ footer a {
     .cell-progress { width: 80px; }
     .cell-name { max-width: 120px; }
 }
+
+/* Detail Panel */
+.detail-panel {
+    margin-top: 1rem;
+    background: var(--surface);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.btn-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+}
+
+.btn-close:hover {
+    background: rgba(255,255,255,0.1);
+    color: var(--text);
+}
+
+.detail-content {
+    padding: 1rem;
+    max-height: 400px;
+    overflow-y: auto;
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+
+.detail-summary {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.detail-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 0.85rem;
+}
+
+.detail-badge.pass {
+    background: rgba(76,175,80,0.2);
+    color: var(--success);
+}
+
+.detail-badge.fail {
+    background: rgba(244,67,54,0.2);
+    color: var(--error);
+}
+
+.detail-meta {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.detail-notes {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.detail-note {
+    padding: 0.4rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
+.detail-note.note-error {
+    background: rgba(244,67,54,0.08);
+}
+
+.detail-note.note-warning {
+    background: rgba(255,152,0,0.08);
+}
+
+.detail-note.note-info {
+    background: rgba(33,150,243,0.08);
+}
+
+.note-msg {
+    color: var(--text);
+}
+
+.note-file {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    margin-left: 0.5rem;
+}
+
+.detail-status {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.detail-error {
+    color: var(--error);
+}
+
+/* Selected row highlight */
+tr.selected {
+    background: rgba(77,166,255,0.1) !important;
+    outline: 1px solid rgba(77,166,255,0.3);
+}

@@ -21,6 +21,17 @@ const queueSection = document.getElementById('queue-section');
 const queueBody = document.getElementById('queue-body');
 const addMoreBtn = document.getElementById('add-more-btn');
 const tooltip = document.getElementById('detail-tooltip');
+const detailPanel = document.getElementById('detail-panel');
+const detailTitle = document.getElementById('detail-title');
+const detailContent = document.getElementById('detail-content');
+const detailClose = document.getElementById('detail-close');
+
+let selectedItemId = null;
+
+detailClose.addEventListener('click', () => {
+    detailPanel.classList.add('hidden');
+    selectedItemId = null;
+});
 
 // === File input fallback ===
 const fileInput = document.createElement('input');
@@ -461,6 +472,12 @@ function renderQueue() {
         tr.appendChild(tdResult);
         tr.appendChild(tdAction);
 
+        // Click to show detail panel
+        tr.addEventListener('click', () => showDetail(item));
+        if (item.id === selectedItemId) {
+            tr.classList.add('selected');
+        }
+
         // Hover for details
         tr.addEventListener('mouseenter', (e) => showTooltip(item, e));
         tr.addEventListener('mouseleave', hideTooltip);
@@ -519,6 +536,54 @@ function positionTooltip(e) {
 
 function hideTooltip() {
     tooltip.classList.add('hidden');
+}
+
+// === Detail Panel ===
+
+function showDetail(item) {
+    selectedItemId = item.id;
+    detailTitle.textContent = item.name;
+
+    let html = '';
+
+    if (item.status === 'reading') {
+        html = '<p class="detail-status">Reading files…</p>';
+    } else if (item.status === 'pending') {
+        html = '<p class="detail-status">Waiting in queue…</p>';
+    } else if (item.status === 'validating') {
+        html = '<p class="detail-status">Validating…</p>';
+    } else if (item.status === 'cancelled') {
+        html = '<p class="detail-status">Cancelled</p>';
+    } else if (item.error) {
+        html = `<p class="detail-error">Error: ${escapeHtml(item.error)}</p>`;
+    } else if (item.result) {
+        const r = item.result;
+        html += `<div class="detail-summary">`;
+        html += `<span class="detail-badge ${r.valid ? 'pass' : 'fail'}">${r.valid ? '✓ Valid' : '✗ Invalid'}</span>`;
+        html += ` <span class="detail-meta">Standard: ${escapeHtml(r.standard.toUpperCase())}</span>`;
+        html += ` <span class="detail-meta">Files: ${r.summary.files_checked}</span>`;
+        html += ` <span class="detail-meta">Hashes: ${r.summary.hashes_verified}✓ ${r.summary.hashes_failed}✗ ${r.summary.hashes_skipped} skipped</span>`;
+        html += `</div>`;
+
+        if (r.notes && r.notes.length > 0) {
+            html += `<div class="detail-notes">`;
+            for (const note of r.notes) {
+                const cls = note.severity === 'error' ? 'note-error' : note.severity === 'warning' ? 'note-warning' : 'note-info';
+                const icon = note.severity === 'error' ? '🔴' : note.severity === 'warning' ? '🟡' : '🔵';
+                html += `<div class="detail-note ${cls}">`;
+                html += `${icon} <span class="note-msg">${escapeHtml(note.message)}</span>`;
+                if (note.file) html += ` <span class="note-file">${escapeHtml(note.file)}</span>`;
+                html += `</div>`;
+            }
+            html += `</div>`;
+        } else {
+            html += `<p class="detail-status">No issues found.</p>`;
+        }
+    }
+
+    detailContent.innerHTML = html;
+    detailPanel.classList.remove('hidden');
+    renderQueue(); // re-render to highlight selected row
 }
 
 function escapeHtml(str) {

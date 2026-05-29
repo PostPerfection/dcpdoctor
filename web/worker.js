@@ -29,7 +29,6 @@ self.onmessage = async (e) => {
             // Phase 2: Hash verification for binary files
             const assetHashes = result.asset_hashes || {};
             const hashPaths = Object.keys(assetHashes);
-
             if (hashPaths.length > 0 && binaryFiles) {
                 let hashesVerified = result.summary.hashes_verified || 0;
                 let hashesFailed = result.summary.hashes_failed || 0;
