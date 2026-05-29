@@ -210,3 +210,40 @@ fn read_u16_be(data: &[u8]) -> u16 {
 fn read_u32_be(data: &[u8]) -> u32 {
     (data[0] as u32) << 24 | (data[1] as u32) << 16 | (data[2] as u32) << 8 | data[3] as u32
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_parse_j2k_from_real_mxf() {
+        let path =
+            "/home/aaron/src/dci-ctp/tests/generated/short_2k_24fps/picture_b18b5597-e6f0-4dac-a88a-a44938cc92eb.mxf";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping test — MXF fixture not found");
+            return;
+        }
+        let data = fs::read(path).unwrap();
+        let header = &data[..std::cmp::min(2 * 1024 * 1024, data.len())];
+        let result = parse_j2k_from_mxf(header);
+        assert!(
+            result.is_some(),
+            "Should find J2K codestream in picture MXF"
+        );
+        let h = result.unwrap();
+        eprintln!(
+            "J2K header: {}×{}, {} components, bit_depths={:?}, levels={}, cb={}×{}, irrev={}, prog={}",
+            h.width, h.height, h.num_components, h.bit_depths, h.decomposition_levels,
+            h.codeblock_width, h.codeblock_height, h.irreversible_wavelet, h.progression_order
+        );
+        assert_eq!(h.width, 2048);
+        assert!(h.height > 0, "Height should be non-zero");
+        assert_eq!(h.num_components, 3);
+        // Validate structure was parsed — actual values depend on source material
+        assert!(!h.bit_depths.is_empty());
+        assert!(h.decomposition_levels > 0);
+        assert!(h.codeblock_width > 0);
+        assert!(h.codeblock_height > 0);
+    }
+}
