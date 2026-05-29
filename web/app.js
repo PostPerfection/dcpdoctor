@@ -120,15 +120,18 @@ async function processFileList(fileList) {
     showProgress();
     const files = [];
 
-    for (const file of fileList) {
+    for (let i = 0; i < fileList.length; i++) {
         if (abortController.signal.aborted) return;
+        const file = fileList[i];
         // webkitRelativePath gives "DirName/subdir/file.xml"
         const relPath = file.webkitRelativePath;
         // Strip the top-level directory name to get paths relative to DCP root
         const parts = relPath.split('/');
         const path = parts.slice(1).join('/');
         if (path.startsWith('.')) continue;
-        updateProgress(`Reading ${path}...`, -1);
+        updateProgress(`Reading ${path}... (${i + 1}/${fileList.length})`, (i / fileList.length) * 80);
+        // Yield to event loop every file so UI stays responsive
+        await new Promise(r => setTimeout(r, 0));
         const content = await readFileContent(file, path);
         files.push(content);
     }
@@ -153,6 +156,8 @@ async function processDirectoryHandle(dirHandle) {
             if (entry.kind === 'file') {
                 fileCount++;
                 updateProgress(`Reading ${path}...`, -1);
+                // Yield to event loop so UI stays responsive
+                await new Promise(r => setTimeout(r, 0));
                 const file = await entry.getFile();
                 const content = await readFileContent(file, path);
                 files.push(content);
@@ -206,8 +211,9 @@ function getFile(fileEntry) {
     return new Promise((resolve) => fileEntry.file(resolve));
 }
 
-// Max file size to read in browser (100 MB). Larger files are recorded but not loaded.
-const MAX_FILE_SIZE = 100 * 1024 * 1024;
+// Max file size to read in browser (10 MB). Larger binary files are skipped.
+// XML metadata is always read regardless of size.
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 async function readFileContent(file, path) {
     const isXml = /\.(xml)$/i.test(path) || 
