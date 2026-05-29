@@ -32,7 +32,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
                 message: "No ASSETMAP or ASSETMAP.xml found in DCP".to_string(),
                 file: None,
             });
-            return build_result(false, "unknown", notes, files.len(), 0, 0, 0);
+            return build_result(false, "unknown", notes, files.len(), 0, 0, 0, HashMap::new());
         }
     };
 
@@ -53,7 +53,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
                 message: format!("Failed to parse ASSETMAP: {e}"),
                 file: Some(assetmap_entry.path.clone()),
             });
-            return build_result(false, standard, notes, files.len(), 0, 0, 0);
+            return build_result(false, standard, notes, files.len(), 0, 0, 0, HashMap::new());
         }
     };
 
@@ -84,7 +84,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
             message: "No Packing List (PKL) found in ASSETMAP".to_string(),
             file: None,
         });
-        return build_result(false, standard, notes, files.len(), 0, 0, 0);
+        return build_result(false, standard, notes, files.len(), 0, 0, 0, HashMap::new());
     }
 
     let mut pkls: Vec<Pkl> = Vec::new();
@@ -107,6 +107,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
 
     // 5. Verify PKL hashes against file contents
     let mut hashes_skipped: usize = 0;
+    let mut asset_hashes: HashMap<String, String> = HashMap::new();
     for pkl in &pkls {
         for asset in &pkl.assets {
             // Find the file by matching against assetmap paths
@@ -115,6 +116,10 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
                 if let Some(entry) = file_map.get(path.as_str()) {
                     if entry.skipped {
                         hashes_skipped += 1;
+                        // Store expected hash for browser hash queue
+                        if !asset.hash.is_empty() {
+                            asset_hashes.insert(path.clone(), asset.hash.clone());
+                        }
                         continue;
                     }
                     let content_bytes = get_raw_bytes(entry);
@@ -243,6 +248,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
         hashes_verified,
         hashes_failed,
         hashes_skipped,
+        asset_hashes,
     )
 }
 
@@ -381,6 +387,7 @@ fn build_result(
     hashes_verified: usize,
     hashes_failed: usize,
     hashes_skipped: usize,
+    asset_hashes: HashMap<String, String>,
 ) -> ValidationResult {
     let errors = notes
         .iter()
@@ -408,5 +415,6 @@ fn build_result(
             hashes_failed,
             hashes_skipped,
         },
+        asset_hashes,
     }
 }

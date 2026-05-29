@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -118,12 +119,17 @@ enum class Standard
   smpte
 };
 
+/// Progress callback: (current_file, file_index, total_files, bytes_done, bytes_total)
+using HashProgressCallback =
+    std::function<void(const std::filesystem::path&, int, int, std::uintmax_t, std::uintmax_t)>;
+
 struct VerifyOptions
 {
   bool check_hashes = true;
   bool check_signatures = true;
   bool check_picture_details = false;
   bool strict_smpte = false;
+  HashProgressCallback hash_progress;
 };
 
 struct VerifyResult

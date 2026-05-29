@@ -123,6 +123,8 @@ VerifyResult verify(const fs::path& dcp_dir, const VerifyOptions& opts)
     // Verify PKL asset hashes if requested
     if(opts.check_hashes)
     {
+      int file_index = 0;
+      int total_files = static_cast<int>(pkl->assets.size());
       for(const auto& pkl_asset : pkl->assets)
       {
         // Check that referenced assets exist in ASSETMAP
@@ -131,6 +133,7 @@ VerifyResult verify(const fs::path& dcp_dir, const VerifyOptions& opts)
         {
           result.add({Severity::warning, Code::pkl_missing_asset_reference,
                       "PKL references unknown asset: " + pkl_asset.id, full_path});
+          ++file_index;
           continue;
         }
 
@@ -140,7 +143,17 @@ VerifyResult verify(const fs::path& dcp_dir, const VerifyOptions& opts)
           auto asset_path = dcp_dir / it->second;
           if(fs::exists(asset_path))
           {
-            auto computed = sha1_base64(asset_path);
+            std::optional<std::string> computed;
+            if(opts.hash_progress)
+            {
+              computed = sha1_base64(asset_path, [&](std::uintmax_t bytes_done, std::uintmax_t bytes_total) {
+                opts.hash_progress(asset_path, file_index, total_files, bytes_done, bytes_total);
+              });
+            }
+            else
+            {
+              computed = sha1_base64(asset_path);
+            }
             if(computed && *computed != pkl_asset.hash)
             {
               result.add({Severity::error, Code::pkl_hash_mismatch,
@@ -150,6 +163,7 @@ VerifyResult verify(const fs::path& dcp_dir, const VerifyOptions& opts)
             }
           }
         }
+        ++file_index;
       }
     }
 

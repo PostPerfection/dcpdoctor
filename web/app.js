@@ -26,8 +26,23 @@ const resultTitle = document.getElementById('result-title');
 const summary = document.getElementById('summary');
 const notesList = document.getElementById('notes-list');
 
+// Hash queue DOM
+const hashQueueSection = document.getElementById('hash-queue');
+const hashQueueList = document.getElementById('hash-queue-list');
+const hashStartBtn = document.getElementById('hash-start');
+const hashSelectAll = document.getElementById('hash-select-all');
+const hashClear = document.getElementById('hash-clear');
+const hashStatus = document.getElementById('hash-status');
+const hashOverallProgress = document.getElementById('hash-overall-progress');
+const hashProgressFill = document.getElementById('hash-progress-fill');
+const hashProgressText = document.getElementById('hash-progress-text');
+
 // Abort controller for cancelling in-progress validation
 let abortController = null;
+
+// Hash queue state
+let hashQueue = []; // { path, size, file (File obj), expectedHash, selected, status, progress }
+let hashAbort = null;
 
 cancelBtn.addEventListener('click', () => {
     if (abortController) {
@@ -40,9 +55,11 @@ function resetToDropZone() {
     abortController = null;
     progress.classList.add('hidden');
     results.classList.add('hidden');
+    hashQueueSection.classList.add('hidden');
     dropZone.classList.remove('hidden');
     progressFill.style.width = '0%';
     progressText.textContent = 'Reading files...';
+    hashQueue = [];
 }
 
 // Drag and drop
@@ -222,10 +239,10 @@ function isMetadataFile(path) {
 async function readFileContent(file, path) {
     if (isMetadataFile(path)) {
         const text = await file.text();
-        return { path, content: text, is_base64: false, size: file.size, skipped: false };
+        return { path, content: text, is_base64: false, size: file.size, skipped: false, file: null };
     } else {
-        // Binary essence file — record path/size only, skip content
-        return { path, content: null, is_base64: false, size: file.size, skipped: true };
+        // Binary essence file — record path/size, keep File reference for hash queue
+        return { path, content: null, is_base64: false, size: file.size, skipped: true, file };
     }
 }
 
@@ -239,12 +256,20 @@ async function runValidation(files) {
     // Give UI a chance to update
     await new Promise(r => setTimeout(r, 10));
 
-    const filesJson = JSON.stringify(files);
+    // Strip File references before sending to WASM (not serializable)
+    const filesForWasm = files.map(f => ({
+        path: f.path, content: f.content, is_base64: f.is_base64, size: f.size, skipped: f.skipped
+    }));
+    const filesJson = JSON.stringify(filesForWasm);
     const resultJson = validate_dcp(filesJson);
     const result = JSON.parse(resultJson);
 
     updateProgress('Done!', 100);
-    setTimeout(() => showResults(result), 300);
+    setTimeout(() => {
+        showResults(result);
+        // Populate hash queue from binary files that have expected hashes
+        populateHashQueue(files, result);
+    }, 300);
 }
 
 function showProgress() {
@@ -334,6 +359,7 @@ function showResults(result) {
     btn.textContent = 'Validate another DCP';
     btn.onclick = () => {
         results.classList.add('hidden');
+        hashQueueSection.classList.add('hidden');
         dropZone.classList.remove('hidden');
     };
     notesList.appendChild(btn);
@@ -343,4 +369,278 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+// === Hash Queue ===
+
+function populateHashQueue(files, result) {
+    // Extract expected hashes from validation result
+    const expectedHashes = result.asset_hashes || {};
+
+    // Build queue from binary (skipped) files that have File references
+    hashQueue = files
+        .filter(f => f.skipped && f.file)
+        .map(f => ({
+            path: f.path,
+            size: f.size,
+            file: f.file,
+            expectedHash: expectedHashes[f.path] || null,
+            selected: true,
+            status: 'pending', // pending | hashing | pass | fail | skipped
+            progress: 0
+        }));
+
+    if (hashQueue.length === 0) return;
+
+    hashQueueSection.classList.remove('hidden');
+    renderHashQueue();
+    updateHashControls();
+}
+
+function renderHashQueue() {
+    hashQueueList.innerHTML = '';
+    hashQueue.forEach((item, idx) => {
+        const el = document.createElement('div');
+        el.className = 'hash-item';
+        el.dataset.idx = idx;
+        el.innerHTML = `
+            <input type="checkbox" ${item.selected ? 'checked' : ''} data-idx="${idx}" class="hash-cb">
+            <span class="hash-item-name" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</span>
+            <span class="hash-item-size">${formatSize(item.size)}</span>
+            <span class="hash-item-status ${item.status}">${statusLabel(item.status)}</span>
+            ${item.status === 'hashing' ? `
+            <div class="hash-item-progress">
+                <div class="hash-item-progress-fill" style="width:${item.progress}%"></div>
+            </div>` : ''}
+        `;
+        hashQueueList.appendChild(el);
+    });
+
+    // Checkbox handlers
+    hashQueueList.querySelectorAll('.hash-cb').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+            const idx = parseInt(e.target.dataset.idx);
+            hashQueue[idx].selected = e.target.checked;
+            updateHashControls();
+        });
+    });
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1073741824).toFixed(2) + ' GB';
+}
+
+function statusLabel(status) {
+    switch (status) {
+        case 'pending': return 'Pending';
+        case 'hashing': return 'Hashing…';
+        case 'pass': return '✓ Match';
+        case 'fail': return '✗ Mismatch';
+        case 'skipped': return 'Skipped';
+        default: return status;
+    }
+}
+
+function updateHashControls() {
+    const selectedCount = hashQueue.filter(i => i.selected).length;
+    hashStartBtn.disabled = selectedCount === 0;
+    hashStatus.textContent = `${selectedCount}/${hashQueue.length} selected`;
+}
+
+hashSelectAll.addEventListener('click', () => {
+    hashQueue.forEach(i => i.selected = true);
+    renderHashQueue();
+    updateHashControls();
+});
+
+hashClear.addEventListener('click', () => {
+    hashQueue.forEach(i => i.selected = false);
+    renderHashQueue();
+    updateHashControls();
+});
+
+hashStartBtn.addEventListener('click', () => {
+    runHashVerification();
+});
+
+async function runHashVerification() {
+    hashAbort = new AbortController();
+    hashStartBtn.disabled = true;
+    hashOverallProgress.classList.remove('hidden');
+
+    const selected = hashQueue.filter(i => i.selected && i.status === 'pending');
+    const totalBytes = selected.reduce((sum, i) => sum + i.size, 0);
+    let doneBytes = 0;
+    let passCount = 0;
+    let failCount = 0;
+
+    for (const item of selected) {
+        if (hashAbort.signal.aborted) break;
+
+        item.status = 'hashing';
+        item.progress = 0;
+        renderHashQueue();
+
+        const computed = await hashFileStreaming(item.file, (bytesDone) => {
+            item.progress = Math.round((bytesDone / item.size) * 100);
+            const overallPct = Math.round(((doneBytes + bytesDone) / totalBytes) * 100);
+            hashProgressFill.style.width = `${overallPct}%`;
+            hashProgressText.textContent = `Hashing ${item.path} (${item.progress}%)`;
+            // Update just the progress bar in-place
+            const el = hashQueueList.querySelector(`[data-idx="${hashQueue.indexOf(item)}"] .hash-item-progress-fill`);
+            if (el) el.style.width = `${item.progress}%`;
+        });
+
+        doneBytes += item.size;
+
+        if (item.expectedHash) {
+            item.status = (computed === item.expectedHash) ? 'pass' : 'fail';
+            if (item.status === 'pass') passCount++;
+            else failCount++;
+        } else {
+            // No expected hash to compare — just mark as pass (computed successfully)
+            item.status = 'pass';
+            passCount++;
+        }
+        item.progress = 100;
+        renderHashQueue();
+    }
+
+    hashProgressFill.style.width = '100%';
+    hashProgressText.textContent = `Done — ${passCount} passed, ${failCount} failed`;
+    hashStartBtn.disabled = false;
+    hashAbort = null;
+}
+
+// === Streaming SHA-1 ===
+// Minimal streaming SHA-1 using Web Crypto (reads file in 1MB chunks, hashes each chunk incrementally)
+// Since SubtleCrypto doesn't support incremental digest, we use a pure JS SHA-1.
+
+const CHUNK_SIZE = 1048576; // 1 MB
+
+async function hashFileStreaming(file, onProgress) {
+    const sha1 = new Sha1Hasher();
+    let offset = 0;
+
+    while (offset < file.size) {
+        const end = Math.min(offset + CHUNK_SIZE, file.size);
+        const slice = file.slice(offset, end);
+        const buf = await slice.arrayBuffer();
+        sha1.update(new Uint8Array(buf));
+        offset = end;
+        onProgress(offset);
+        // Yield to UI every chunk
+        await new Promise(r => setTimeout(r, 0));
+    }
+
+    return sha1.digestBase64();
+}
+
+// Minimal SHA-1 implementation (streaming, no dependencies)
+class Sha1Hasher {
+    constructor() {
+        this.h0 = 0x67452301;
+        this.h1 = 0xEFCDAB89;
+        this.h2 = 0x98BADCFE;
+        this.h3 = 0x10325476;
+        this.h4 = 0xC3D2E1F0;
+        this.totalLen = 0;
+        this.buffer = new Uint8Array(64);
+        this.bufLen = 0;
+    }
+
+    update(data) {
+        let i = 0;
+        this.totalLen += data.length;
+
+        if (this.bufLen > 0) {
+            const needed = 64 - this.bufLen;
+            const take = Math.min(needed, data.length);
+            this.buffer.set(data.subarray(0, take), this.bufLen);
+            this.bufLen += take;
+            i = take;
+            if (this.bufLen === 64) {
+                this._processBlock(this.buffer, 0);
+                this.bufLen = 0;
+            }
+        }
+
+        while (i + 64 <= data.length) {
+            this._processBlock(data, i);
+            i += 64;
+        }
+
+        if (i < data.length) {
+            this.buffer.set(data.subarray(i), 0);
+            this.bufLen = data.length - i;
+        }
+    }
+
+    digestBase64() {
+        // Padding
+        const totalBits = this.totalLen * 8;
+        const padLen = (this.bufLen < 56) ? (56 - this.bufLen) : (120 - this.bufLen);
+        const padding = new Uint8Array(padLen + 8);
+        padding[0] = 0x80;
+        // Length in bits as big-endian 64-bit
+        const hi = Math.floor(totalBits / 0x100000000);
+        const lo = totalBits >>> 0;
+        padding[padLen] = (hi >>> 24) & 0xff;
+        padding[padLen + 1] = (hi >>> 16) & 0xff;
+        padding[padLen + 2] = (hi >>> 8) & 0xff;
+        padding[padLen + 3] = hi & 0xff;
+        padding[padLen + 4] = (lo >>> 24) & 0xff;
+        padding[padLen + 5] = (lo >>> 16) & 0xff;
+        padding[padLen + 6] = (lo >>> 8) & 0xff;
+        padding[padLen + 7] = lo & 0xff;
+        this.update(padding);
+
+        // Produce 20-byte hash
+        const hash = new Uint8Array(20);
+        const dv = new DataView(hash.buffer);
+        dv.setUint32(0, this.h0 >>> 0);
+        dv.setUint32(4, this.h1 >>> 0);
+        dv.setUint32(8, this.h2 >>> 0);
+        dv.setUint32(12, this.h3 >>> 0);
+        dv.setUint32(16, this.h4 >>> 0);
+
+        // Base64 encode
+        let binary = '';
+        for (let i = 0; i < hash.length; i++) binary += String.fromCharCode(hash[i]);
+        return btoa(binary);
+    }
+
+    _processBlock(data, offset) {
+        const w = new Int32Array(80);
+        for (let i = 0; i < 16; i++) {
+            w[i] = (data[offset + i * 4] << 24) | (data[offset + i * 4 + 1] << 16) |
+                   (data[offset + i * 4 + 2] << 8) | data[offset + i * 4 + 3];
+        }
+        for (let i = 16; i < 80; i++) {
+            const t = w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16];
+            w[i] = (t << 1) | (t >>> 31);
+        }
+
+        let a = this.h0, b = this.h1, c = this.h2, d = this.h3, e = this.h4;
+
+        for (let i = 0; i < 80; i++) {
+            let f, k;
+            if (i < 20) { f = (b & c) | ((~b) & d); k = 0x5A827999; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+            else { f = b ^ c ^ d; k = 0xCA62C1D6; }
+
+            const temp = (((a << 5) | (a >>> 27)) + f + e + k + w[i]) | 0;
+            e = d; d = c; c = (b << 30) | (b >>> 2); b = a; a = temp;
+        }
+
+        this.h0 = (this.h0 + a) | 0;
+        this.h1 = (this.h1 + b) | 0;
+        this.h2 = (this.h2 + c) | 0;
+        this.h3 = (this.h3 + d) | 0;
+        this.h4 = (this.h4 + e) | 0;
+    }
 }

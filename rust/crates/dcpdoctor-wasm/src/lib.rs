@@ -1,5 +1,6 @@
 use wasm_bindgen::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 mod assetmap;
 mod cpl;
@@ -33,6 +34,9 @@ pub struct ValidationResult {
     pub standard: String,
     pub notes: Vec<Note>,
     pub summary: Summary,
+    /// Map of file path -> expected SHA-1 base64 hash (from PKL)
+    #[serde(default)]
+    pub asset_hashes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +93,7 @@ pub fn validate_dcp(files_json: &str) -> String {
                     hashes_failed: 0,
                     hashes_skipped: 0,
                 },
+                asset_hashes: HashMap::new(),
             };
             return serde_json::to_string(&result).unwrap();
         }

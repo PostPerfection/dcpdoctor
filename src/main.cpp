@@ -2,11 +2,13 @@
 #include <spdlog/spdlog.h>
 #include <libxml/parser.h>
 #include <libxml/xmlerror.h>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
+#include <unistd.h>
 #include "dcpdoctor/dcpdoctor.h"
 #include "dcpdoctor/advanced.h"
 #include "dcpdoctor/auto_qc.h"
@@ -869,6 +871,18 @@ int main(int argc, char* argv[])
   opts.check_picture_details = check_mxf || strict || deep_j2k;
   opts.strict_smpte = strict;
 
+  // Show per-file hash progress on TTY
+  bool is_tty = ::isatty(STDERR_FILENO);
+  if(opts.check_hashes && is_tty && !json)
+  {
+    opts.hash_progress = [](const std::filesystem::path& file, int file_idx, int total_files,
+                            std::uintmax_t bytes_done, std::uintmax_t bytes_total) {
+      int pct = bytes_total > 0 ? static_cast<int>((bytes_done * 100) / bytes_total) : 0;
+      std::fprintf(stderr, "\r\033[K  Hashing [%d/%d] %s (%d%%)", file_idx + 1, total_files,
+                   file.filename().c_str(), pct);
+    };
+  }
+
   dcpdoctor::ReportFormat format = dcpdoctor::ReportFormat::text;
   if(json)
     format = dcpdoctor::ReportFormat::json;
@@ -889,6 +903,8 @@ int main(int argc, char* argv[])
     spdlog::debug("Processing: {}", dir.string());
 
     auto result = dcpdoctor::verify(dir, opts);
+    if(opts.hash_progress)
+      std::fprintf(stderr, "\r\033[K");
 
     // BV2.1 compliance
     if(bv21)

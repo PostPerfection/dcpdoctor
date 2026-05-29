@@ -38,6 +38,26 @@
             <div class="summary" id="summary"></div>
             <div class="notes-list" id="notes-list"></div>
         </section>
+
+        <section id="hash-queue" class="hash-queue hidden">
+            <div class="hash-queue-header">
+                <h2>🔐 Hash Verification Queue</h2>
+                <p class="hint">Verify SHA-1 hashes of binary assets against the PKL. Files are processed sequentially in chunks.</p>
+            </div>
+            <div class="hash-queue-controls">
+                <button id="hash-start" class="btn-primary" disabled>Verify Selected</button>
+                <button id="hash-select-all" class="btn-secondary">Select All</button>
+                <button id="hash-clear" class="btn-secondary">Deselect All</button>
+                <span id="hash-status" class="hash-status"></span>
+            </div>
+            <div id="hash-queue-list" class="hash-queue-list"></div>
+            <div id="hash-overall-progress" class="hash-overall-progress hidden">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="hash-progress-fill"></div>
+                </div>
+                <p id="hash-progress-text">Preparing...</p>
+            </div>
+        </section>
     </main>
 
     <footer>

@@ -255,3 +255,164 @@ footer a {
     .drop-zone { padding: 2rem 1rem; }
     main { padding: 1rem; }
 }
+
+/* Hash Queue */
+.hash-queue {
+    margin-top: 2rem;
+    padding: 1.5rem;
+    background: var(--surface);
+    border-radius: var(--radius);
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+.hash-queue-header h2 {
+    font-size: 1.3rem;
+    margin-bottom: 0.5rem;
+}
+
+.hash-queue-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 1rem 0;
+    flex-wrap: wrap;
+}
+
+.btn-primary {
+    background: var(--accent-light);
+    color: #000;
+    border: none;
+    padding: 0.5rem 1.2rem;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn-primary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.btn-secondary {
+    background: rgba(255,255,255,0.08);
+    color: var(--text);
+    border: 1px solid rgba(255,255,255,0.15);
+    padding: 0.4rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.btn-secondary:hover {
+    background: rgba(255,255,255,0.12);
+}
+
+.hash-status {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-left: auto;
+}
+
+.hash-queue-list {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+}
+
+.hash-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 0.85rem;
+}
+
+.hash-item:last-child {
+    border-bottom: none;
+}
+
+.hash-item-name {
+    font-family: 'SF Mono', 'Consolas', monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.hash-item-size {
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.hash-item-status {
+    min-width: 70px;
+    text-align: center;
+    font-size: 0.8rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.hash-item-status.pending {
+    background: rgba(255,255,255,0.06);
+    color: var(--text-muted);
+}
+
+.hash-item-status.hashing {
+    background: rgba(77, 166, 255, 0.15);
+    color: var(--accent-light);
+}
+
+.hash-item-status.pass {
+    background: rgba(76, 175, 80, 0.15);
+    color: var(--success);
+}
+
+.hash-item-status.fail {
+    background: rgba(244, 67, 54, 0.15);
+    color: var(--error);
+}
+
+.hash-item-status.skipped {
+    background: rgba(255,255,255,0.04);
+    color: var(--text-muted);
+}
+
+.hash-item-progress {
+    grid-column: 2 / -1;
+    height: 3px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.hash-item-progress-fill {
+    height: 100%;
+    background: var(--accent-light);
+    transition: width 0.1s;
+    width: 0%;
+}
+
+.hash-overall-progress {
+    margin-top: 1rem;
+}
+
+.hash-queue-controls .priority-btns {
+    display: flex;
+    gap: 2px;
+}
+
+.priority-btns button {
+    background: rgba(255,255,255,0.06);
+    border: none;
+    color: var(--text-muted);
+    padding: 2px 6px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    border-radius: 3px;
+}
+
+.priority-btns button:hover {
+    background: rgba(255,255,255,0.12);
+    color: var(--text);
+}
