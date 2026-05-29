@@ -9,7 +9,7 @@ import init, { validate_dcp, Sha1Hasher, validate_mxf_file } from './pkg/dcpdoct
 let wasmReady = false;
 
 const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB chunks for hashing
-const MXF_HEADER_SIZE = 1024 * 1024; // Read first 1 MB of MXF for header parsing
+const MXF_HEADER_SIZE = 2 * 1024 * 1024; // Read first 2 MB of MXF for header + first J2K frame
 
 self.onmessage = async (e) => {
     const { type, id, files, binaryFiles } = e.data;

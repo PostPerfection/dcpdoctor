@@ -5,6 +5,8 @@ use wasm_bindgen::prelude::*;
 mod assetmap;
 mod cpl;
 mod hash;
+pub mod j2k;
+mod j2k_validate;
 pub mod mxf;
 mod mxf_validate;
 mod naming;
@@ -168,10 +170,20 @@ pub fn parse_mxf_header(data: &[u8]) -> String {
 ///
 /// Accepts the first ~1 MB of an MXF file and a path identifier.
 /// Returns a JSON array of Note objects with DCI compliance findings.
+/// Also parses embedded J2K codestream headers for JPEG 2000 profile validation.
 #[wasm_bindgen]
 pub fn validate_mxf_file(data: &[u8], path: &str) -> String {
     let metadata = mxf::parse_mxf(data);
-    let notes = mxf_validate::validate_mxf(path, &metadata);
+    let mut notes = mxf_validate::validate_mxf(path, &metadata);
+
+    // If this is a picture MXF, try to parse J2K codestream header
+    if metadata.essence_type == mxf::EssenceType::Jpeg2000 {
+        if let Some(j2k_header) = j2k::parse_j2k_from_mxf(data) {
+            let j2k_notes = j2k_validate::validate_j2k(path, &j2k_header);
+            notes.extend(j2k_notes);
+        }
+    }
+
     serde_json::to_string(&notes).unwrap()
 }
 
