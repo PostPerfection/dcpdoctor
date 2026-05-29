@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DcpDoctor — Online DCP/IMP Validator</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
     <header>
@@ -60,8 +60,19 @@
             <span id="version"></span>
         </p>
         <p class="privacy">🔒 All processing happens locally in your browser. No files are uploaded anywhere.</p>
+        <details class="limitations">
+            <summary>Limitations vs CLI</summary>
+            <ul>
+                <li>No MXF track-file inspection (picture/sound essence validation)</li>
+                <li>No KDM decryption or encrypted content support</li>
+                <li>No digital signature certificate chain verification</li>
+                <li>No J2K codestream or subtitle rendering validation</li>
+                <li>No timeline coherence checks beyond CPL structure</li>
+            </ul>
+            <p>For full validation, use <code>dcpdoctor validate &lt;path&gt;</code> on the command line.</p>
+        </details>
     </footer>
 
-    <script type="module" src="app.js"></script>
+    <script type="module" src="app.js?v=2"></script>
 </body>
 </html>

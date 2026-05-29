@@ -354,6 +354,29 @@ footer a {
     font-size: 0.8rem;
 }
 
+.limitations {
+    margin-top: 0.75rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.limitations summary {
+    cursor: pointer;
+    color: var(--text-muted);
+}
+
+.limitations ul {
+    margin: 0.4rem 0 0.4rem 1.5rem;
+    line-height: 1.6;
+}
+
+.limitations code {
+    background: rgba(255,255,255,0.06);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
+}
+
 /* Responsive */
 @media (max-width: 600px) {
     header h1 { font-size: 1.8rem; }
