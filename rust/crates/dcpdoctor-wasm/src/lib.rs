@@ -43,6 +43,7 @@ pub struct Summary {
     pub files_checked: usize,
     pub hashes_verified: usize,
     pub hashes_failed: usize,
+    pub hashes_skipped: usize,
 }
 
 /// A file entry passed from JavaScript.
@@ -50,12 +51,16 @@ pub struct Summary {
 pub struct FileEntry {
     /// Relative path within the DCP folder (e.g. "ASSETMAP.xml", "PKL_abc.xml")
     pub path: String,
-    /// File content as base64-encoded string (for binary) or raw UTF-8 (for XML)
-    pub content: String,
+    /// File content as base64-encoded string (for binary) or raw UTF-8 (for XML).
+    /// May be None if file was too large to read in browser.
+    pub content: Option<String>,
     /// Whether content is base64-encoded
     pub is_base64: bool,
     /// File size in bytes
     pub size: u64,
+    /// Whether content was skipped (file too large for browser)
+    #[serde(default)]
+    pub skipped: bool,
 }
 
 /// Main entry point: validate a DCP from a set of file entries.
@@ -82,6 +87,7 @@ pub fn validate_dcp(files_json: &str) -> String {
                     files_checked: 0,
                     hashes_verified: 0,
                     hashes_failed: 0,
+                    hashes_skipped: 0,
                 },
             };
             return serde_json::to_string(&result).unwrap();

@@ -32,7 +32,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
                 message: "No ASSETMAP or ASSETMAP.xml found in DCP".to_string(),
                 file: None,
             });
-            return build_result(false, "unknown", notes, files.len(), 0, 0);
+            return build_result(false, "unknown", notes, files.len(), 0, 0, 0);
         }
     };
 
@@ -53,7 +53,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
                 message: format!("Failed to parse ASSETMAP: {e}"),
                 file: Some(assetmap_entry.path.clone()),
             });
-            return build_result(false, standard, notes, files.len(), 0, 0);
+            return build_result(false, standard, notes, files.len(), 0, 0, 0);
         }
     };
 
@@ -84,7 +84,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
             message: "No Packing List (PKL) found in ASSETMAP".to_string(),
             file: None,
         });
-        return build_result(false, standard, notes, files.len(), 0, 0);
+        return build_result(false, standard, notes, files.len(), 0, 0, 0);
     }
 
     let mut pkls: Vec<Pkl> = Vec::new();
@@ -106,12 +106,17 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
     }
 
     // 5. Verify PKL hashes against file contents
+    let mut hashes_skipped: usize = 0;
     for pkl in &pkls {
         for asset in &pkl.assets {
             // Find the file by matching against assetmap paths
             let file_path = find_file_for_asset(&assetmap, &asset.id, &file_map);
             if let Some(path) = file_path {
                 if let Some(entry) = file_map.get(path.as_str()) {
+                    if entry.skipped {
+                        hashes_skipped += 1;
+                        continue;
+                    }
                     let content_bytes = get_raw_bytes(entry);
                     let computed = hash::compute_sha1_base64(&content_bytes);
                     if computed == asset.hash {
@@ -218,6 +223,17 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
         notes.extend(naming_notes);
     }
 
+    if hashes_skipped > 0 {
+        notes.push(Note {
+            severity: Severity::Info,
+            code: "hashes_skipped".to_string(),
+            message: format!(
+                "{hashes_skipped} file(s) too large for browser hash verification (>100 MB)"
+            ),
+            file: None,
+        });
+    }
+
     let has_errors = notes.iter().any(|n| matches!(n.severity, Severity::Error));
     build_result(
         !has_errors,
@@ -226,6 +242,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
         files.len(),
         hashes_verified,
         hashes_failed,
+        hashes_skipped,
     )
 }
 
@@ -330,19 +347,29 @@ fn find_file_for_asset(
 }
 
 fn get_content(entry: &FileEntry) -> String {
-    if entry.is_base64 {
-        let bytes = BASE64.decode(&entry.content).unwrap_or_default();
-        String::from_utf8_lossy(&bytes).to_string()
-    } else {
-        entry.content.clone()
+    match &entry.content {
+        None => String::new(),
+        Some(c) => {
+            if entry.is_base64 {
+                let bytes = BASE64.decode(c).unwrap_or_default();
+                String::from_utf8_lossy(&bytes).to_string()
+            } else {
+                c.clone()
+            }
+        }
     }
 }
 
 fn get_raw_bytes(entry: &FileEntry) -> Vec<u8> {
-    if entry.is_base64 {
-        BASE64.decode(&entry.content).unwrap_or_default()
-    } else {
-        entry.content.as_bytes().to_vec()
+    match &entry.content {
+        None => Vec::new(),
+        Some(c) => {
+            if entry.is_base64 {
+                BASE64.decode(c).unwrap_or_default()
+            } else {
+                c.as_bytes().to_vec()
+            }
+        }
     }
 }
 
@@ -353,6 +380,7 @@ fn build_result(
     files_checked: usize,
     hashes_verified: usize,
     hashes_failed: usize,
+    hashes_skipped: usize,
 ) -> ValidationResult {
     let errors = notes
         .iter()
@@ -378,6 +406,7 @@ fn build_result(
             files_checked,
             hashes_verified,
             hashes_failed,
+            hashes_skipped,
         },
     }
 }

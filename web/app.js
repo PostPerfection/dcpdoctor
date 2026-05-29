@@ -174,25 +174,26 @@ function getFile(fileEntry) {
     return new Promise((resolve) => fileEntry.file(resolve));
 }
 
+// Max file size to read in browser (100 MB). Larger files are recorded but not loaded.
+const MAX_FILE_SIZE = 100 * 1024 * 1024;
+
 async function readFileContent(file, path) {
-    const isXml = path.toLowerCase().endsWith('.xml') || 
-                  path === 'ASSETMAP' || path === 'VOLINDEX';
+    const isXml = /\.(xml)$/i.test(path) || 
+                  path === 'ASSETMAP' || path === 'VOLINDEX' ||
+                  path.endsWith('/ASSETMAP') || path.endsWith('/VOLINDEX');
     
-    if (isXml || file.size < 10 * 1024 * 1024) {
-        // Read as text for XML, as base64 for binary (if small enough for hashing)
-        if (isXml) {
-            const text = await file.text();
-            return { path, content: text, is_base64: false, size: file.size };
-        } else {
-            const buffer = await file.arrayBuffer();
-            const base64 = arrayBufferToBase64(buffer);
-            return { path, content: base64, is_base64: true, size: file.size };
-        }
+    if (file.size > MAX_FILE_SIZE && !isXml) {
+        // Too large for browser — record metadata only, skip content
+        return { path, content: null, is_base64: false, size: file.size, skipped: true };
+    }
+
+    if (isXml) {
+        const text = await file.text();
+        return { path, content: text, is_base64: false, size: file.size, skipped: false };
     } else {
-        // Large binary files: still read for hashing but in chunks
         const buffer = await file.arrayBuffer();
         const base64 = arrayBufferToBase64(buffer);
-        return { path, content: base64, is_base64: true, size: file.size };
+        return { path, content: base64, is_base64: true, size: file.size, skipped: false };
     }
 }
 
@@ -273,6 +274,11 @@ function showResults(result) {
         <div class="summary-card errors">
             <div class="value">${result.summary.hashes_failed}</div>
             <div class="label">Hashes Failed</div>
+        </div>` : ''}
+        ${result.summary.hashes_skipped > 0 ? `
+        <div class="summary-card">
+            <div class="value">${result.summary.hashes_skipped}</div>
+            <div class="label">Hashes Skipped</div>
         </div>` : ''}
     `;
 
