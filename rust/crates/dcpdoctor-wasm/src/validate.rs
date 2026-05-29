@@ -32,7 +32,16 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
                 message: "No ASSETMAP or ASSETMAP.xml found in DCP".to_string(),
                 file: None,
             });
-            return build_result(false, "unknown", notes, files.len(), 0, 0, 0, HashMap::new());
+            return build_result(
+                false,
+                "unknown",
+                notes,
+                files.len(),
+                0,
+                0,
+                0,
+                HashMap::new(),
+            );
         }
     };
 
@@ -379,6 +388,7 @@ fn get_raw_bytes(entry: &FileEntry) -> Vec<u8> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_result(
     valid: bool,
     standard: &str,
@@ -416,5 +426,6 @@ fn build_result(
             hashes_skipped,
         },
         asset_hashes,
+        mxf_info: HashMap::new(),
     }
 }

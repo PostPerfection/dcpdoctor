@@ -2,12 +2,14 @@
 // Each worker instance validates one package independently
 // Phase 1: Structural validation (metadata only)
 // Phase 2: Streaming hash verification of binary files
+// Phase 3: MXF header inspection (picture/sound descriptor validation)
 
-import init, { validate_dcp, Sha1Hasher } from './pkg/dcpdoctor_wasm.js';
+import init, { validate_dcp, Sha1Hasher, validate_mxf_file } from './pkg/dcpdoctor_wasm.js';
 
 let wasmReady = false;
 
 const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB chunks for hashing
+const MXF_HEADER_SIZE = 1024 * 1024; // Read first 1 MB of MXF for header parsing
 
 self.onmessage = async (e) => {
     const { type, id, files, binaryFiles } = e.data;
@@ -94,6 +96,39 @@ self.onmessage = async (e) => {
                 // Update validity based on hash failures
                 const hasErrors = result.notes.some(n => n.severity === 'error');
                 result.valid = !hasErrors;
+            }
+
+            // Phase 3: MXF header inspection
+            if (binaryFiles) {
+                const mxfPaths = Object.keys(binaryFiles).filter(p => p.toLowerCase().endsWith('.mxf'));
+                for (let i = 0; i < mxfPaths.length; i++) {
+                    const path = mxfPaths[i];
+                    const file = binaryFiles[path];
+                    if (!file) continue;
+
+                    const shortName = path.split('/').pop() || path;
+                    self.postMessage({
+                        type: 'progress', id,
+                        detail: `Inspecting ${shortName} (${i + 1}/${mxfPaths.length})`,
+                        percent: null
+                    });
+
+                    // Read first 1 MB for header parsing
+                    const headerSize = Math.min(file.size, MXF_HEADER_SIZE);
+                    const blob = file.slice(0, headerSize);
+                    const buffer = await blob.arrayBuffer();
+                    const headerBytes = new Uint8Array(buffer);
+
+                    // Validate MXF header via WASM
+                    const notesJson = validate_mxf_file(headerBytes, path);
+                    const mxfNotes = JSON.parse(notesJson);
+                    if (mxfNotes.length > 0) {
+                        result.notes.push(...mxfNotes);
+                        // Re-check validity
+                        const hasErrors = result.notes.some(n => n.severity === 'error');
+                        result.valid = !hasErrors;
+                    }
+                }
             }
 
             self.postMessage({ type: 'done', id, result });

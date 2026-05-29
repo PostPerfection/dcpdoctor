@@ -1,10 +1,12 @@
-use wasm_bindgen::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use wasm_bindgen::prelude::*;
 
 mod assetmap;
 mod cpl;
 mod hash;
+pub mod mxf;
+mod mxf_validate;
 mod naming;
 mod pkl;
 mod validate;
@@ -37,6 +39,9 @@ pub struct ValidationResult {
     /// Map of file path -> expected SHA-1 base64 hash (from PKL)
     #[serde(default)]
     pub asset_hashes: HashMap<String, String>,
+    /// MXF metadata for each binary asset (path -> metadata)
+    #[serde(default)]
+    pub mxf_info: HashMap<String, mxf::MxfMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +99,7 @@ pub fn validate_dcp(files_json: &str) -> String {
                     hashes_skipped: 0,
                 },
                 asset_hashes: HashMap::new(),
+                mxf_info: HashMap::new(),
             };
             return serde_json::to_string(&result).unwrap();
         }
@@ -115,6 +121,12 @@ pub struct Sha1Hasher {
     inner: sha1::Sha1,
 }
 
+impl Default for Sha1Hasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl Sha1Hasher {
     /// Create a new streaming SHA-1 hasher.
@@ -134,12 +146,33 @@ impl Sha1Hasher {
 
     /// Finalize and return the SHA-1 digest as base64.
     pub fn finalize(self) -> String {
-        use sha1::Digest;
         use base64::engine::general_purpose::STANDARD as BASE64;
         use base64::Engine;
+        use sha1::Digest;
         let result = self.inner.finalize();
         BASE64.encode(result)
     }
+}
+
+/// Parse MXF header metadata from raw bytes.
+///
+/// Accepts the first ~1 MB of an MXF file and returns MxfMetadata as JSON.
+/// This extracts picture/sound descriptors and writer info without any native deps.
+#[wasm_bindgen]
+pub fn parse_mxf_header(data: &[u8]) -> String {
+    let metadata = mxf::parse_mxf(data);
+    serde_json::to_string(&metadata).unwrap()
+}
+
+/// Validate MXF header bytes and return notes as JSON.
+///
+/// Accepts the first ~1 MB of an MXF file and a path identifier.
+/// Returns a JSON array of Note objects with DCI compliance findings.
+#[wasm_bindgen]
+pub fn validate_mxf_file(data: &[u8], path: &str) -> String {
+    let metadata = mxf::parse_mxf(data);
+    let notes = mxf_validate::validate_mxf(path, &metadata);
+    serde_json::to_string(&notes).unwrap()
 }
 
 /// Get the version of dcpdoctor-wasm.
