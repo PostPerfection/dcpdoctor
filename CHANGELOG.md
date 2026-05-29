@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0] — 2026-05-28
+
+### Added
+- **Browser-based DCP validator** — WASM-powered validator hosted on GitHub Pages
+- **Online validator embedded in landing page** — Unified documentation + validation experience
+- **Cancel button** — Abort validation in progress
+- **Preferences panel** — Gear icon toggles settings (default standard, hash/schema/bitrate/loudness checks, max bitrate, report format, output dir, schema dir); saves to localStorage
+
+### Fixed
+- **Large DCP performance** — Skip binary file content to prevent page lockup
+- **XML-only metadata reading** — Only parse XML files, skip MXF/J2C binaries
+- **Directory picker fallback** — Fallback for Brave/Firefox/Safari browsers
+
 ## [1.0.0] — 2025-01-20
 
 ### Added
