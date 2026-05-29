@@ -1,15 +1,19 @@
 import init, { validate_dcp, version, Sha1Hasher } from './pkg/dcpdoctor_wasm.js';
 
+console.log('[dcpdoctor] Module loaded');
+
 let wasmReady = false;
 
 async function initWasm() {
+    console.log('[dcpdoctor] initWasm() starting...');
     await init();
     wasmReady = true;
     document.getElementById('version').textContent = `v${version()}`;
+    console.log('[dcpdoctor] WASM ready');
 }
 
 initWasm().catch(err => {
-    console.error('Failed to load WASM:', err);
+    console.error('[dcpdoctor] Failed to load WASM:', err);
 });
 
 // DOM elements
@@ -110,6 +114,7 @@ fileInput.addEventListener('change', async () => {
 // File picker button
 pickBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
+    console.log('[dcpdoctor] pickBtn clicked, pickInProgress=', pickInProgress);
     if (pickInProgress) return;
     pickInProgress = true;
     try {
