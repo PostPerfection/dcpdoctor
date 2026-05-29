@@ -326,6 +326,24 @@ function cancelItem(id) {
     drainQueue();
 }
 
+function restartItem(id) {
+    const idx = queue.findIndex(i => i.id === id);
+    if (idx === -1) return;
+    const item = queue[idx];
+    if (item.status !== 'cancelled') return;
+
+    // Move to end of queue (deprioritize)
+    queue.splice(idx, 1);
+    queue.push(item);
+
+    // Reset to pending
+    item.status = 'pending';
+    item.result = null;
+    item.error = null;
+    renderQueue();
+    drainQueue();
+}
+
 // === Render ===
 
 function renderQueue() {
@@ -351,6 +369,8 @@ function renderQueue() {
             tdProgress.innerHTML = `<div class="progress-bar-mini"><div class="progress-fill-mini indeterminate"></div></div>`;
         } else if (item.status === 'cancelled') {
             tdProgress.innerHTML = `<div class="progress-bar-mini"><div class="progress-fill-mini cancelled-bar"></div></div>`;
+        } else if (item.status === 'pending') {
+            tdProgress.innerHTML = `<div class="progress-bar-mini"><div class="progress-fill-mini" style="width:0%"></div></div>`;
         } else {
             tdProgress.innerHTML = `<div class="progress-bar-mini"><div class="progress-fill-mini" style="width:100%"></div></div>`;
         }
@@ -366,6 +386,8 @@ function renderQueue() {
             tdResult.innerHTML = `<span class="result-badge cancelled">—</span>`;
         } else if (item.status === 'reading') {
             tdResult.innerHTML = `<span class="result-badge reading">…</span>`;
+        } else if (item.status === 'pending') {
+            tdResult.innerHTML = `<span class="result-badge pending">⏸</span>`;
         } else {
             tdResult.innerHTML = `<span class="result-badge working">⏳</span>`;
         }
@@ -379,6 +401,12 @@ function renderQueue() {
             cancelBtn.textContent = 'Cancel';
             cancelBtn.onclick = (e) => { e.stopPropagation(); cancelItem(item.id); };
             tdAction.appendChild(cancelBtn);
+        } else if (item.status === 'cancelled') {
+            const restartBtn = document.createElement('button');
+            restartBtn.className = 'btn-restart-small';
+            restartBtn.textContent = 'Restart';
+            restartBtn.onclick = (e) => { e.stopPropagation(); restartItem(item.id); };
+            tdAction.appendChild(restartBtn);
         }
 
         tr.appendChild(tdName);
