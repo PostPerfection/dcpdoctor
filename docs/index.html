@@ -630,12 +630,13 @@
         </a>
         <ul class="nav-links">
             <li><a href="#features">Features</a></li>
+            <li><a href="#validator">Try Online</a></li>
             <li><a href="#desktop">Desktop App</a></li>
             <li><a href="#comparison">vs EasyDCP</a></li>
             <li><a href="#examples">Examples</a></li>
             <li><a href="#install">Install</a></li>
             <li><a href="#platforms">Platforms</a></li>
-            <li><a href="https://github.com/DcpDoctor/dcpdoctor" class="nav-btn-ghost">GitHub</a></li>
+            <li><a href="https://github.com/PostPerfection/dcpdoctor" class="nav-btn-ghost">GitHub</a></li>
             <li><a href="#install" class="nav-btn-accent">Get Started</a></li>
         </ul>
         <button class="nav-hamburger" onclick="document.querySelector('.nav-links').classList.toggle('show')" aria-label="Toggle menu">&#9776;</button>
@@ -654,7 +655,7 @@
             A complete DCP &amp; IMF validator with SMPTE Bv2.1 compliance, Dolby Atmos, HDR, Netflix delivery specs, audio loudness metering, and more &mdash; all from the command line. Free and open source.
         </p>
         <div class="hero-actions">
-            <a href="validate/" class="btn btn-accent">
+            <a href="#validator" class="btn btn-accent">
                 Try Online Validator
             </a>
             <a href="https://github.com/PostPerfection/dcpdoctor" class="btn btn-outline">
@@ -1138,6 +1139,20 @@ npx tauri build
 
 <span style="color: var(--text-tertiary);"># Packages in gui/src-tauri/target/release/bundle/</span></code></pre>
         </div>
+    </div>
+</section>
+
+<!-- ═══ ONLINE VALIDATOR ═══ -->
+<section id="validator" style="padding: 100px 0; background: var(--bg-secondary);">
+    <div style="max-width: 1200px; margin: 0 auto; padding: 0 24px;">
+        <div style="text-align: center; margin-bottom: 48px;">
+            <h2 style="color: var(--text-primary); font-size: 2.2rem; font-weight: 700; margin-bottom: 16px;">Try It Online</h2>
+            <p style="color: var(--text-secondary); font-size: 1.1rem; max-width: 600px; margin: 0 auto;">Validate your DCP right in the browser. No upload, no server &mdash; everything runs locally in WebAssembly.</p>
+        </div>
+        <div style="border: 1px solid var(--border); border-radius: 16px; overflow: hidden; height: 700px; background: var(--bg-primary);">
+            <iframe src="validate/" style="width: 100%; height: 100%; border: none;" title="DCP Doctor Online Validator"></iframe>
+        </div>
+        <p style="text-align: center; margin-top: 16px; color: var(--text-tertiary); font-size: 0.85rem;">Or open the <a href="validate/" style="color: var(--accent);">full-page validator</a> for more space.</p>
     </div>
 </section>
 
