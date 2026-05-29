@@ -55,6 +55,20 @@ dropZone.addEventListener('drop', async (e) => {
     }
 });
 
+// Hidden file input fallback for browsers without showDirectoryPicker (Brave, Firefox, Safari)
+const fileInput = document.createElement('input');
+fileInput.type = 'file';
+fileInput.setAttribute('webkitdirectory', '');
+fileInput.setAttribute('directory', '');
+fileInput.style.display = 'none';
+document.body.appendChild(fileInput);
+
+fileInput.addEventListener('change', async () => {
+    if (fileInput.files.length === 0) return;
+    await processFileList(fileInput.files);
+    fileInput.value = '';
+});
+
 // File picker button
 pickBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -68,7 +82,8 @@ pickBtn.addEventListener('click', async (e) => {
             }
         }
     } else {
-        alert('Your browser does not support the Directory Picker API. Please use Chrome, Edge, or Opera.');
+        // Fallback: use hidden file input with webkitdirectory
+        fileInput.click();
     }
 });
 
@@ -78,6 +93,26 @@ dropZone.addEventListener('click', (e) => {
         pickBtn.click();
     }
 });
+
+// Process a FileList from <input webkitdirectory> (Brave/Firefox/Safari fallback)
+async function processFileList(fileList) {
+    showProgress();
+    const files = [];
+
+    for (const file of fileList) {
+        // webkitRelativePath gives "DirName/subdir/file.xml"
+        const relPath = file.webkitRelativePath;
+        // Strip the top-level directory name to get paths relative to DCP root
+        const parts = relPath.split('/');
+        const path = parts.slice(1).join('/');
+        if (path.startsWith('.')) continue;
+        updateProgress(`Reading ${path}...`, -1);
+        const content = await readFileContent(file, path);
+        files.push(content);
+    }
+
+    await runValidation(files);
+}
 
 // Process a FileSystemDirectoryHandle (modern API)
 async function processDirectoryHandle(dirHandle) {
