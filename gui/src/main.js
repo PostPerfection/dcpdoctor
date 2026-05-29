@@ -233,3 +233,63 @@ function getDemoResults() {
     exit_code: 1,
   };
 }
+
+// ── Preferences ───────────────────────────────────
+const PREFS_KEY = "dcpdoctor-preferences";
+
+function loadPreferences() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PREFS_KEY));
+    if (!saved) return;
+    if (saved.standard) document.getElementById("pref-standard").value = saved.standard;
+    if (saved.hashes !== undefined) document.getElementById("pref-hashes").checked = saved.hashes;
+    if (saved.schemas !== undefined) document.getElementById("pref-schemas").checked = saved.schemas;
+    if (saved.bitrate !== undefined) document.getElementById("pref-bitrate").checked = saved.bitrate;
+    if (saved.loudness !== undefined) document.getElementById("pref-loudness").checked = saved.loudness;
+    if (saved.maxBitrate) document.getElementById("pref-max-bitrate").value = saved.maxBitrate;
+    if (saved.reportFormat) document.getElementById("pref-report-format").value = saved.reportFormat;
+    if (saved.outputDir) document.getElementById("pref-output-dir").value = saved.outputDir;
+    if (saved.schemaDir) document.getElementById("pref-schema-dir").value = saved.schemaDir;
+  } catch { /* ignore */ }
+}
+
+function savePreferences() {
+  const prefs = {
+    standard: document.getElementById("pref-standard").value,
+    hashes: document.getElementById("pref-hashes").checked,
+    schemas: document.getElementById("pref-schemas").checked,
+    bitrate: document.getElementById("pref-bitrate").checked,
+    loudness: document.getElementById("pref-loudness").checked,
+    maxBitrate: document.getElementById("pref-max-bitrate").value,
+    reportFormat: document.getElementById("pref-report-format").value,
+    outputDir: document.getElementById("pref-output-dir").value,
+    schemaDir: document.getElementById("pref-schema-dir").value,
+  };
+  localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+}
+
+document.getElementById("prefs-toggle")?.addEventListener("click", () => {
+  const section = document.getElementById("preferences-section");
+  section.classList.toggle("hidden");
+});
+
+document.getElementById("preferences-form")?.addEventListener("submit", (e) => {
+  e.preventDefault();
+  savePreferences();
+  document.getElementById("preferences-section").classList.add("hidden");
+});
+
+document.getElementById("pref-reset")?.addEventListener("click", () => {
+  localStorage.removeItem(PREFS_KEY);
+  document.getElementById("pref-standard").value = "SMPTE";
+  document.getElementById("pref-hashes").checked = true;
+  document.getElementById("pref-schemas").checked = true;
+  document.getElementById("pref-bitrate").checked = true;
+  document.getElementById("pref-loudness").checked = true;
+  document.getElementById("pref-max-bitrate").value = "250";
+  document.getElementById("pref-report-format").value = "html";
+  document.getElementById("pref-output-dir").value = "";
+  document.getElementById("pref-schema-dir").value = "";
+});
+
+loadPreferences();
