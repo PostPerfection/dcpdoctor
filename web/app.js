@@ -48,6 +48,7 @@ let dcpQueue = []; // { id, name, fileCount, status, files, result }
 let selectedDcpId = null;
 let validationAbort = null; // AbortController for current validation
 let nextDcpId = 1;
+let pickInProgress = false; // Guard against multiple picker dialogs
 
 // Hash queue state
 let hashQueue = [];
@@ -101,6 +102,7 @@ document.body.appendChild(fileInput);
 
 fileInput.addEventListener('change', async () => {
     if (fileInput.files.length === 0) return;
+    pickInProgress = false; // The dialog has resolved
     await enqueueDcpFromFileList(fileInput.files);
     fileInput.value = '';
 });
@@ -108,33 +110,41 @@ fileInput.addEventListener('change', async () => {
 // File picker button
 pickBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    if ('showDirectoryPicker' in window) {
-        try {
+    if (pickInProgress) return;
+    pickInProgress = true;
+    try {
+        if ('showDirectoryPicker' in window) {
             const dirHandle = await window.showDirectoryPicker();
             await enqueueDcpFromHandle(dirHandle);
-        } catch (err) {
-            if (err.name !== 'AbortError') console.error('Directory picker error:', err);
+        } else {
+            fileInput.click();
         }
-    } else {
-        fileInput.click();
+    } catch (err) {
+        if (err.name !== 'AbortError') console.error('Directory picker error:', err);
+    } finally {
+        pickInProgress = false;
     }
 });
 
 dropZone.addEventListener('click', (e) => {
-    if (e.target !== pickBtn) pickBtn.click();
+    if (e.target !== pickBtn && !pickInProgress) pickBtn.click();
 });
 
 // "Add DCP" button in queue header
 dcpAddMore.addEventListener('click', async () => {
-    if ('showDirectoryPicker' in window) {
-        try {
+    if (pickInProgress) return;
+    pickInProgress = true;
+    try {
+        if ('showDirectoryPicker' in window) {
             const dirHandle = await window.showDirectoryPicker();
             await enqueueDcpFromHandle(dirHandle);
-        } catch (err) {
-            if (err.name !== 'AbortError') console.error('Directory picker error:', err);
+        } else {
+            fileInput.click();
         }
-    } else {
-        fileInput.click();
+    } catch (err) {
+        if (err.name !== 'AbortError') console.error('Directory picker error:', err);
+    } finally {
+        pickInProgress = false;
     }
 });
 
