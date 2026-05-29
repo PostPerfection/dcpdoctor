@@ -1,4 +1,4 @@
-import init, { validate_dcp, version } from './pkg/dcpdoctor_wasm.js';
+import init, { validate_dcp, version, Sha1Hasher } from './pkg/dcpdoctor_wasm.js';
 
 let wasmReady = false;
 
@@ -515,132 +515,24 @@ async function runHashVerification() {
     hashAbort = null;
 }
 
-// === Streaming SHA-1 ===
-// Minimal streaming SHA-1 using Web Crypto (reads file in 1MB chunks, hashes each chunk incrementally)
-// Since SubtleCrypto doesn't support incremental digest, we use a pure JS SHA-1.
+// === Streaming SHA-1 via WASM ===
 
 const CHUNK_SIZE = 1048576; // 1 MB
 
 async function hashFileStreaming(file, onProgress) {
-    const sha1 = new Sha1Hasher();
+    const hasher = new Sha1Hasher();
     let offset = 0;
 
     while (offset < file.size) {
         const end = Math.min(offset + CHUNK_SIZE, file.size);
         const slice = file.slice(offset, end);
         const buf = await slice.arrayBuffer();
-        sha1.update(new Uint8Array(buf));
+        hasher.update(new Uint8Array(buf));
         offset = end;
         onProgress(offset);
         // Yield to UI every chunk
         await new Promise(r => setTimeout(r, 0));
     }
 
-    return sha1.digestBase64();
-}
-
-// Minimal SHA-1 implementation (streaming, no dependencies)
-class Sha1Hasher {
-    constructor() {
-        this.h0 = 0x67452301;
-        this.h1 = 0xEFCDAB89;
-        this.h2 = 0x98BADCFE;
-        this.h3 = 0x10325476;
-        this.h4 = 0xC3D2E1F0;
-        this.totalLen = 0;
-        this.buffer = new Uint8Array(64);
-        this.bufLen = 0;
-    }
-
-    update(data) {
-        let i = 0;
-        this.totalLen += data.length;
-
-        if (this.bufLen > 0) {
-            const needed = 64 - this.bufLen;
-            const take = Math.min(needed, data.length);
-            this.buffer.set(data.subarray(0, take), this.bufLen);
-            this.bufLen += take;
-            i = take;
-            if (this.bufLen === 64) {
-                this._processBlock(this.buffer, 0);
-                this.bufLen = 0;
-            }
-        }
-
-        while (i + 64 <= data.length) {
-            this._processBlock(data, i);
-            i += 64;
-        }
-
-        if (i < data.length) {
-            this.buffer.set(data.subarray(i), 0);
-            this.bufLen = data.length - i;
-        }
-    }
-
-    digestBase64() {
-        // Padding
-        const totalBits = this.totalLen * 8;
-        const padLen = (this.bufLen < 56) ? (56 - this.bufLen) : (120 - this.bufLen);
-        const padding = new Uint8Array(padLen + 8);
-        padding[0] = 0x80;
-        // Length in bits as big-endian 64-bit
-        const hi = Math.floor(totalBits / 0x100000000);
-        const lo = totalBits >>> 0;
-        padding[padLen] = (hi >>> 24) & 0xff;
-        padding[padLen + 1] = (hi >>> 16) & 0xff;
-        padding[padLen + 2] = (hi >>> 8) & 0xff;
-        padding[padLen + 3] = hi & 0xff;
-        padding[padLen + 4] = (lo >>> 24) & 0xff;
-        padding[padLen + 5] = (lo >>> 16) & 0xff;
-        padding[padLen + 6] = (lo >>> 8) & 0xff;
-        padding[padLen + 7] = lo & 0xff;
-        this.update(padding);
-
-        // Produce 20-byte hash
-        const hash = new Uint8Array(20);
-        const dv = new DataView(hash.buffer);
-        dv.setUint32(0, this.h0 >>> 0);
-        dv.setUint32(4, this.h1 >>> 0);
-        dv.setUint32(8, this.h2 >>> 0);
-        dv.setUint32(12, this.h3 >>> 0);
-        dv.setUint32(16, this.h4 >>> 0);
-
-        // Base64 encode
-        let binary = '';
-        for (let i = 0; i < hash.length; i++) binary += String.fromCharCode(hash[i]);
-        return btoa(binary);
-    }
-
-    _processBlock(data, offset) {
-        const w = new Int32Array(80);
-        for (let i = 0; i < 16; i++) {
-            w[i] = (data[offset + i * 4] << 24) | (data[offset + i * 4 + 1] << 16) |
-                   (data[offset + i * 4 + 2] << 8) | data[offset + i * 4 + 3];
-        }
-        for (let i = 16; i < 80; i++) {
-            const t = w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16];
-            w[i] = (t << 1) | (t >>> 31);
-        }
-
-        let a = this.h0, b = this.h1, c = this.h2, d = this.h3, e = this.h4;
-
-        for (let i = 0; i < 80; i++) {
-            let f, k;
-            if (i < 20) { f = (b & c) | ((~b) & d); k = 0x5A827999; }
-            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
-            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
-            else { f = b ^ c ^ d; k = 0xCA62C1D6; }
-
-            const temp = (((a << 5) | (a >>> 27)) + f + e + k + w[i]) | 0;
-            e = d; d = c; c = (b << 30) | (b >>> 2); b = a; a = temp;
-        }
-
-        this.h0 = (this.h0 + a) | 0;
-        this.h1 = (this.h1 + b) | 0;
-        this.h2 = (this.h2 + c) | 0;
-        this.h3 = (this.h3 + d) | 0;
-        this.h4 = (this.h4 + e) | 0;
-    }
+    return hasher.finalize();
 }

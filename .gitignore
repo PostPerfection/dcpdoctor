@@ -18,3 +18,4 @@ tests/dcps/hfr/*.tar
 tests/dcps/hfr/fox-*
 tests/dcps/synthetic/
 rust/crates/dcpdoctor-wasm/target/
+rust/crates/dcpdoctor-wasm/src/postkit.code-workspace

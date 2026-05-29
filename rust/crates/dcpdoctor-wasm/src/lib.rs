@@ -109,6 +109,39 @@ pub fn sha1_base64(data: &[u8]) -> String {
     hash::compute_sha1_base64(data)
 }
 
+/// Streaming SHA-1 hasher for incremental hashing of large files.
+#[wasm_bindgen]
+pub struct Sha1Hasher {
+    inner: sha1::Sha1,
+}
+
+#[wasm_bindgen]
+impl Sha1Hasher {
+    /// Create a new streaming SHA-1 hasher.
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Sha1Hasher {
+        use sha1::Digest;
+        Sha1Hasher {
+            inner: sha1::Sha1::new(),
+        }
+    }
+
+    /// Feed a chunk of bytes into the hasher.
+    pub fn update(&mut self, chunk: &[u8]) {
+        use sha1::Digest;
+        self.inner.update(chunk);
+    }
+
+    /// Finalize and return the SHA-1 digest as base64.
+    pub fn finalize(self) -> String {
+        use sha1::Digest;
+        use base64::engine::general_purpose::STANDARD as BASE64;
+        use base64::Engine;
+        let result = self.inner.finalize();
+        BASE64.encode(result)
+    }
+}
+
 /// Get the version of dcpdoctor-wasm.
 #[wasm_bindgen]
 pub fn version() -> String {
