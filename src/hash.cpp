@@ -66,8 +66,9 @@ std::optional<std::string> sha1_base64(const std::filesystem::path& file)
   return base64_encode(hash, hash_len);
 }
 
-std::optional<std::string> sha1_base64(const std::filesystem::path& file,
-                                       const std::function<void(std::uintmax_t, std::uintmax_t)>& progress)
+std::optional<std::string>
+    sha1_base64(const std::filesystem::path& file,
+                const std::function<void(std::uintmax_t, std::uintmax_t)>& progress)
 {
   std::ifstream in(file, std::ios::binary);
   if(!in)

@@ -15,9 +15,8 @@ namespace fs = std::filesystem;
 namespace dcpdoctor
 {
 
-static CheckItem make_item(const std::string& category, const std::string& name,
-                           bool passed, const std::string& detail = {},
-                           const std::string& severity = "error")
+static CheckItem make_item(const std::string& category, const std::string& name, bool passed,
+                           const std::string& detail = {}, const std::string& severity = "error")
 {
   CheckItem item;
   item.category = category;
@@ -41,18 +40,16 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
   // --- Structure checks ---
 
   // Check ASSETMAP exists
-  bool has_assetmap = fs::exists(opts.dcp_dir / "ASSETMAP") ||
-                      fs::exists(opts.dcp_dir / "ASSETMAP.xml");
-  result.items.push_back(
-      make_item("structure", "ASSETMAP present", has_assetmap,
-                has_assetmap ? "" : "Missing ASSETMAP or ASSETMAP.xml"));
+  bool has_assetmap =
+      fs::exists(opts.dcp_dir / "ASSETMAP") || fs::exists(opts.dcp_dir / "ASSETMAP.xml");
+  result.items.push_back(make_item("structure", "ASSETMAP present", has_assetmap,
+                                   has_assetmap ? "" : "Missing ASSETMAP or ASSETMAP.xml"));
 
   // Check VOLINDEX exists
-  bool has_volindex = fs::exists(opts.dcp_dir / "VOLINDEX") ||
-                      fs::exists(opts.dcp_dir / "VOLINDEX.xml");
-  result.items.push_back(
-      make_item("structure", "VOLINDEX present", has_volindex,
-                has_volindex ? "" : "Missing VOLINDEX or VOLINDEX.xml"));
+  bool has_volindex =
+      fs::exists(opts.dcp_dir / "VOLINDEX") || fs::exists(opts.dcp_dir / "VOLINDEX.xml");
+  result.items.push_back(make_item("structure", "VOLINDEX present", has_volindex,
+                                   has_volindex ? "" : "Missing VOLINDEX or VOLINDEX.xml"));
 
   // Find PKL files
   std::vector<fs::path> pkls;
@@ -75,9 +72,8 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
       }
     }
   }
-  result.items.push_back(
-      make_item("structure", "PKL present", !pkls.empty(),
-                pkls.empty() ? "No PackingList XML found" : ""));
+  result.items.push_back(make_item("structure", "PKL present", !pkls.empty(),
+                                   pkls.empty() ? "No PackingList XML found" : ""));
 
   // Find CPL files
   std::vector<fs::path> cpls;
@@ -89,9 +85,8 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
     if(cpl.has_value() && !cpl->id.empty())
       cpls.push_back(entry.path());
   }
-  result.items.push_back(
-      make_item("structure", "CPL present", !cpls.empty(),
-                cpls.empty() ? "No CompositionPlaylist XML found" : ""));
+  result.items.push_back(make_item("structure", "CPL present", !cpls.empty(),
+                                   cpls.empty() ? "No CompositionPlaylist XML found" : ""));
 
   // Check CPL has reels
   for(const auto& cpl_path : cpls)
@@ -99,10 +94,8 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
     auto cpl = Cpl::parse(cpl_path);
     if(cpl.has_value())
     {
-      result.items.push_back(
-          make_item("structure", "CPL has reels",
-                    !cpl->reels.empty(),
-                    cpl->reels.empty() ? "CPL has no reels/segments" : ""));
+      result.items.push_back(make_item("structure", "CPL has reels", !cpl->reels.empty(),
+                                       cpl->reels.empty() ? "CPL has no reels/segments" : ""));
     }
   }
 
@@ -116,13 +109,11 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
       break;
     }
   }
-  result.items.push_back(
-      make_item("structure", "MXF essence files present", has_mxf,
-                has_mxf ? "" : "No .mxf files found in DCP directory"));
+  result.items.push_back(make_item("structure", "MXF essence files present", has_mxf,
+                                   has_mxf ? "" : "No .mxf files found in DCP directory"));
 
   // --- Compliance checks ---
-  auto compliance_notes = check_smpte_compliance(opts.dcp_dir, opts.expected_standard,
-                                                  opts.strict);
+  auto compliance_notes = check_smpte_compliance(opts.dcp_dir, opts.expected_standard, opts.strict);
   bool compliance_ok = true;
   for(const auto& note : compliance_notes)
   {
@@ -132,10 +123,9 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
       break;
     }
   }
-  result.items.push_back(
-      make_item("compliance", "SMPTE compliance", compliance_ok,
-                compliance_ok ? ""
-                              : std::to_string(compliance_notes.size()) + " compliance issue(s)"));
+  result.items.push_back(make_item(
+      "compliance", "SMPTE compliance", compliance_ok,
+      compliance_ok ? "" : std::to_string(compliance_notes.size()) + " compliance issue(s)"));
 
   // Add individual compliance notes as items
   for(const auto& note : compliance_notes)
@@ -145,8 +135,7 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
       sev = "error";
     else if(note.severity == Severity::warning)
       sev = "warning";
-    result.items.push_back(
-        make_item("compliance", note.message, false, "", sev));
+    result.items.push_back(make_item("compliance", note.message, false, "", sev));
   }
 
   // --- Naming checks ---
@@ -159,11 +148,9 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
       {
         auto naming_notes = check_isdcf_naming(cpl->content_title, cpl_path);
         bool naming_ok = naming_notes.empty();
-        result.items.push_back(
-            make_item("naming", "ISDCF naming compliance", naming_ok,
-                      naming_ok ? ""
-                                : std::to_string(naming_notes.size()) + " naming issue(s)",
-                      "warning"));
+        result.items.push_back(make_item(
+            "naming", "ISDCF naming compliance", naming_ok,
+            naming_ok ? "" : std::to_string(naming_notes.size()) + " naming issue(s)", "warning"));
       }
     }
   }
@@ -175,19 +162,19 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
     hash_opts.package_dir = opts.dcp_dir;
     auto hash_result = verify_package_checksums(hash_opts);
     result.items.push_back(
-        make_item("integrity", "File hash verification",
-                  hash_result.all_valid,
-                  hash_result.all_valid ? ""
-                                       : std::to_string(hash_result.hash_mismatches) + " hash mismatch(es)"));
+        make_item("integrity", "File hash verification", hash_result.all_valid,
+                  hash_result.all_valid
+                      ? ""
+                      : std::to_string(hash_result.hash_mismatches) + " hash mismatch(es)"));
   }
 
   // --- Reel continuity ---
   for(const auto& cpl_path : cpls)
   {
     auto cont_notes = check_reel_continuity(cpl_path);
-    result.items.push_back(
-        make_item("continuity", "Reel continuity", cont_notes.empty(),
-                  cont_notes.empty() ? "" : "Reel continuity issues detected", "warning"));
+    result.items.push_back(make_item("continuity", "Reel continuity", cont_notes.empty(),
+                                     cont_notes.empty() ? "" : "Reel continuity issues detected",
+                                     "warning"));
   }
 
   // --- Summarize ---
@@ -217,8 +204,7 @@ FacilityCheckResult run_facility_check(const FacilityCheckOptions& opts)
   if(result.warnings > 0)
     result.summary += ", " + std::to_string(result.warnings) + " warning(s)";
 
-  spdlog::info("Facility check: {} — {}", result.ready ? "READY" : "NOT READY",
-               result.summary);
+  spdlog::info("Facility check: {} — {}", result.ready ? "READY" : "NOT READY", result.summary);
   return result;
 }
 

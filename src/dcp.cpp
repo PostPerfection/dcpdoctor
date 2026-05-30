@@ -146,7 +146,8 @@ VerifyResult verify(const fs::path& dcp_dir, const VerifyOptions& opts)
             std::optional<std::string> computed;
             if(opts.hash_progress)
             {
-              computed = sha1_base64(asset_path, [&](std::uintmax_t bytes_done, std::uintmax_t bytes_total) {
+              computed = sha1_base64(asset_path, [&](std::uintmax_t bytes_done,
+                                                     std::uintmax_t bytes_total) {
                 opts.hash_progress(asset_path, file_index, total_files, bytes_done, bytes_total);
               });
             }

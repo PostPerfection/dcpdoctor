@@ -179,10 +179,8 @@ std::string generate_isdcf_name(const IsdcfNameParams& params)
     auto days = std::chrono::floor<std::chrono::days>(now);
     std::chrono::year_month_day ymd{days};
     char buf[16];
-    std::snprintf(buf, sizeof(buf), "%04d%02u%02u",
-                  static_cast<int>(ymd.year()),
-                  static_cast<unsigned>(ymd.month()),
-                  static_cast<unsigned>(ymd.day()));
+    std::snprintf(buf, sizeof(buf), "%04d%02u%02u", static_cast<int>(ymd.year()),
+                  static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
     name << "_" << buf;
   }
 

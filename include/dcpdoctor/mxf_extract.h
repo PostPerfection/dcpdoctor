@@ -10,12 +10,12 @@ namespace dcpdoctor
 
 struct MxfExtractOptions
 {
-  std::filesystem::path input;      // MXF file
+  std::filesystem::path input; // MXF file
   std::filesystem::path output_dir; // Where to extract essences
   bool extract_video = true;
   bool extract_audio = true;
   uint32_t start_frame = 0; // 0 = from beginning
-  uint32_t end_frame = 0;   // 0 = to end
+  uint32_t end_frame = 0; // 0 = to end
 };
 
 struct MxfExtractResult

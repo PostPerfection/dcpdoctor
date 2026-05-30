@@ -29,8 +29,7 @@ static std::vector<QcIssue> detect_black_frames(const std::filesystem::path& vid
 
   std::string cmd = "ffmpeg -i \"" + video.string() +
                     "\" -vf \"blackdetect=d=" + std::to_string(min_duration) +
-                    ":pic_th=" + std::to_string(threshold) +
-                    "\" -an -f null - 2>&1";
+                    ":pic_th=" + std::to_string(threshold) + "\" -an -f null - 2>&1";
 
   std::string output = run_ffmpeg(cmd);
 
@@ -61,8 +60,7 @@ static std::vector<QcIssue> detect_freeze_frames(const std::filesystem::path& vi
 
   std::string cmd = "ffmpeg -i \"" + video.string() +
                     "\" -vf \"freezedetect=n=" + std::to_string(threshold) +
-                    ":d=" + std::to_string(min_duration) +
-                    "\" -an -f null - 2>&1";
+                    ":d=" + std::to_string(min_duration) + "\" -an -f null - 2>&1";
 
   std::string output = run_ffmpeg(cmd);
 
@@ -83,7 +81,8 @@ static std::vector<QcIssue> detect_freeze_frames(const std::filesystem::path& vi
     issue.type = QcIssueType::FreezeFrame;
     issue.end_timecode_sec = std::stod((*it)[1].str());
     issue.duration_sec = std::stod((*it)[2].str());
-    issue.start_timecode_sec = idx < starts.size() ? starts[idx] : issue.end_timecode_sec - issue.duration_sec;
+    issue.start_timecode_sec =
+        idx < starts.size() ? starts[idx] : issue.end_timecode_sec - issue.duration_sec;
     issue.severity = issue.duration_sec > 10.0 ? "warning" : "info";
     issue.description = "Freeze frame: " + std::to_string(issue.duration_sec) + "s at " +
                         std::to_string(issue.start_timecode_sec) + "s";
@@ -94,15 +93,14 @@ static std::vector<QcIssue> detect_freeze_frames(const std::filesystem::path& vi
   return issues;
 }
 
-static std::vector<QcIssue> detect_silence(const std::filesystem::path& audio,
-                                           double threshold_db, double min_duration)
+static std::vector<QcIssue> detect_silence(const std::filesystem::path& audio, double threshold_db,
+                                           double min_duration)
 {
   std::vector<QcIssue> issues;
 
   std::string cmd = "ffmpeg -i \"" + audio.string() +
                     "\" -af \"silencedetect=noise=" + std::to_string(threshold_db) +
-                    "dB:d=" + std::to_string(min_duration) +
-                    "\" -vn -f null - 2>&1";
+                    "dB:d=" + std::to_string(min_duration) + "\" -vn -f null - 2>&1";
 
   std::string output = run_ffmpeg(cmd);
 
@@ -123,7 +121,8 @@ static std::vector<QcIssue> detect_silence(const std::filesystem::path& audio,
     issue.type = QcIssueType::AudioSilence;
     issue.end_timecode_sec = std::stod((*it)[1].str());
     issue.duration_sec = std::stod((*it)[2].str());
-    issue.start_timecode_sec = idx < starts.size() ? starts[idx] : issue.end_timecode_sec - issue.duration_sec;
+    issue.start_timecode_sec =
+        idx < starts.size() ? starts[idx] : issue.end_timecode_sec - issue.duration_sec;
     issue.severity = issue.duration_sec > 5.0 ? "warning" : "info";
     issue.description = "Audio silence: " + std::to_string(issue.duration_sec) + "s at " +
                         std::to_string(issue.start_timecode_sec) + "s";
@@ -139,8 +138,7 @@ static std::vector<QcIssue> detect_clipping(const std::filesystem::path& audio,
 {
   std::vector<QcIssue> issues;
 
-  std::string cmd = "ffmpeg -i \"" + audio.string() +
-                    "\" -af \"volumedetect\" -vn -f null - 2>&1";
+  std::string cmd = "ffmpeg -i \"" + audio.string() + "\" -af \"volumedetect\" -vn -f null - 2>&1";
 
   std::string output = run_ffmpeg(cmd);
 
@@ -154,9 +152,8 @@ static std::vector<QcIssue> detect_clipping(const std::filesystem::path& audio,
       QcIssue issue;
       issue.type = QcIssueType::AudioClipping;
       issue.severity = "error";
-      issue.description = "Audio clipping detected: max volume " +
-                          std::to_string(max_vol) + " dBFS (threshold: " +
-                          std::to_string(threshold_dbfs) + " dBFS)";
+      issue.description = "Audio clipping detected: max volume " + std::to_string(max_vol) +
+                          " dBFS (threshold: " + std::to_string(threshold_dbfs) + " dBFS)";
       issues.push_back(issue);
     }
   }
@@ -177,19 +174,19 @@ AutoQcResult run_auto_qc(const AutoQcOptions& opts)
   // Video checks
   if(std::filesystem::exists(opts.video_path))
   {
-    auto black = detect_black_frames(opts.video_path, opts.black_threshold,
-                                     opts.black_duration_min);
+    auto black =
+        detect_black_frames(opts.video_path, opts.black_threshold, opts.black_duration_min);
     result.issues.insert(result.issues.end(), black.begin(), black.end());
 
-    auto freeze = detect_freeze_frames(opts.video_path, opts.freeze_threshold,
-                                       opts.freeze_duration_min);
+    auto freeze =
+        detect_freeze_frames(opts.video_path, opts.freeze_threshold, opts.freeze_duration_min);
     result.issues.insert(result.issues.end(), freeze.begin(), freeze.end());
 
     // Also check audio from video file if no separate audio specified
     if(opts.audio_path.empty())
     {
-      auto silence = detect_silence(opts.video_path, opts.silence_threshold,
-                                    opts.silence_duration_min);
+      auto silence =
+          detect_silence(opts.video_path, opts.silence_threshold, opts.silence_duration_min);
       result.issues.insert(result.issues.end(), silence.begin(), silence.end());
 
       auto clipping = detect_clipping(opts.video_path, opts.clipping_threshold);
@@ -200,8 +197,8 @@ AutoQcResult run_auto_qc(const AutoQcOptions& opts)
   // Separate audio checks
   if(!opts.audio_path.empty() && std::filesystem::exists(opts.audio_path))
   {
-    auto silence = detect_silence(opts.audio_path, opts.silence_threshold,
-                                  opts.silence_duration_min);
+    auto silence =
+        detect_silence(opts.audio_path, opts.silence_threshold, opts.silence_duration_min);
     result.issues.insert(result.issues.end(), silence.begin(), silence.end());
 
     auto clipping = detect_clipping(opts.audio_path, opts.clipping_threshold);
@@ -226,10 +223,18 @@ std::string auto_qc_to_json(const AutoQcResult& result)
     json << "      \"type\": \"";
     switch(issue.type)
     {
-    case QcIssueType::BlackFrame: json << "black_frame"; break;
-    case QcIssueType::FreezeFrame: json << "freeze_frame"; break;
-    case QcIssueType::AudioSilence: json << "audio_silence"; break;
-    case QcIssueType::AudioClipping: json << "audio_clipping"; break;
+      case QcIssueType::BlackFrame:
+        json << "black_frame";
+        break;
+      case QcIssueType::FreezeFrame:
+        json << "freeze_frame";
+        break;
+      case QcIssueType::AudioSilence:
+        json << "audio_silence";
+        break;
+      case QcIssueType::AudioClipping:
+        json << "audio_clipping";
+        break;
     }
     json << "\",\n";
     json << "      \"start\": " << issue.start_timecode_sec << ",\n";

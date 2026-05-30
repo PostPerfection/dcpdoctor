@@ -28,10 +28,14 @@ static std::string transfer_str(TransferFunction tf)
 {
   switch(tf)
   {
-    case TransferFunction::PQ: return "PQ (ST 2084)";
-    case TransferFunction::HLG: return "HLG (ARIB STD-B67)";
-    case TransferFunction::SDR_BT1886: return "SDR (BT.1886)";
-    case TransferFunction::Linear: return "Linear";
+    case TransferFunction::PQ:
+      return "PQ (ST 2084)";
+    case TransferFunction::HLG:
+      return "HLG (ARIB STD-B67)";
+    case TransferFunction::SDR_BT1886:
+      return "SDR (BT.1886)";
+    case TransferFunction::Linear:
+      return "Linear";
   }
   return "Unknown";
 }
@@ -40,11 +44,16 @@ static std::string colorimetry_str(Colorimetry c)
 {
   switch(c)
   {
-    case Colorimetry::BT709: return "BT.709";
-    case Colorimetry::BT2020: return "BT.2020";
-    case Colorimetry::P3D65: return "P3-D65";
-    case Colorimetry::P3DCI: return "P3-DCI";
-    case Colorimetry::ACES: return "ACES";
+    case Colorimetry::BT709:
+      return "BT.709";
+    case Colorimetry::BT2020:
+      return "BT.2020";
+    case Colorimetry::P3D65:
+      return "P3-D65";
+    case Colorimetry::P3DCI:
+      return "P3-DCI";
+    case Colorimetry::ACES:
+      return "ACES";
   }
   return "Unknown";
 }
@@ -284,8 +293,8 @@ HdrValidateResult validate_cpl_hdr(const std::filesystem::path& cpl,
     result.valid = false;
   }
 
-  spdlog::info("CPL HDR cross-validation: {} ({} issues)",
-               result.valid ? "PASS" : "FAIL", result.issues.size());
+  spdlog::info("CPL HDR cross-validation: {} ({} issues)", result.valid ? "PASS" : "FAIL",
+               result.issues.size());
   return result;
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dcpdoctor/dcpdoctor.h"
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -22,5 +23,14 @@ std::vector<FixSuggestion> suggest_fixes(const std::vector<Note>& notes);
 /// Apply auto-fixable fixes (returns count of fixes applied)
 int apply_fixes(const std::filesystem::path& dcp_dir,
                 const std::vector<FixSuggestion>& suggestions);
+
+/// Fix Interop→SMPTE namespaces in XML files
+int fix_namespaces(const std::filesystem::path& dcp_dir);
+
+/// Recompute PKL hashes from actual file contents
+int fix_pkl_hashes(const std::filesystem::path& dcp_dir);
+
+/// Normalize ContentKind values to canonical lowercase
+int fix_content_kind(const std::filesystem::path& dcp_dir);
 
 } // namespace dcpdoctor

@@ -140,9 +140,7 @@ int main(int argc, char* argv[])
   std::string mxf_input, mxf_output_dir;
   bool mxf_no_video = false, mxf_no_audio = false;
   uint32_t mxf_start = 0, mxf_end = 0;
-  mxf_extract_cmd->add_option("input", mxf_input, "MXF file")
-      ->required()
-      ->check(CLI::ExistingFile);
+  mxf_extract_cmd->add_option("input", mxf_input, "MXF file")->required()->check(CLI::ExistingFile);
   mxf_extract_cmd->add_option("-o,--output", mxf_output_dir, "Output directory")->required();
   mxf_extract_cmd->add_flag("--no-video", mxf_no_video, "Skip video extraction");
   mxf_extract_cmd->add_flag("--no-audio", mxf_no_audio, "Skip audio extraction");
@@ -160,41 +158,60 @@ int main(int argc, char* argv[])
   auto_qc_cmd->add_option("-a,--audio", qc_audio, "Audio file (WAV, MXF)")
       ->check(CLI::ExistingFile);
   auto_qc_cmd->add_flag("--json", qc_json_flag, "JSON output");
-  auto_qc_cmd->add_option("--black-threshold", qc_black_thresh, "Black pixel ratio")->default_val(0.98);
-  auto_qc_cmd->add_option("--freeze-threshold", qc_freeze_thresh, "Freeze noise threshold")->default_val(0.003);
-  auto_qc_cmd->add_option("--silence-threshold", qc_silence_thresh, "Silence dB threshold")->default_val(-60.0);
-  auto_qc_cmd->add_option("--clipping-threshold", qc_clip_thresh, "Clipping dBFS threshold")->default_val(-0.5);
+  auto_qc_cmd->add_option("--black-threshold", qc_black_thresh, "Black pixel ratio")
+      ->default_val(0.98);
+  auto_qc_cmd->add_option("--freeze-threshold", qc_freeze_thresh, "Freeze noise threshold")
+      ->default_val(0.003);
+  auto_qc_cmd->add_option("--silence-threshold", qc_silence_thresh, "Silence dB threshold")
+      ->default_val(-60.0);
+  auto_qc_cmd->add_option("--clipping-threshold", qc_clip_thresh, "Clipping dBFS threshold")
+      ->default_val(-0.5);
 
   // === VALIDATE-IMP subcommand ===
   auto* validate_imp_cmd = app.add_subcommand("validate-imp", "Validate IMP via Netflix Photon");
   std::string vimp_dir;
-  validate_imp_cmd->add_option("imp_dir", vimp_dir, "IMP directory")->required()->check(CLI::ExistingDirectory);
+  validate_imp_cmd->add_option("imp_dir", vimp_dir, "IMP directory")
+      ->required()
+      ->check(CLI::ExistingDirectory);
 
   // === SCHEMA-VALIDATE subcommand ===
-  auto* schema_val_cmd = app.add_subcommand("schema-validate", "XML schema validation against SMPTE XSDs");
+  auto* schema_val_cmd =
+      app.add_subcommand("schema-validate", "XML schema validation against SMPTE XSDs");
   std::string sv_imp_dir, sv_schema_dir;
   bool sv_cpl = true, sv_pkl = true, sv_assetmap = true;
-  schema_val_cmd->add_option("imp_dir", sv_imp_dir, "IMP directory")->required()->check(CLI::ExistingDirectory);
+  schema_val_cmd->add_option("imp_dir", sv_imp_dir, "IMP directory")
+      ->required()
+      ->check(CLI::ExistingDirectory);
   schema_val_cmd->add_option("--schema-dir", sv_schema_dir, "Directory containing XSD files");
   schema_val_cmd->add_flag("--no-cpl", [&](auto) { sv_cpl = false; }, "Skip CPL validation");
   schema_val_cmd->add_flag("--no-pkl", [&](auto) { sv_pkl = false; }, "Skip PKL validation");
-  schema_val_cmd->add_flag("--no-assetmap", [&](auto) { sv_assetmap = false; }, "Skip ASSETMAP validation");
+  schema_val_cmd->add_flag(
+      "--no-assetmap", [&](auto) { sv_assetmap = false; }, "Skip ASSETMAP validation");
 
   // === IMF-COMPLIANCE subcommand ===
-  auto* imfcomp_cmd = app.add_subcommand("imf-compliance", "Platform-specific IMF compliance checks");
+  auto* imfcomp_cmd =
+      app.add_subcommand("imf-compliance", "Platform-specific IMF compliance checks");
   std::string imfcomp_dir, imfcomp_target;
   bool imfcomp_strict = true;
-  imfcomp_cmd->add_option("imp_dir", imfcomp_dir, "IMP directory")->required()->check(CLI::ExistingDirectory);
-  imfcomp_cmd->add_option("-t,--target", imfcomp_target, "Target platform")->required()
-      ->check(CLI::IsMember({"netflix", "disney", "amazon", "apple", "cinema2k", "cinema4k", "broadcast-hd", "broadcast-uhd"}));
-  imfcomp_cmd->add_flag("--no-strict", [&](auto) { imfcomp_strict = false; }, "Allow warnings to pass");
+  imfcomp_cmd->add_option("imp_dir", imfcomp_dir, "IMP directory")
+      ->required()
+      ->check(CLI::ExistingDirectory);
+  imfcomp_cmd->add_option("-t,--target", imfcomp_target, "Target platform")
+      ->required()
+      ->check(CLI::IsMember({"netflix", "disney", "amazon", "apple", "cinema2k", "cinema4k",
+                             "broadcast-hd", "broadcast-uhd"}));
+  imfcomp_cmd->add_flag(
+      "--no-strict", [&](auto) { imfcomp_strict = false; }, "Allow warnings to pass");
 
   // === FRAME-QC subcommand ===
   auto* frameqc_cmd = app.add_subcommand("frame-qc", "Frame-level bitrate QC analysis");
   std::string fqc_dir;
   double fqc_max_br = 300.0, fqc_min_br = 50.0, fqc_target_br = 250.0;
-  frameqc_cmd->add_option("j2k_dir", fqc_dir, "J2K codestream directory")->required()->check(CLI::ExistingDirectory);
-  frameqc_cmd->add_option("--target-bitrate", fqc_target_br, "Target bitrate Mbps")->default_val(250.0);
+  frameqc_cmd->add_option("j2k_dir", fqc_dir, "J2K codestream directory")
+      ->required()
+      ->check(CLI::ExistingDirectory);
+  frameqc_cmd->add_option("--target-bitrate", fqc_target_br, "Target bitrate Mbps")
+      ->default_val(250.0);
   frameqc_cmd->add_option("--max-bitrate", fqc_max_br, "Max bitrate Mbps")->default_val(300.0);
   frameqc_cmd->add_option("--min-bitrate", fqc_min_br, "Min bitrate Mbps")->default_val(50.0);
 
@@ -203,14 +220,19 @@ int main(int argc, char* argv[])
   std::string qcr_imp_dir, qcr_output, qcr_title, qcr_client;
   bool qcr_thumbnails = true, qcr_waveform = true, qcr_loudness = true, qcr_bitrate = true;
   uint32_t qcr_thumb_count = 12;
-  qcreport_cmd->add_option("imp_dir", qcr_imp_dir, "IMP directory")->required()->check(CLI::ExistingDirectory);
+  qcreport_cmd->add_option("imp_dir", qcr_imp_dir, "IMP directory")
+      ->required()
+      ->check(CLI::ExistingDirectory);
   qcreport_cmd->add_option("-o,--output", qcr_output, "Output file (.html or .pdf)")->required();
   qcreport_cmd->add_option("--title", qcr_title, "Report title");
   qcreport_cmd->add_option("--client", qcr_client, "Client name");
-  qcreport_cmd->add_option("--thumbnails", qcr_thumb_count, "Number of thumbnails")->default_val(12);
-  qcreport_cmd->add_flag("--no-thumbnails", [&](auto) { qcr_thumbnails = false; }, "Skip thumbnails");
+  qcreport_cmd->add_option("--thumbnails", qcr_thumb_count, "Number of thumbnails")
+      ->default_val(12);
+  qcreport_cmd->add_flag(
+      "--no-thumbnails", [&](auto) { qcr_thumbnails = false; }, "Skip thumbnails");
   qcreport_cmd->add_flag("--no-waveform", [&](auto) { qcr_waveform = false; }, "Skip waveform");
-  qcreport_cmd->add_flag("--no-loudness", [&](auto) { qcr_loudness = false; }, "Skip loudness chart");
+  qcreport_cmd->add_flag(
+      "--no-loudness", [&](auto) { qcr_loudness = false; }, "Skip loudness chart");
   qcreport_cmd->add_flag("--no-bitrate", [&](auto) { qcr_bitrate = false; }, "Skip bitrate chart");
 
   // === LOUDNESS subcommand ===
@@ -218,7 +240,9 @@ int main(int argc, char* argv[])
   std::string loud_audio, loud_output;
   double loud_target = -23.0;
   bool loud_normalize = false;
-  loudness_cmd->add_option("audio", loud_audio, "Audio file (WAV, MXF)")->required()->check(CLI::ExistingFile);
+  loudness_cmd->add_option("audio", loud_audio, "Audio file (WAV, MXF)")
+      ->required()
+      ->check(CLI::ExistingFile);
   loudness_cmd->add_option("-o,--output", loud_output, "Normalized output file");
   loudness_cmd->add_option("--target", loud_target, "Target loudness LUFS")->default_val(-23.0);
   loudness_cmd->add_flag("--normalize", loud_normalize, "Normalize audio to target");
@@ -227,8 +251,12 @@ int main(int argc, char* argv[])
   auto* avsync_cmd = app.add_subcommand("av-sync", "Audio/video sync drift detection");
   std::string avs_video, avs_audio;
   uint32_t avs_fps_num = 24, avs_fps_den = 1, avs_sample_rate = 48000;
-  avsync_cmd->add_option("-v,--video", avs_video, "Video file")->required()->check(CLI::ExistingFile);
-  avsync_cmd->add_option("-a,--audio", avs_audio, "Audio file")->required()->check(CLI::ExistingFile);
+  avsync_cmd->add_option("-v,--video", avs_video, "Video file")
+      ->required()
+      ->check(CLI::ExistingFile);
+  avsync_cmd->add_option("-a,--audio", avs_audio, "Audio file")
+      ->required()
+      ->check(CLI::ExistingFile);
   avsync_cmd->add_option("--fps-num", avs_fps_num, "FPS numerator")->default_val(24);
   avsync_cmd->add_option("--fps-den", avs_fps_den, "FPS denominator")->default_val(1);
   avsync_cmd->add_option("--sample-rate", avs_sample_rate, "Audio sample rate")->default_val(48000);
@@ -239,7 +267,8 @@ int main(int argc, char* argv[])
   uint16_t hv_max_cll = 0, hv_max_fall = 0;
   uint32_t hv_bit_depth = 0;
   hdrval_cmd->add_option("video", hv_video, "Video file")->required()->check(CLI::ExistingFile);
-  hdrval_cmd->add_option("-s,--spec", hv_spec, "HDR spec")->required()
+  hdrval_cmd->add_option("-s,--spec", hv_spec, "HDR spec")
+      ->required()
       ->check(CLI::IsMember({"hdr10", "hlg", "dolby_vision", "hdr10plus"}));
   hdrval_cmd->add_option("--max-cll", hv_max_cll, "Expected MaxCLL");
   hdrval_cmd->add_option("--max-fall", hv_max_fall, "Expected MaxFALL");
@@ -267,7 +296,19 @@ int main(int argc, char* argv[])
   // === IMP-INFO subcommand ===
   auto* impinfo_cmd = app.add_subcommand("imp-info", "Display IMP package information");
   std::string impinfo_dir;
-  impinfo_cmd->add_option("imp_dir", impinfo_dir, "IMP directory")->required()->check(CLI::ExistingDirectory);
+  impinfo_cmd->add_option("imp_dir", impinfo_dir, "IMP directory")
+      ->required()
+      ->check(CLI::ExistingDirectory);
+
+  // === FIX subcommand ===
+  auto* fix_cmd =
+      app.add_subcommand("fix", "Auto-fix common DCP issues (hashes, namespaces, ContentKind)");
+  std::string fix_dir;
+  bool fix_dry_run = false;
+  fix_cmd->add_option("dcp_dir", fix_dir, "DCP directory to fix")
+      ->required()
+      ->check(CLI::ExistingDirectory);
+  fix_cmd->add_flag("--dry-run", fix_dry_run, "Preview fixes without applying them");
 
   // Additional validate flags
   bool suggest_fixes_flag = false;
@@ -383,10 +424,8 @@ int main(int argc, char* argv[])
       for(const auto& p : profiles)
       {
         spdlog::info("  {} ({})", p.name, p.vendor);
-        spdlog::info("    4K: {}  HFR: {}  Atmos: {}  Interop: {}",
-                     p.supports_4k ? "Yes" : "No",
-                     p.supports_hfr ? "Yes" : "No",
-                     p.supports_atmos ? "Yes" : "No",
+        spdlog::info("    4K: {}  HFR: {}  Atmos: {}  Interop: {}", p.supports_4k ? "Yes" : "No",
+                     p.supports_hfr ? "Yes" : "No", p.supports_atmos ? "Yes" : "No",
                      p.supports_interop ? "Yes" : "No");
       }
     }
@@ -426,10 +465,9 @@ int main(int argc, char* argv[])
     spdlog::info("KDM Information:");
     spdlog::info("  Content: {}", info.content_title);
     spdlog::info("  CPL ID:  {}", info.cpl_id);
-    spdlog::info("  Status:  {}",
-              info.is_expired         ? "EXPIRED"
-              : info.is_not_yet_valid ? "NOT YET VALID"
-                                      : "VALID");
+    spdlog::info("  Status:  {}", info.is_expired         ? "EXPIRED"
+                                  : info.is_not_yet_valid ? "NOT YET VALID"
+                                                          : "VALID");
 
     if(!kdm_dcp.empty())
     {
@@ -490,8 +528,8 @@ int main(int argc, char* argv[])
         else if(!e.hash_match)
           spdlog::info("  HASH MISMATCH: {}", e.filename);
         else if(!e.size_match)
-          spdlog::info("  SIZE MISMATCH: {} (expected {}, got {})", e.filename,
-                       e.expected_size, e.actual_size);
+          spdlog::info("  SIZE MISMATCH: {} (expected {}, got {})", e.filename, e.expected_size,
+                       e.actual_size);
       }
     }
     return result.all_valid ? 0 : 1;
@@ -601,8 +639,8 @@ int main(int argc, char* argv[])
       spdlog::info("  Schema: {}", sr.schema_version);
     for(const auto& e : sr.errors)
     {
-      spdlog::info("  {} {}:{}:{} {}", e.is_warning ? "WARN" : "ERROR", e.file,
-                   e.line, e.column, e.message);
+      spdlog::info("  {} {}:{}:{} {}", e.is_warning ? "WARN" : "ERROR", e.file, e.line, e.column,
+                   e.message);
     }
     return sr.valid ? 0 : 1;
   }
@@ -613,14 +651,22 @@ int main(int argc, char* argv[])
     dcpdoctor::ImfComplianceOptions ic_opts;
     ic_opts.imp_dir = imfcomp_dir;
     ic_opts.strict = imfcomp_strict;
-    if(imfcomp_target == "netflix") ic_opts.target = dcpdoctor::ImfComplianceTarget::Netflix;
-    else if(imfcomp_target == "disney") ic_opts.target = dcpdoctor::ImfComplianceTarget::Disney;
-    else if(imfcomp_target == "amazon") ic_opts.target = dcpdoctor::ImfComplianceTarget::Amazon;
-    else if(imfcomp_target == "apple") ic_opts.target = dcpdoctor::ImfComplianceTarget::Apple;
-    else if(imfcomp_target == "cinema2k") ic_opts.target = dcpdoctor::ImfComplianceTarget::Cinema2K;
-    else if(imfcomp_target == "cinema4k") ic_opts.target = dcpdoctor::ImfComplianceTarget::Cinema4K;
-    else if(imfcomp_target == "broadcast-hd") ic_opts.target = dcpdoctor::ImfComplianceTarget::BroadcastHD;
-    else ic_opts.target = dcpdoctor::ImfComplianceTarget::BroadcastUHD;
+    if(imfcomp_target == "netflix")
+      ic_opts.target = dcpdoctor::ImfComplianceTarget::Netflix;
+    else if(imfcomp_target == "disney")
+      ic_opts.target = dcpdoctor::ImfComplianceTarget::Disney;
+    else if(imfcomp_target == "amazon")
+      ic_opts.target = dcpdoctor::ImfComplianceTarget::Amazon;
+    else if(imfcomp_target == "apple")
+      ic_opts.target = dcpdoctor::ImfComplianceTarget::Apple;
+    else if(imfcomp_target == "cinema2k")
+      ic_opts.target = dcpdoctor::ImfComplianceTarget::Cinema2K;
+    else if(imfcomp_target == "cinema4k")
+      ic_opts.target = dcpdoctor::ImfComplianceTarget::Cinema4K;
+    else if(imfcomp_target == "broadcast-hd")
+      ic_opts.target = dcpdoctor::ImfComplianceTarget::BroadcastHD;
+    else
+      ic_opts.target = dcpdoctor::ImfComplianceTarget::BroadcastUHD;
 
     auto cr = dcpdoctor::check_imf_compliance(ic_opts);
     if(!cr.success)
@@ -779,8 +825,8 @@ int main(int argc, char* argv[])
     spdlog::info("HDR Validation: {}", hr.valid ? "PASS" : "FAIL");
     for(const auto& issue : hr.issues)
     {
-      spdlog::info("  [{}] {}: expected {}, got {}", issue.severity, issue.field,
-                   issue.expected, issue.actual);
+      spdlog::info("  [{}] {}: expected {}, got {}", issue.severity, issue.field, issue.expected,
+                   issue.actual);
     }
     return hr.valid ? 0 : 1;
   }
@@ -807,8 +853,8 @@ int main(int argc, char* argv[])
         spdlog::error("Error: {}", cr.error);
         return 1;
       }
-      spdlog::info("Comparison: {} frames, {} significant differences",
-                   cr.frames_compared, cr.frames_different);
+      spdlog::info("Comparison: {} frames, {} significant differences", cr.frames_compared,
+                   cr.frames_different);
       spdlog::info("  Avg PSNR: {} dB", cr.avg_psnr);
       return cr.frames_different == 0 ? 0 : 1;
     }
@@ -833,8 +879,8 @@ int main(int argc, char* argv[])
         spdlog::error("Error: {}", cr.error);
         return 1;
       }
-      spdlog::info("Comparison: {} frames, {} significant differences",
-                   cr.frames_compared, cr.frames_different);
+      spdlog::info("Comparison: {} frames, {} significant differences", cr.frames_compared,
+                   cr.frames_different);
       spdlog::info("  Avg PSNR: {} dB", cr.avg_psnr);
       return cr.frames_different == 0 ? 0 : 1;
     }
@@ -860,6 +906,63 @@ int main(int argc, char* argv[])
       spdlog::info("    {}: {} ({} bytes)", t.type, t.filename, t.size);
     }
     return 0;
+  }
+
+  // === FIX mode ===
+  if(fix_cmd->parsed())
+  {
+    // First validate to find issues
+    dcpdoctor::VerifyOptions fix_opts;
+    fix_opts.check_hashes = true;
+    fix_opts.check_signatures = false;
+    fix_opts.strict_smpte = true;
+    auto vresult = dcpdoctor::verify(fix_dir, fix_opts);
+
+    auto suggestions = dcpdoctor::suggest_fixes(vresult.notes);
+    // Also check for ContentKind issues
+    bool has_content_kind_issue = false;
+    for(const auto& note : vresult.notes)
+    {
+      if(note.message.find("ContentKind") != std::string::npos)
+        has_content_kind_issue = true;
+    }
+
+    int fixable_count = 0;
+    for(const auto& s : suggestions)
+    {
+      if(s.auto_fixable)
+        ++fixable_count;
+    }
+    if(has_content_kind_issue)
+      ++fixable_count;
+
+    if(fixable_count == 0)
+    {
+      spdlog::info("No auto-fixable issues found.");
+      return 0;
+    }
+
+    spdlog::info("Found {} auto-fixable issue(s):", fixable_count);
+    for(const auto& s : suggestions)
+    {
+      if(s.auto_fixable)
+        spdlog::info("  - {}", s.description);
+    }
+    if(has_content_kind_issue)
+      spdlog::info("  - Normalize ContentKind to canonical lowercase");
+
+    if(fix_dry_run)
+    {
+      spdlog::info("Dry run: no changes applied.");
+      return 0;
+    }
+
+    int applied = dcpdoctor::apply_fixes(fix_dir, suggestions);
+    if(has_content_kind_issue)
+      applied += dcpdoctor::fix_content_kind(fix_dir);
+
+    spdlog::info("Applied {} fix(es).", applied);
+    return applied > 0 ? 0 : 1;
   }
 
   // === VALIDATE mode (default) ===

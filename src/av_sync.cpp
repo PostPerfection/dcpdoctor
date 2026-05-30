@@ -74,17 +74,17 @@ AvSyncResult detect_av_sync(const AvSyncOptions& opts)
 
   if(result.drift_samples > 0)
   {
-    result.recommendation =
-        "Audio is " + std::to_string(std::abs(result.drift_samples)) +
-        " samples longer than video. Trim " + std::to_string(std::abs(result.drift_samples)) +
-        " samples from audio tail.";
+    result.recommendation = "Audio is " + std::to_string(std::abs(result.drift_samples)) +
+                            " samples longer than video. Trim " +
+                            std::to_string(std::abs(result.drift_samples)) +
+                            " samples from audio tail.";
   }
   else if(result.drift_samples < 0)
   {
-    result.recommendation =
-        "Audio is " + std::to_string(std::abs(result.drift_samples)) +
-        " samples shorter than video. Pad " + std::to_string(std::abs(result.drift_samples)) +
-        " samples of silence at audio tail.";
+    result.recommendation = "Audio is " + std::to_string(std::abs(result.drift_samples)) +
+                            " samples shorter than video. Pad " +
+                            std::to_string(std::abs(result.drift_samples)) +
+                            " samples of silence at audio tail.";
   }
   else
   {
@@ -110,22 +110,20 @@ AvSyncFixResult fix_av_sync(const AvSyncFixOptions& opts)
   {
     // Trim from start
     double trim_seconds = static_cast<double>(opts.trim_samples) / opts.sample_rate;
-    cmd = "ffmpeg -y -i \"" + opts.audio_file.string() + "\" -ss " +
-          std::to_string(trim_seconds) + " -c:a pcm_s" + std::to_string(opts.bit_depth) +
-          "le -ar " + std::to_string(opts.sample_rate) + " \"" + opts.output_file.string() +
-          "\" 2>/dev/null";
+    cmd = "ffmpeg -y -i \"" + opts.audio_file.string() + "\" -ss " + std::to_string(trim_seconds) +
+          " -c:a pcm_s" + std::to_string(opts.bit_depth) + "le -ar " +
+          std::to_string(opts.sample_rate) + " \"" + opts.output_file.string() + "\" 2>/dev/null";
   }
   else if(opts.trim_samples < 0)
   {
     // Pad start with silence
     double pad_seconds = static_cast<double>(-opts.trim_samples) / opts.sample_rate;
     cmd = "ffmpeg -y -f lavfi -t " + std::to_string(pad_seconds) +
-          " -i anullsrc=r=" + std::to_string(opts.sample_rate) +
-          " -i \"" + opts.audio_file.string() +
+          " -i anullsrc=r=" + std::to_string(opts.sample_rate) + " -i \"" +
+          opts.audio_file.string() +
           "\" -filter_complex \"[0:a][1:a]concat=n=2:v=0:a=1\" "
           "-c:a pcm_s" +
-          std::to_string(opts.bit_depth) + "le \"" + opts.output_file.string() +
-          "\" 2>/dev/null";
+          std::to_string(opts.bit_depth) + "le \"" + opts.output_file.string() + "\" 2>/dev/null";
   }
   else
   {

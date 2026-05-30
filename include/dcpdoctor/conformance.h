@@ -11,11 +11,11 @@ namespace dcpdoctor
 /// Individual DCI conformance test result
 struct ConformanceTest
 {
-  std::string test_id;        // e.g. "DCI-1.1", "SMPTE-429-2"
-  std::string description;    // What the test checks
+  std::string test_id; // e.g. "DCI-1.1", "SMPTE-429-2"
+  std::string description; // What the test checks
   std::string spec_reference; // Standard reference (e.g. "SMPTE ST 429-7:2006")
   bool passed = false;
-  std::string detail;         // Explanation / evidence
+  std::string detail; // Explanation / evidence
 };
 
 /// DCI Conformance report
@@ -50,7 +50,7 @@ struct ConformanceOptions
 {
   std::filesystem::path dcp_dir;
   bool check_picture_profile = true; // J2K profile compliance
-  bool check_security = true;        // Encryption / KDM checks
+  bool check_security = true; // Encryption / KDM checks
   bool verbose = false;
 };
 

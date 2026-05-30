@@ -30,9 +30,9 @@ struct AutoQcOptions
 {
   std::filesystem::path video_path; // Video file (MXF, MP4, etc.)
   std::filesystem::path audio_path; // Audio file (WAV, MXF) — optional
-  double black_threshold = 0.98;    // pixel ratio for black detection
-  double black_duration_min = 0.5;  // minimum seconds to flag
-  double freeze_threshold = 0.003;  // noise threshold for freeze
+  double black_threshold = 0.98; // pixel ratio for black detection
+  double black_duration_min = 0.5; // minimum seconds to flag
+  double freeze_threshold = 0.003; // noise threshold for freeze
   double freeze_duration_min = 2.0; // minimum seconds to flag
   double silence_threshold = -60.0; // dB threshold for silence
   double silence_duration_min = 1.0;

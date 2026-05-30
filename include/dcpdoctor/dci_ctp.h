@@ -11,24 +11,24 @@ namespace dcpdoctor
 /// DCI CTP test categories (based on DCI Compliance Test Plan v1.3)
 enum class CtpCategory
 {
-  Picture,      // 2K/4K J2K codec compliance
-  Audio,        // PCM audio format compliance
-  Subtitles,    // Timed text compliance
-  Security,     // AES-CBC encryption, KDM format
-  Packaging,    // MXF wrapping, ASSETMAP, PKL, VOLINDEX
-  Composition,  // CPL structure and constraints
-  Presentation  // Presentation requirements (markers, duration)
+  Picture, // 2K/4K J2K codec compliance
+  Audio, // PCM audio format compliance
+  Subtitles, // Timed text compliance
+  Security, // AES-CBC encryption, KDM format
+  Packaging, // MXF wrapping, ASSETMAP, PKL, VOLINDEX
+  Composition, // CPL structure and constraints
+  Presentation // Presentation requirements (markers, duration)
 };
 
 /// Individual CTP test result
 struct CtpTestResult
 {
-  std::string test_id;        // e.g. "CTP-PIC-001"
+  std::string test_id; // e.g. "CTP-PIC-001"
   CtpCategory category;
   std::string description;
-  std::string requirement;    // DCI spec requirement text
+  std::string requirement; // DCI spec requirement text
   bool passed = false;
-  bool skipped = false;       // e.g. no reference content available
+  bool skipped = false; // e.g. no reference content available
   std::string detail;
 };
 

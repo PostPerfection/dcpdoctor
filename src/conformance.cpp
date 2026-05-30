@@ -20,10 +20,8 @@ static std::string today_iso()
   auto days = std::chrono::floor<std::chrono::days>(now);
   std::chrono::year_month_day ymd{days};
   char buf[16];
-  std::snprintf(buf, sizeof(buf), "%04d-%02u-%02u",
-                static_cast<int>(ymd.year()),
-                static_cast<unsigned>(ymd.month()),
-                static_cast<unsigned>(ymd.day()));
+  std::snprintf(buf, sizeof(buf), "%04d-%02u-%02u", static_cast<int>(ymd.year()),
+                static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
   return buf;
 }
 
@@ -55,17 +53,17 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
 
   // --- Structure tests (SMPTE ST 429-9) ---
 
-  bool has_assetmap = fs::exists(opts.dcp_dir / "ASSETMAP") ||
-                      fs::exists(opts.dcp_dir / "ASSETMAP.xml");
-  report.structure_tests.push_back(
-      make_test("DCI-STRUCT-1", "ASSETMAP present", "SMPTE ST 429-9:2014",
-                has_assetmap, has_assetmap ? "Found" : "Missing"));
+  bool has_assetmap =
+      fs::exists(opts.dcp_dir / "ASSETMAP") || fs::exists(opts.dcp_dir / "ASSETMAP.xml");
+  report.structure_tests.push_back(make_test("DCI-STRUCT-1", "ASSETMAP present",
+                                             "SMPTE ST 429-9:2014", has_assetmap,
+                                             has_assetmap ? "Found" : "Missing"));
 
-  bool has_volindex = fs::exists(opts.dcp_dir / "VOLINDEX") ||
-                      fs::exists(opts.dcp_dir / "VOLINDEX.xml");
-  report.structure_tests.push_back(
-      make_test("DCI-STRUCT-2", "VOLINDEX present", "SMPTE ST 429-9:2014",
-                has_volindex, has_volindex ? "Found" : "Missing"));
+  bool has_volindex =
+      fs::exists(opts.dcp_dir / "VOLINDEX") || fs::exists(opts.dcp_dir / "VOLINDEX.xml");
+  report.structure_tests.push_back(make_test("DCI-STRUCT-2", "VOLINDEX present",
+                                             "SMPTE ST 429-9:2014", has_volindex,
+                                             has_volindex ? "Found" : "Missing"));
 
   // Find PKL
   std::vector<fs::path> pkls;
@@ -87,8 +85,8 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
     }
   }
   report.structure_tests.push_back(
-      make_test("DCI-STRUCT-3", "PackingList (PKL) present", "SMPTE ST 429-8:2014",
-                !pkls.empty(), pkls.empty() ? "No PKL found" : "Found " + std::to_string(pkls.size())));
+      make_test("DCI-STRUCT-3", "PackingList (PKL) present", "SMPTE ST 429-8:2014", !pkls.empty(),
+                pkls.empty() ? "No PKL found" : "Found " + std::to_string(pkls.size())));
 
   // Find CPL
   std::vector<fs::path> cpls;
@@ -105,9 +103,9 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
         first_cpl = cpl;
     }
   }
-  report.structure_tests.push_back(
-      make_test("DCI-STRUCT-4", "CompositionPlaylist (CPL) present", "SMPTE ST 429-7:2006",
-                !cpls.empty(), cpls.empty() ? "No CPL found" : "Found " + std::to_string(cpls.size())));
+  report.structure_tests.push_back(make_test(
+      "DCI-STRUCT-4", "CompositionPlaylist (CPL) present", "SMPTE ST 429-7:2006", !cpls.empty(),
+      cpls.empty() ? "No CPL found" : "Found " + std::to_string(cpls.size())));
 
   // MXF files
   bool has_mxf = false;
@@ -120,9 +118,9 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
       mxf_count++;
     }
   }
-  report.structure_tests.push_back(
-      make_test("DCI-STRUCT-5", "MXF track files present", "SMPTE ST 429-3:2006",
-                has_mxf, std::to_string(mxf_count) + " MXF file(s)"));
+  report.structure_tests.push_back(make_test("DCI-STRUCT-5", "MXF track files present",
+                                             "SMPTE ST 429-3:2006", has_mxf,
+                                             std::to_string(mxf_count) + " MXF file(s)"));
 
   // --- CPL tests (SMPTE ST 429-7) ---
   if(first_cpl.has_value())
@@ -132,11 +130,9 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
     report.issue_date = first_cpl->issue_date;
 
     // CPL has valid UUID
-    bool valid_id = first_cpl->id.find("urn:uuid:") == 0 &&
-                    first_cpl->id.size() > 20;
-    report.cpl_tests.push_back(
-        make_test("DCI-CPL-1", "CPL Id is valid URN UUID", "SMPTE ST 429-7:2006 §6.1",
-                  valid_id, first_cpl->id));
+    bool valid_id = first_cpl->id.find("urn:uuid:") == 0 && first_cpl->id.size() > 20;
+    report.cpl_tests.push_back(make_test("DCI-CPL-1", "CPL Id is valid URN UUID",
+                                         "SMPTE ST 429-7:2006 §6.1", valid_id, first_cpl->id));
 
     // CPL has content title
     report.cpl_tests.push_back(
@@ -149,10 +145,9 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
                   !first_cpl->content_kind.empty(), first_cpl->content_kind));
 
     // CPL has at least one reel
-    report.cpl_tests.push_back(
-        make_test("DCI-CPL-4", "At least one Reel present", "SMPTE ST 429-7:2006 §6.10",
-                  !first_cpl->reels.empty(),
-                  std::to_string(first_cpl->reels.size()) + " reel(s)"));
+    report.cpl_tests.push_back(make_test("DCI-CPL-4", "At least one Reel present",
+                                         "SMPTE ST 429-7:2006 §6.10", !first_cpl->reels.empty(),
+                                         std::to_string(first_cpl->reels.size()) + " reel(s)"));
 
     // Each reel has picture
     bool all_reels_have_pic = true;
@@ -164,14 +159,13 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
         break;
       }
     }
-    report.cpl_tests.push_back(
-        make_test("DCI-CPL-5", "All reels have MainPicture", "SMPTE ST 429-7:2006 §6.10.1",
-                  all_reels_have_pic));
+    report.cpl_tests.push_back(make_test("DCI-CPL-5", "All reels have MainPicture",
+                                         "SMPTE ST 429-7:2006 §6.10.1", all_reels_have_pic));
 
     // Issue date present
-    report.cpl_tests.push_back(
-        make_test("DCI-CPL-6", "IssueDate present", "SMPTE ST 429-7:2006 §6.3",
-                  !first_cpl->issue_date.empty(), first_cpl->issue_date));
+    report.cpl_tests.push_back(make_test("DCI-CPL-6", "IssueDate present",
+                                         "SMPTE ST 429-7:2006 §6.3", !first_cpl->issue_date.empty(),
+                                         first_cpl->issue_date));
   }
 
   // --- Picture tests (SMPTE ST 429-4) ---
@@ -184,16 +178,15 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
         continue;
       if(entry.file_size() == 0)
       {
-        report.picture_tests.push_back(
-            make_test("DCI-PIC-1", "MXF file has non-zero size", "SMPTE ST 429-3:2006",
-                      false, entry.path().filename().string() + " is empty"));
+        report.picture_tests.push_back(make_test("DCI-PIC-1", "MXF file has non-zero size",
+                                                 "SMPTE ST 429-3:2006", false,
+                                                 entry.path().filename().string() + " is empty"));
       }
     }
     if(report.picture_tests.empty())
     {
-      report.picture_tests.push_back(
-          make_test("DCI-PIC-1", "All MXF files have non-zero size", "SMPTE ST 429-3:2006",
-                    has_mxf));
+      report.picture_tests.push_back(make_test("DCI-PIC-1", "All MXF files have non-zero size",
+                                               "SMPTE ST 429-3:2006", has_mxf));
     }
   }
 
@@ -211,8 +204,8 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
       }
     }
     report.audio_tests.push_back(
-        make_test("DCI-AUD-1", "Audio track referenced in CPL", "SMPTE ST 429-7:2006",
-                  has_audio, has_audio ? "MainSound present" : "No MainSound in any reel"));
+        make_test("DCI-AUD-1", "Audio track referenced in CPL", "SMPTE ST 429-7:2006", has_audio,
+                  has_audio ? "MainSound present" : "No MainSound in any reel"));
   }
 
   // --- Security tests ---
@@ -223,8 +216,7 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
     for(const auto& cpl_path : cpls)
     {
       std::ifstream f(cpl_path);
-      std::string content((std::istreambuf_iterator<char>(f)),
-                          std::istreambuf_iterator<char>());
+      std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
       if(content.find("KeyId") != std::string::npos)
         has_encryption = true;
     }
@@ -238,8 +230,7 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
   for(const auto& cpl_path : cpls)
   {
     std::ifstream f(cpl_path);
-    std::string content((std::istreambuf_iterator<char>(f)),
-                        std::istreambuf_iterator<char>());
+    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     if(content.find("smpte-ra.org") != std::string::npos)
       report.detected_standard = Standard::smpte;
     else if(content.find("digicine.com") != std::string::npos ||
@@ -265,8 +256,7 @@ ConformanceReport run_conformance_tests(const ConformanceOptions& opts)
   count_tests(report.security_tests);
 
   report.conformant = (report.tests_failed == 0);
-  spdlog::info("DCI conformance: {}/{} tests passed ({})",
-               report.tests_passed, report.total_tests,
+  spdlog::info("DCI conformance: {}/{} tests passed ({})", report.tests_passed, report.total_tests,
                report.conformant ? "CONFORMANT" : "NON-CONFORMANT");
   return report;
 }
@@ -277,10 +267,17 @@ static void json_escape(std::ostream& out, const std::string& s)
   {
     switch(c)
     {
-      case '"': out << "\\\""; break;
-      case '\\': out << "\\\\"; break;
-      case '\n': out << "\\n"; break;
-      default: out << c;
+      case '"':
+        out << "\\\"";
+        break;
+      case '\\':
+        out << "\\\\";
+        break;
+      case '\n':
+        out << "\\n";
+        break;
+      default:
+        out << c;
     }
   }
 }
@@ -299,8 +296,9 @@ std::string conformance_to_json(const ConformanceReport& report)
   json << "\",\n";
   json << "  \"cpl_id\": \"" << report.cpl_id << "\",\n";
   json << "  \"detected_standard\": \""
-       << (report.detected_standard == Standard::smpte ? "SMPTE" :
-           report.detected_standard == Standard::interop ? "Interop" : "Unknown")
+       << (report.detected_standard == Standard::smpte     ? "SMPTE"
+           : report.detected_standard == Standard::interop ? "Interop"
+                                                           : "Unknown")
        << "\",\n";
   json << "  \"conformant\": " << (report.conformant ? "true" : "false") << ",\n";
   json << "  \"total_tests\": " << report.total_tests << ",\n";
@@ -371,15 +369,14 @@ std::string conformance_to_html(const ConformanceReport& report)
   if(!report.content_title.empty())
     html << "<p><strong>Title:</strong> " << report.content_title << "</p>\n";
   html << "<p><strong>Standard:</strong> "
-       << (report.detected_standard == Standard::smpte ? "SMPTE" :
-           report.detected_standard == Standard::interop ? "Interop" : "Unknown")
+       << (report.detected_standard == Standard::smpte     ? "SMPTE"
+           : report.detected_standard == Standard::interop ? "Interop"
+                                                           : "Unknown")
        << "</p>\n";
 
-  html << "<p><span class=\"badge "
-       << (report.conformant ? "badge-pass" : "badge-fail") << "\">"
-       << (report.conformant ? "CONFORMANT" : "NON-CONFORMANT")
-       << "</span> " << report.tests_passed << "/" << report.total_tests
-       << " tests passed</p>\n";
+  html << "<p><span class=\"badge " << (report.conformant ? "badge-pass" : "badge-fail") << "\">"
+       << (report.conformant ? "CONFORMANT" : "NON-CONFORMANT") << "</span> " << report.tests_passed
+       << "/" << report.total_tests << " tests passed</p>\n";
 
   auto write_table = [&](const std::string& title, const std::vector<ConformanceTest>& tests) {
     if(tests.empty())
@@ -388,11 +385,9 @@ std::string conformance_to_html(const ConformanceReport& report)
     html << "<table><tr><th>ID</th><th>Test</th><th>Spec</th><th>Result</th><th>Detail</th></tr>\n";
     for(const auto& t : tests)
     {
-      html << "<tr><td>" << t.test_id << "</td><td>" << t.description
-           << "</td><td>" << t.spec_reference << "</td><td class=\""
-           << (t.passed ? "pass" : "fail") << "\">"
-           << (t.passed ? "PASS" : "FAIL") << "</td><td>" << t.detail
-           << "</td></tr>\n";
+      html << "<tr><td>" << t.test_id << "</td><td>" << t.description << "</td><td>"
+           << t.spec_reference << "</td><td class=\"" << (t.passed ? "pass" : "fail") << "\">"
+           << (t.passed ? "PASS" : "FAIL") << "</td><td>" << t.detail << "</td></tr>\n";
     }
     html << "</table>\n";
   };

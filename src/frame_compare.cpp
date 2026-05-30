@@ -60,9 +60,8 @@ static void write_html_report(const fs::path& path, const CompareResult& result,
   html << "<div class=\"summary\">\n";
   html << "<div class=\"card\"><h3>Summary</h3>\n";
   html << "<p>Frames compared: " << result.frames_compared << "</p>\n";
-  html << "<p>Frames different: <span class=\""
-       << (result.frames_different > 0 ? "bad" : "good") << "\">"
-       << result.frames_different << "</span></p>\n";
+  html << "<p>Frames different: <span class=\"" << (result.frames_different > 0 ? "bad" : "good")
+       << "\">" << result.frames_different << "</span></p>\n";
   html << "<p>Identical: " << (result.identical ? "Yes" : "No") << "</p>\n";
   html << "</div>\n";
 
@@ -107,22 +106,22 @@ static void write_html_report(const fs::path& path, const CompareResult& result,
   html << "</body></html>\n";
 }
 
-static void extract_diff_frame(const fs::path& video_a, const fs::path& video_b,
-                               uint32_t frame, const fs::path& output_dir)
+static void extract_diff_frame(const fs::path& video_a, const fs::path& video_b, uint32_t frame,
+                               const fs::path& output_dir)
 {
   // Extract frame from A and B, create a side-by-side + diff composite
   fs::create_directories(output_dir);
   std::string out = (output_dir / ("diff_frame_" + std::to_string(frame) + ".png")).string();
 
   // Create side-by-side with difference visualization
-  std::string cmd = "ffmpeg -y -ss " + std::to_string(frame) +
-                    " -i \"" + video_a.string() + "\" -ss " + std::to_string(frame) +
-                    " -i \"" + video_b.string() +
+  std::string cmd = "ffmpeg -y -ss " + std::to_string(frame) + " -i \"" + video_a.string() +
+                    "\" -ss " + std::to_string(frame) + " -i \"" + video_b.string() +
                     "\" -frames:v 1 -filter_complex "
                     "\"[0:v][1:v]hstack=inputs=2[top];"
                     "[0:v][1:v]blend=all_mode=difference[diff];"
                     "[top][diff]vstack=inputs=2\""
-                    " \"" + out + "\" 2>/dev/null";
+                    " \"" +
+                    out + "\" 2>/dev/null";
   run_cmd(cmd);
 }
 
@@ -162,10 +161,9 @@ CompareResult compare_files(const fs::path& file_a, const fs::path& file_b,
     select_filter = "select='not(mod(n\\," + std::to_string(opts.sample_interval) + "))',";
 
   // PSNR
-  std::string psnr_cmd = "ffmpeg" + seek_a + " -i \"" + file_a.string() + "\"" +
-                          seek_b + " -i \"" + file_b.string() + "\"" + frames_opt +
-                          " -lavfi \"" + select_filter +
-                          "psnr=stats_file=" + stats_file.string() + "\" -f null - 2>&1";
+  std::string psnr_cmd = "ffmpeg" + seek_a + " -i \"" + file_a.string() + "\"" + seek_b + " -i \"" +
+                         file_b.string() + "\"" + frames_opt + " -lavfi \"" + select_filter +
+                         "psnr=stats_file=" + stats_file.string() + "\" -f null - 2>&1";
 
   std::string output = run_cmd(psnr_cmd);
 
@@ -208,10 +206,10 @@ CompareResult compare_files(const fs::path& file_a, const fs::path& file_b,
   // SSIM
   if(opts.compute_ssim)
   {
-    std::string ssim_cmd = "ffmpeg" + seek_a + " -i \"" + file_a.string() + "\"" +
-                           seek_b + " -i \"" + file_b.string() + "\"" + frames_opt +
-                           " -lavfi \"" + select_filter +
-                           "ssim=stats_file=" + ssim_stats.string() + "\" -f null - 2>&1";
+    std::string ssim_cmd = "ffmpeg" + seek_a + " -i \"" + file_a.string() + "\"" + seek_b +
+                           " -i \"" + file_b.string() + "\"" + frames_opt + " -lavfi \"" +
+                           select_filter + "ssim=stats_file=" + ssim_stats.string() +
+                           "\" -f null - 2>&1";
 
     std::string ssim_out = run_cmd(ssim_cmd);
 
@@ -259,10 +257,9 @@ CompareResult compare_files(const fs::path& file_a, const fs::path& file_b,
     if(!opts.vmaf_model.empty())
       model_opt = ":model_path=" + opts.vmaf_model.string();
 
-    std::string vmaf_cmd = "ffmpeg" + seek_a + " -i \"" + file_a.string() + "\"" +
-                           seek_b + " -i \"" + file_b.string() + "\"" + frames_opt +
-                           " -lavfi \"" + select_filter +
-                           "libvmaf" + model_opt + "\" -f null - 2>&1";
+    std::string vmaf_cmd = "ffmpeg" + seek_a + " -i \"" + file_a.string() + "\"" + seek_b +
+                           " -i \"" + file_b.string() + "\"" + frames_opt + " -lavfi \"" +
+                           select_filter + "libvmaf" + model_opt + "\" -f null - 2>&1";
 
     std::string vmaf_out = run_cmd(vmaf_cmd);
     std::regex vmaf_re(R"re(VMAF score:\s*([\d.]+))re");

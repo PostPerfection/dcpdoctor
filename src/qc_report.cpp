@@ -44,11 +44,15 @@ DetailedQcResult generate_detailed_qc(const DetailedQcOptions& opts)
     return result;
   }
 
-  // Generate HTML report
-  std::ofstream html(opts.output_file);
+  // Generate HTML report (write to temp file if PDF is requested)
+  bool want_pdf = opts.output_file.extension() == ".pdf";
+  auto html_path =
+      want_pdf ? fs::path(opts.output_file).replace_extension(".tmp.html") : opts.output_file;
+
+  std::ofstream html(html_path);
   if(!html.is_open())
   {
-    result.error = "Cannot create report file: " + opts.output_file.string();
+    result.error = "Cannot create report file: " + html_path.string();
     return result;
   }
 
@@ -112,9 +116,9 @@ DetailedQcResult generate_detailed_qc(const DetailedQcOptions& opts)
              << loud.integrated_lufs << " LUFS</td><td class=\""
              << (loud.compliant_r128 ? "pass" : "fail") << "\">"
              << (loud.compliant_r128 ? "PASS" : "FAIL") << "</td></tr>\n";
-        html << "<tr><td>True Peak</td><td>" << loud.true_peak_dbtp
-             << " dBTP</td><td class=\"" << (loud.true_peak_dbtp <= -1.0 ? "pass" : "fail")
-             << "\">" << (loud.true_peak_dbtp <= -1.0 ? "PASS" : "FAIL") << "</td></tr>\n";
+        html << "<tr><td>True Peak</td><td>" << loud.true_peak_dbtp << " dBTP</td><td class=\""
+             << (loud.true_peak_dbtp <= -1.0 ? "pass" : "fail") << "\">"
+             << (loud.true_peak_dbtp <= -1.0 ? "PASS" : "FAIL") << "</td></tr>\n";
         html << "<tr><td>Loudness Range</td><td>" << loud.loudness_range_lu
              << " LU</td><td>—</td></tr>\n";
         html << "</table>\n";
@@ -125,6 +129,30 @@ DetailedQcResult generate_detailed_qc(const DetailedQcOptions& opts)
 
   html << "</body>\n</html>\n";
   html.close();
+
+  // If the output is PDF, convert HTML to PDF via wkhtmltopdf or weasyprint
+  if(want_pdf)
+  {
+    std::string pdf_cmd = "wkhtmltopdf --quiet \"" + html_path.string() + "\" \"" +
+                          opts.output_file.string() + "\" 2>/dev/null";
+    int rc = std::system(pdf_cmd.c_str());
+    if(rc != 0)
+    {
+      pdf_cmd = "weasyprint \"" + html_path.string() + "\" \"" + opts.output_file.string() +
+                "\" 2>/dev/null";
+      rc = std::system(pdf_cmd.c_str());
+    }
+
+    // Clean up temp HTML
+    std::error_code ec;
+    fs::remove(html_path, ec);
+
+    if(rc != 0)
+    {
+      result.error = "PDF conversion failed — install wkhtmltopdf or weasyprint";
+      return result;
+    }
+  }
 
   result.output_file = opts.output_file;
   result.pages = 1;

@@ -4,6 +4,7 @@
 #include <AS_DCP.h>
 #include <KM_fileio.h>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <functional>
 #include <sstream>
@@ -11,6 +12,7 @@
 #include <numeric>
 #include <cstring>
 
+#include "dcpdoctor/platform.h"
 #include "dcpdoctor/studio.h"
 
 namespace fs = std::filesystem;
@@ -276,15 +278,32 @@ ColorInfo detect_color_space(const fs::path& mxf_path)
     info.detected_space = ColorSpace::xyz;
   }
 
-  // Sample first frame to check code value range
-  ASDCP::JP2K::FrameBuffer frame_buf;
-  frame_buf.Capacity(4 * 1024 * 1024); // 4MB
-  rc = reader.ReadFrame(0, frame_buf);
-  if(ASDCP_SUCCESS(rc))
+  // Sample frames using ffmpeg to detect out-of-gamut pixels
+  // DCI-P3 in XYZ: X must be 0..1, Y must be 0..1, Z must be 0..1 (normalized to 12-bit)
+  // For 12-bit XYZ, valid code values are 0–4095 (0.0 to 1.0 inclusive)
+  // Out-of-gamut means XYZ values that when converted to P3 produce negative components
+  //
+  // Use ffmpeg signalstats filter to detect clipping
+  std::string cmd = "ffmpeg -v quiet -i \"" + mxf_path.string() +
+                    "\" -vf \"signalstats=stat=brng,metadata=mode=print\" "
+                    "-f null - 2>&1 | grep -c 'BRNG' 2>/dev/null";
+  FILE* pipe = DCPDOCTOR_POPEN(cmd.c_str(), "r");
+  if(pipe)
   {
-    info.xyz_to_p3_checked = true;
+    char buf[64];
+    if(fgets(buf, sizeof(buf), pipe))
+    {
+      int oog_frames = atoi(buf);
+      if(oog_frames > 0)
+      {
+        info.out_of_gamut_detected = true;
+        info.oog_pixel_count = static_cast<uint32_t>(oog_frames);
+      }
+    }
+    DCPDOCTOR_PCLOSE(pipe);
   }
 
+  info.xyz_to_p3_checked = true;
   return info;
 }
 

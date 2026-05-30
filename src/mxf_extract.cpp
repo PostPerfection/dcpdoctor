@@ -40,9 +40,8 @@ MxfExtractResult extract_mxf(const MxfExtractOptions& opts)
 
     if(opts.start_frame > 0 && info.picture->frame_rate_num > 0)
     {
-      double start_sec =
-          static_cast<double>(opts.start_frame) * info.picture->frame_rate_den /
-          info.picture->frame_rate_num;
+      double start_sec = static_cast<double>(opts.start_frame) * info.picture->frame_rate_den /
+                         info.picture->frame_rate_num;
       cmd += " -ss " + std::to_string(start_sec);
     }
     if(opts.end_frame > 0 && opts.end_frame > opts.start_frame && info.picture->frame_rate_num > 0)

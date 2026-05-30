@@ -1358,14 +1358,21 @@ TEST(imf_compliance_nonexistent)
 
 TEST(imf_compliance_target_name)
 {
-  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Netflix) == "Netflix");
-  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Disney) == "Disney+");
+  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Netflix) ==
+         "Netflix");
+  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Disney) ==
+         "Disney+");
   ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Amazon) == "Amazon");
-  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Apple) == "Apple TV+");
-  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Cinema2K) == "Cinema 2K");
-  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Cinema4K) == "Cinema 4K");
-  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::BroadcastHD) == "Broadcast HD");
-  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::BroadcastUHD) == "Broadcast UHD");
+  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Apple) ==
+         "Apple TV+");
+  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Cinema2K) ==
+         "Cinema 2K");
+  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::Cinema4K) ==
+         "Cinema 4K");
+  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::BroadcastHD) ==
+         "Broadcast HD");
+  ASSERT(dcpdoctor::imf_compliance_target_name(dcpdoctor::ImfComplianceTarget::BroadcastUHD) ==
+         "Broadcast UHD");
 }
 
 // --- frame_qc ---
@@ -1541,8 +1548,8 @@ TEST(validate_cpl_hdr_missing_video)
   std::ofstream cpl("/tmp/dcpdoctor_test_cpl.xml");
   cpl << "<?xml version=\"1.0\"?>\n<CompositionPlaylist></CompositionPlaylist>\n";
   cpl.close();
-  auto result = dcpdoctor::validate_cpl_hdr("/tmp/dcpdoctor_test_cpl.xml",
-                                            "/tmp/no_such_video_99.mxf");
+  auto result =
+      dcpdoctor::validate_cpl_hdr("/tmp/dcpdoctor_test_cpl.xml", "/tmp/no_such_video_99.mxf");
   ASSERT(!result.success);
   ASSERT(!result.error.empty());
   std::filesystem::remove("/tmp/dcpdoctor_test_cpl.xml");
@@ -1558,8 +1565,8 @@ TEST(validate_cpl_hdr_sdr_cpl)
       << "</CompositionPlaylist>\n";
   cpl.close();
   // With nonexistent video, should fail at video probe stage
-  auto result = dcpdoctor::validate_cpl_hdr("/tmp/dcpdoctor_test_cpl2.xml",
-                                            "/tmp/no_such_video_100.mxf");
+  auto result =
+      dcpdoctor::validate_cpl_hdr("/tmp/dcpdoctor_test_cpl2.xml", "/tmp/no_such_video_100.mxf");
   ASSERT(!result.success);
   std::filesystem::remove("/tmp/dcpdoctor_test_cpl2.xml");
 }
@@ -1575,8 +1582,8 @@ TEST(validate_cpl_hdr_hdr10_cpl)
       << "</CompositionPlaylist>\n";
   cpl.close();
   // With nonexistent video, should fail at video probe
-  auto result = dcpdoctor::validate_cpl_hdr("/tmp/dcpdoctor_test_cpl3.xml",
-                                            "/tmp/no_such_video_101.mxf");
+  auto result =
+      dcpdoctor::validate_cpl_hdr("/tmp/dcpdoctor_test_cpl3.xml", "/tmp/no_such_video_101.mxf");
   ASSERT(!result.success);
   std::filesystem::remove("/tmp/dcpdoctor_test_cpl3.xml");
 }
@@ -1938,17 +1945,22 @@ TEST(test_ctp_minimal_dcp)
   // Create VOLINDEX
   {
     std::ofstream f(tmp / "VOLINDEX.xml");
-    f << "<?xml version=\"1.0\"?><VolumeIndex xmlns=\"http://www.smpte-ra.org/schemas/429-9/2007/AM\"><Index>1</Index></VolumeIndex>";
+    f << "<?xml version=\"1.0\"?><VolumeIndex "
+         "xmlns=\"http://www.smpte-ra.org/schemas/429-9/2007/AM\"><Index>1</Index></VolumeIndex>";
   }
   // Create ASSETMAP
   {
     std::ofstream f(tmp / "ASSETMAP.xml");
-    f << "<?xml version=\"1.0\"?><AssetMap xmlns=\"http://www.smpte-ra.org/schemas/429-9/2007/AM\"><Id>urn:uuid:00000000-0000-0000-0000-000000000001</Id><AssetList/></AssetMap>";
+    f << "<?xml version=\"1.0\"?><AssetMap "
+         "xmlns=\"http://www.smpte-ra.org/schemas/429-9/2007/"
+         "AM\"><Id>urn:uuid:00000000-0000-0000-0000-000000000001</Id><AssetList/></AssetMap>";
   }
   // Create PKL
   {
     std::ofstream f(tmp / "PKL_test.xml");
-    f << "<?xml version=\"1.0\"?><PackingList xmlns=\"http://www.smpte-ra.org/schemas/429-8/2007/PKL\"><Id>urn:uuid:00000000-0000-0000-0000-000000000002</Id></PackingList>";
+    f << "<?xml version=\"1.0\"?><PackingList "
+         "xmlns=\"http://www.smpte-ra.org/schemas/429-8/2007/"
+         "PKL\"><Id>urn:uuid:00000000-0000-0000-0000-000000000002</Id></PackingList>";
   }
   // Create CPL
   {

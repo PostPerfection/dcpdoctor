@@ -21,11 +21,11 @@ struct HdrIssue
 struct HdrValidateOptions
 {
   std::filesystem::path video_path; // Video file to probe
-  std::filesystem::path cpl_path;   // CPL XML to check metadata in
-  std::string target_spec;          // "hdr10", "hlg", "dolby_vision", "hdr10plus"
+  std::filesystem::path cpl_path; // CPL XML to check metadata in
+  std::string target_spec; // "hdr10", "hlg", "dolby_vision", "hdr10plus"
 
   // Expected values for validation
-  uint16_t expected_max_cll = 0;      // 0 = don't check
+  uint16_t expected_max_cll = 0; // 0 = don't check
   uint16_t expected_max_fall = 0;
   uint32_t expected_max_luminance = 0; // mastering display
   TransferFunction expected_transfer = TransferFunction::PQ;

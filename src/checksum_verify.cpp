@@ -31,7 +31,8 @@ static std::unordered_map<std::string, std::string> parse_assetmap(const fs::pat
   std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
   // Parse Asset entries: extract Id and Path
-  std::regex asset_re(R"re(<Asset>[\s\S]*?<Id>urn:uuid:([^<]+)</Id>[\s\S]*?<Path>([^<]+)</Path>[\s\S]*?</Asset>)re");
+  std::regex asset_re(
+      R"re(<Asset>[\s\S]*?<Id>urn:uuid:([^<]+)</Id>[\s\S]*?<Path>([^<]+)</Path>[\s\S]*?</Asset>)re");
   auto begin = std::sregex_iterator(content.begin(), content.end(), asset_re);
   auto end = std::sregex_iterator();
 
@@ -185,8 +186,8 @@ ChecksumVerifyResult verify_package_checksums(const ChecksumVerifyOptions& opts)
   }
 
 done:
-  result.all_valid = (result.hash_mismatches == 0 && result.size_mismatches == 0 &&
-                      result.missing_files == 0);
+  result.all_valid =
+      (result.hash_mismatches == 0 && result.size_mismatches == 0 && result.missing_files == 0);
   result.success = true;
   return result;
 }

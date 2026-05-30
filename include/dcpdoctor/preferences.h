@@ -12,7 +12,7 @@ namespace dcpdoctor
 struct Preferences
 {
   // Verification defaults
-  std::string default_standard = "SMPTE";  // "SMPTE" or "Interop"
+  std::string default_standard = "SMPTE"; // "SMPTE" or "Interop"
   bool verify_hashes = true;
   bool verify_schemas = true;
   bool check_bitrate = true;
@@ -20,11 +20,11 @@ struct Preferences
   uint32_t max_bitrate_mbps = 250;
 
   // Report
-  std::string report_format = "html";       // "html", "json", "text"
+  std::string report_format = "html"; // "html", "json", "text"
   std::string default_output_dir;
 
   // Schema paths
-  std::string schema_dir;                   // custom XSD directory
+  std::string schema_dir; // custom XSD directory
 
   // KDM
   std::string signing_certificate_path;
