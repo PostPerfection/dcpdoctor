@@ -20,6 +20,7 @@ pub struct Reel {
     pub id: String,
     pub picture: ReelAsset,
     pub sound: ReelAsset,
+    pub stereoscopic: bool,
 }
 
 /// Parsed Composition Playlist (CPL).
@@ -81,6 +82,9 @@ impl Cpl {
                         }
                         "MainPicture" | "MainStereoscopicPicture" if in_reel => {
                             in_main_picture = true;
+                            if name == "MainStereoscopicPicture" {
+                                current_reel.stereoscopic = true;
+                            }
                         }
                         "MainSound" if in_reel => {
                             in_main_sound = true;

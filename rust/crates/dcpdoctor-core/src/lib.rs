@@ -1,4 +1,5 @@
 pub mod assetmap;
+pub mod audio;
 pub mod cpl;
 pub mod dcp;
 pub mod diff;
@@ -6,10 +7,13 @@ pub mod fix;
 pub mod hash;
 pub mod imf;
 pub mod info;
+pub mod j2k;
+pub mod kdm;
 pub mod mxf;
 pub mod note;
 pub mod photon;
 pub mod pkl;
+pub mod profiles;
 pub mod report;
 pub mod schema;
 pub mod server;
@@ -96,6 +100,8 @@ pub enum Code {
     // Sound
     SoundInvalidSampleRate,
     SoundInvalidChannelCount,
+    SoundClipping,
+    SoundSilent,
 
     // Subtitle
     SubtitleParseError,
@@ -108,6 +114,8 @@ pub enum Code {
     // Encryption
     EncryptionDetected,
     KdmRequired,
+    KdmExpired,
+    KdmNotYetValid,
 
     // Reel continuity
     ReelDiscontinuity,
@@ -162,12 +170,16 @@ impl Code {
             Code::J2kInvalidComponentCount => "j2k_invalid_component_count",
             Code::SoundInvalidSampleRate => "sound_invalid_sample_rate",
             Code::SoundInvalidChannelCount => "sound_invalid_channel_count",
+            Code::SoundClipping => "sound_clipping",
+            Code::SoundSilent => "sound_silent",
             Code::SubtitleParseError => "subtitle_parse_error",
             Code::SubtitleInvalidTiming => "subtitle_invalid_timing",
             Code::SubtitleFontMissing => "subtitle_font_missing",
             Code::IsdcfNamingViolation => "isdcf_naming_violation",
             Code::EncryptionDetected => "encryption_detected",
             Code::KdmRequired => "kdm_required",
+            Code::KdmExpired => "kdm_expired",
+            Code::KdmNotYetValid => "kdm_not_yet_valid",
             Code::ReelDiscontinuity => "reel_discontinuity",
             Code::StereoMismatch => "stereo_mismatch",
             Code::MarkerMissing => "marker_missing",
