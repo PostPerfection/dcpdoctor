@@ -1,5 +1,10 @@
 pub mod assetmap;
 pub mod audio;
+pub mod auto_qc;
+pub mod bitrate;
+pub mod checksum_verify;
+pub mod compliance;
+pub mod conformance;
 pub mod cpl;
 pub mod dcp;
 pub mod diff;
@@ -7,6 +12,7 @@ pub mod fix;
 pub mod hash;
 pub mod imf;
 pub mod info;
+pub mod isdcf;
 pub mod j2k;
 pub mod kdm;
 pub mod mxf;
@@ -21,6 +27,7 @@ pub mod signature;
 pub mod subtitle;
 pub mod timeline;
 pub mod validate;
+pub mod validators;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

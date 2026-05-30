@@ -325,6 +325,7 @@ dependencies = [
 name = "dcpdoctor-core"
 version = "1.0.0"
 dependencies = [
+ "asdcplib",
  "base64",
  "dcpdoctor-imf",
  "postkit",
