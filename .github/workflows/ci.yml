@@ -109,6 +109,13 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vcpkg install openssl --triplet x64-windows
+          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" >> $env:GITHUB_ENV
+          echo "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" >> $env:GITHUB_PATH
+
       - name: Build
         working-directory: rust
         run: cargo build
