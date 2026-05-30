@@ -9,6 +9,7 @@ description = "DCP/IMF validation and analysis library"
 base64 = "0.22"
 postkit.workspace = true
 quick-xml.workspace = true
+regex-lite = "0.1"
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
