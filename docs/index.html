@@ -1082,17 +1082,17 @@ cargo build --release
             <div class="deploy-card">
                 <div class="d-icon">&#128421;</div>
                 <h3>Linux</h3>
-                <p>Ubuntu 24.04+, Fedora 40+, any distribution with GCC 13+ or Clang 17+. Full CI tested on GitHub Actions.</p>
+                <p>Ubuntu 22.04+, Fedora 39+, any distribution with a Rust 1.85+ toolchain. Full CI tested on GitHub Actions.</p>
             </div>
             <div class="deploy-card">
                 <div class="d-icon">&#127822;</div>
                 <h3>macOS</h3>
-                <p>macOS 14+ (Sonoma) with Apple Clang or Homebrew GCC. ARM64 and x86_64. Tested on M-series hardware.</p>
+                <p>macOS 13+ (Ventura) with Rust toolchain via rustup. ARM64 and x86_64. Tested on M-series hardware.</p>
             </div>
             <div class="deploy-card">
                 <div class="d-icon">&#128187;</div>
                 <h3>Windows</h3>
-                <p>Windows 10/11 with MSVC 2022 or MinGW. vcpkg for dependency management. GitHub Actions CI verified.</p>
+                <p>Windows 10/11 with Rust toolchain via rustup. No external dependencies required. GitHub Actions CI verified.</p>
             </div>
         </div>
     </div>
@@ -1140,12 +1140,12 @@ cargo build --release
 
         <div style="background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 32px; max-width: 700px; margin: 0 auto;">
             <h3 style="color: var(--text-primary); margin-bottom: 16px; font-size: 1.05rem;">Build the Desktop App</h3>
-            <pre style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.8;"><code style="color: var(--text-secondary);"><span style="color: var(--text-tertiary);"># Build CLI first</span>
-<span style="color: var(--accent);">cd</span> build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
+            <pre style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.8;"><code style="color: var(--text-secondary);"><span style="color: var(--text-tertiary);"># Build CLI</span>
+<span style="color: var(--accent);">cd</span> rust &amp;&amp; cargo build --release
 
 <span style="color: var(--text-tertiary);"># Copy CLI as sidecar + build GUI</span>
 <span style="color: var(--accent);">cd</span> ../gui && npm install
-cp ../build/dcpdoctor src-tauri/dcpdoctor-$(rustc -vV | grep host | cut -d' ' -f2)
+cp ../rust/target/release/dcpdoctor-cli src-tauri/dcpdoctor-cli-$(rustc -vV | grep host | cut -d' ' -f2)
 npx tauri build
 
 <span style="color: var(--text-tertiary);"># Packages in gui/src-tauri/target/release/bundle/</span></code></pre>
