@@ -5,7 +5,7 @@
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{Note, Severity};
 
@@ -36,6 +36,11 @@ pub struct ImfCpl {
     pub application: ImfApplication,
     pub virtual_tracks: Vec<VirtualTrack>,
     pub total_duration: u64,
+    pub issue_date: String,
+    pub content_kind: String,
+    pub segment_count: u32,
+    pub all_uuids: Vec<String>,
+    pub markers: Vec<Marker>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,8 +56,15 @@ pub enum TrackType {
     MainImage,
     MainAudio,
     Subtitle,
+    IAB,
     Marker,
     Other,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Marker {
+    pub label: String,
+    pub offset: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -132,6 +144,31 @@ pub fn validate_imf_cpl(cpl_xml: &str, assetmap_xml: Option<&str>, cpl_path: &st
 
     // Timeline alignment
     validate_timeline_alignment(&cpl, cpl_path, &mut notes);
+
+    // UUID validation
+    validate_uuids(&cpl, cpl_path, &mut notes);
+
+    // ContentKind validation
+    validate_content_kind(&cpl, cpl_path, &mut notes);
+
+    // IssueDate validation
+    validate_issue_date(&cpl, cpl_path, &mut notes);
+
+    // Segment structure
+    if cpl.segment_count == 0 {
+        notes.push(Note {
+            severity: Severity::Error,
+            code: "missing_required_element".to_string(),
+            message: "CPL has no Segment elements (at least one required)".to_string(),
+            file: Some(cpl_path.to_string()),
+        });
+    }
+
+    // Marker validation
+    validate_markers(&cpl, cpl_path, &mut notes);
+
+    // IAB track validation
+    validate_iab_tracks(&cpl, cpl_path, &mut notes);
 
     notes
 }
@@ -427,6 +464,7 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
     let mut current_vt: Option<VirtualTrack> = None;
     let mut current_resource: Option<TrackResource> = None;
     let mut current_tag = String::new();
+    let mut current_marker: Option<Marker> = None;
 
     loop {
         match reader.read_event() {
@@ -437,6 +475,9 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                 current_tag = name.clone();
 
                 match name.as_str() {
+                    "Segment" => {
+                        cpl.segment_count += 1;
+                    }
                     "MainImageSequence" => {
                         current_vt = Some(VirtualTrack {
                             track_type: TrackType::MainImage,
@@ -449,9 +490,19 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                             ..Default::default()
                         });
                     }
-                    "SubtitlesSequence" => {
+                    "SubtitlesSequence"
+                    | "TimedTextSequence"
+                    | "HearingImpairedCaptionsSequence"
+                    | "VisuallyImpairedTextSequence"
+                    | "ForcedNarrativeSequence" => {
                         current_vt = Some(VirtualTrack {
                             track_type: TrackType::Subtitle,
+                            ..Default::default()
+                        });
+                    }
+                    "IABSequence" | "ImmersiveAudioSequence" => {
+                        current_vt = Some(VirtualTrack {
+                            track_type: TrackType::IAB,
                             ..Default::default()
                         });
                     }
@@ -464,6 +515,9 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                     "Resource" => {
                         current_resource = Some(TrackResource::default());
                     }
+                    "Marker" => {
+                        current_marker = Some(Marker::default());
+                    }
                     _ => {}
                 }
             }
@@ -473,7 +527,15 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                 tag_stack.pop();
 
                 match name.as_str() {
-                    "MainImageSequence" | "MainAudioSequence" | "SubtitlesSequence"
+                    "MainImageSequence"
+                    | "MainAudioSequence"
+                    | "SubtitlesSequence"
+                    | "TimedTextSequence"
+                    | "HearingImpairedCaptionsSequence"
+                    | "VisuallyImpairedTextSequence"
+                    | "ForcedNarrativeSequence"
+                    | "IABSequence"
+                    | "ImmersiveAudioSequence"
                     | "MarkerSequence" => {
                         if let Some(vt) = current_vt.take() {
                             cpl.virtual_tracks.push(vt);
@@ -486,12 +548,35 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                             }
                         }
                     }
+                    "Marker" => {
+                        if let Some(m) = current_marker.take() {
+                            cpl.markers.push(m);
+                        }
+                    }
                     _ => {}
                 }
             }
             Ok(Event::Text(ref e)) => {
                 let text = e.unescape().unwrap_or_default().trim().to_string();
                 if text.is_empty() {
+                    continue;
+                }
+
+                // Collect UUIDs
+                if current_tag == "Id" {
+                    let uuid_val = text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
+                    if !uuid_val.is_empty() {
+                        cpl.all_uuids.push(uuid_val);
+                    }
+                }
+
+                // Marker fields
+                if let Some(ref mut m) = current_marker {
+                    match current_tag.as_str() {
+                        "Label" => m.label = text,
+                        "Offset" => m.offset = text.parse().unwrap_or(0),
+                        _ => {}
+                    }
                     continue;
                 }
 
@@ -517,6 +602,16 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                     "ContentTitle" | "ContentTitleText" => {
                         if cpl.content_title.is_empty() {
                             cpl.content_title = text;
+                        }
+                    }
+                    "IssueDate" => {
+                        if cpl.issue_date.is_empty() {
+                            cpl.issue_date = text;
+                        }
+                    }
+                    "ContentKind" => {
+                        if cpl.content_kind.is_empty() {
+                            cpl.content_kind = text;
                         }
                     }
                     "EditRate" => {
@@ -600,5 +695,239 @@ fn parse_edit_rate(s: &str) -> (u32, u32) {
         (n.trim().parse().unwrap_or(0), d.trim().parse().unwrap_or(0))
     } else {
         (0, 0)
+    }
+}
+
+// ─── UUID Validation ───────────────────────────────────────────────────────────
+
+fn validate_uuids(cpl: &ImfCpl, cpl_path: &str, notes: &mut Vec<Note>) {
+    let mut seen: HashSet<String> = HashSet::new();
+    for uuid in &cpl.all_uuids {
+        // Basic UUID format: 8-4-4-4-12 hex chars
+        let parts: Vec<&str> = uuid.split('-').collect();
+        let valid_format = parts.len() == 5
+            && parts[0].len() == 8
+            && parts[1].len() == 4
+            && parts[2].len() == 4
+            && parts[3].len() == 4
+            && parts[4].len() == 12
+            && uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+        if !valid_format {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: "invalid_uuid".to_string(),
+                message: format!("Malformed UUID: '{uuid}'"),
+                file: Some(cpl_path.to_string()),
+            });
+        }
+        let lower = uuid.to_lowercase();
+        if !seen.insert(lower) {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: "duplicate_asset_id".to_string(),
+                message: format!("Duplicate UUID in CPL: '{uuid}'"),
+                file: Some(cpl_path.to_string()),
+            });
+        }
+    }
+}
+
+// ─── ContentKind Validation ────────────────────────────────────────────────────
+
+const VALID_CONTENT_KINDS: &[&str] = &[
+    "feature",
+    "trailer",
+    "test",
+    "teaser",
+    "rating",
+    "advertisement",
+    "short",
+    "transitional",
+    "psa",
+    "policy",
+    "episode",
+    "highlights",
+    "event",
+    "supplemental",
+    "preview",
+];
+
+fn validate_content_kind(cpl: &ImfCpl, cpl_path: &str, notes: &mut Vec<Note>) {
+    if cpl.content_kind.is_empty() {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: "missing_required_element".to_string(),
+            message: "CPL has no ContentKind element".to_string(),
+            file: Some(cpl_path.to_string()),
+        });
+        return;
+    }
+    let kind_lower = cpl.content_kind.to_lowercase();
+    if !VALID_CONTENT_KINDS.contains(&kind_lower.as_str()) {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: "cpl_invalid_content_kind".to_string(),
+            message: format!(
+                "ContentKind '{}' is not a recognized value",
+                cpl.content_kind
+            ),
+            file: Some(cpl_path.to_string()),
+        });
+    }
+}
+
+// ─── IssueDate Validation ──────────────────────────────────────────────────────
+
+fn validate_issue_date(cpl: &ImfCpl, cpl_path: &str, notes: &mut Vec<Note>) {
+    if cpl.issue_date.is_empty() {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: "missing_required_element".to_string(),
+            message: "CPL has no IssueDate element".to_string(),
+            file: Some(cpl_path.to_string()),
+        });
+        return;
+    }
+    let valid = cpl.issue_date.len() >= 19
+        && cpl.issue_date.chars().nth(4) == Some('-')
+        && cpl.issue_date.chars().nth(7) == Some('-')
+        && cpl.issue_date.chars().nth(10) == Some('T')
+        && cpl.issue_date.chars().nth(13) == Some(':')
+        && cpl.issue_date.chars().nth(16) == Some(':');
+    if !valid {
+        notes.push(Note {
+            severity: Severity::Error,
+            code: "xml_schema_violation".to_string(),
+            message: format!("IssueDate '{}' is not valid ISO 8601", cpl.issue_date),
+            file: Some(cpl_path.to_string()),
+        });
+    }
+}
+
+// ─── Marker Validation ─────────────────────────────────────────────────────────
+
+const VALID_MARKER_LABELS: &[&str] = &[
+    "FFBT", "LFBT", "FFCR", "LFCR", "FFTC", "LFTC", "FFOI", "LFOI", "FFEC", "LFEC", "FFMC", "LFMC",
+    "FFOB", "LFOB", "FFHS", "LFHS", "FFSW", "LFSW", "FFBW", "LFBW",
+];
+
+fn validate_markers(cpl: &ImfCpl, cpl_path: &str, notes: &mut Vec<Note>) {
+    for marker in &cpl.markers {
+        if marker.label.is_empty() {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: "marker_invalid".to_string(),
+                message: "Marker has empty label".to_string(),
+                file: Some(cpl_path.to_string()),
+            });
+            continue;
+        }
+        if !VALID_MARKER_LABELS.contains(&marker.label.as_str()) {
+            notes.push(Note {
+                severity: Severity::Info,
+                code: "marker_invalid".to_string(),
+                message: format!(
+                    "Marker label '{}' is not a standard ST 2067-3 marker",
+                    marker.label
+                ),
+                file: Some(cpl_path.to_string()),
+            });
+        }
+        if cpl.total_duration > 0 && marker.offset > cpl.total_duration {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: "marker_invalid".to_string(),
+                message: format!(
+                    "Marker '{}' offset ({}) exceeds composition duration ({})",
+                    marker.label, marker.offset, cpl.total_duration
+                ),
+                file: Some(cpl_path.to_string()),
+            });
+        }
+    }
+
+    // Validate paired markers
+    let offsets: HashMap<&str, u64> = cpl
+        .markers
+        .iter()
+        .map(|m| (m.label.as_str(), m.offset))
+        .collect();
+    let pairs = [
+        ("FFBT", "LFBT"),
+        ("FFCR", "LFCR"),
+        ("FFTC", "LFTC"),
+        ("FFOI", "LFOI"),
+        ("FFEC", "LFEC"),
+        ("FFMC", "LFMC"),
+        ("FFOB", "LFOB"),
+    ];
+    for (first, last) in pairs {
+        if let (Some(&ff), Some(&lf)) = (offsets.get(first), offsets.get(last)) {
+            if ff > lf {
+                notes.push(Note {
+                    severity: Severity::Error,
+                    code: "marker_invalid".to_string(),
+                    message: format!(
+                        "Marker {} (offset {}) occurs after {} (offset {})",
+                        first, ff, last, lf
+                    ),
+                    file: Some(cpl_path.to_string()),
+                });
+            }
+        }
+    }
+}
+
+// ─── IAB Track Validation ──────────────────────────────────────────────────────
+
+fn validate_iab_tracks(cpl: &ImfCpl, cpl_path: &str, notes: &mut Vec<Note>) {
+    for vt in &cpl.virtual_tracks {
+        if vt.track_type != TrackType::IAB {
+            continue;
+        }
+        if vt.resources.is_empty() {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: "cpl_missing_reel".to_string(),
+                message: format!("IAB virtual track {} has no resources", vt.id),
+                file: Some(cpl_path.to_string()),
+            });
+            continue;
+        }
+
+        let image_rate = cpl
+            .virtual_tracks
+            .iter()
+            .find(|v| v.track_type == TrackType::MainImage)
+            .and_then(|v| v.resources.first())
+            .map(|r| r.edit_rate)
+            .unwrap_or(cpl.edit_rate);
+
+        for res in &vt.resources {
+            if res.edit_rate != (0, 0) && res.edit_rate != image_rate && image_rate != (0, 0) {
+                notes.push(Note {
+                    severity: Severity::Error,
+                    code: "cpl_invalid_edit_rate".to_string(),
+                    message: format!(
+                        "IAB track edit rate {}/{} must match MainImage edit rate {}/{}",
+                        res.edit_rate.0, res.edit_rate.1, image_rate.0, image_rate.1
+                    ),
+                    file: Some(cpl_path.to_string()),
+                });
+            }
+        }
+
+        let iab_duration: u64 = vt.resources.iter().map(|r| r.effective_duration()).sum();
+        if cpl.total_duration > 0 && iab_duration > 0 && iab_duration != cpl.total_duration {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: "cpl_mismatched_durations".to_string(),
+                message: format!(
+                    "IAB track duration ({}) differs from composition duration ({})",
+                    iab_duration, cpl.total_duration
+                ),
+                file: Some(cpl_path.to_string()),
+            });
+        }
     }
 }
