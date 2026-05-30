@@ -201,9 +201,47 @@ dcpdoctor --html -o report.html /path/to/dcp
 # SVG timeline visualization
 dcpdoctor --timeline timeline.svg /path/to/dcp
 
-# Fix suggestions
-dcpdoctor --fix /path/to/dcp
+# Auto-fix repairable issues
+dcpdoctor fix /path/to/dcp
+
+# Dry-run (show what would be fixed without modifying)
+dcpdoctor fix --dry-run /path/to/dcp
 ```
+
+### Auto-Fix
+
+The `fix` subcommand automatically repairs common issues:
+
+| Issue | What it fixes |
+|-------|---------------|
+| PKL hash mismatch | Recomputes SHA-1 and rewrites PKL |
+| Wrong namespace | Swaps Interop↔SMPTE namespace URIs |
+| Invalid ContentKind | Normalizes to canonical SMPTE value |
+
+After fixing XML files, PKL hashes are automatically recalculated to keep everything consistent.
+
+```bash
+# Fix and then re-validate
+dcpdoctor fix /path/to/dcp && dcpdoctor validate --strict /path/to/dcp
+```
+
+### Photon Integration (IMF)
+
+When [Netflix Photon](https://github.com/Netflix/photon) is available, dcpdoctor automatically invokes it for deep IMF Application 2/2E conformance checks:
+
+```bash
+# Set Photon JAR location
+export PHOTON_JAR=/opt/photon/photon.jar
+
+# Now validate includes Photon's deep IMF checks
+dcpdoctor validate /path/to/imp
+```
+
+Photon findings are merged into dcpdoctor's report with `[Photon]` prefix. Discovery order:
+1. `PHOTON_JAR` environment variable
+2. `/usr/local/share/photon/photon.jar`
+3. `/opt/photon/photon.jar`
+4. `photon` on PATH
 
 ### DCP Comparison
 

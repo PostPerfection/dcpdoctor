@@ -860,6 +860,12 @@
                 <p>Detect black frames, freeze frames, audio silence, and audio clipping. Configurable thresholds. JSON output for integration.</p>
                 <span class="feat-tag tag-studio">Studio</span>
             </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#128295;</div>
+                <h3>Auto-Fix</h3>
+                <p>Automatically repair PKL hash mismatches, wrong SMPTE/Interop namespaces, and invalid ContentKind values. Dry-run mode available.</p>
+                <span class="feat-tag tag-core">Core</span>
+            </div>
         </div>
     </div>
 </section>
@@ -946,9 +952,17 @@
             <div class="pipeline-card">
                 <span class="pipe-tag">IMF</span>
                 <h3>IMF Validation (Photon)</h3>
-                <p>Validate IMF packages via Netflix Photon engine.</p>
-<pre>dcpdoctor --imf \
-  /path/to/IMF_Package/</pre>
+                <p>Deep IMF App 2/2E conformance via Netflix Photon.</p>
+<pre>PHOTON_JAR=/opt/photon/photon.jar \
+  dcpdoctor validate /path/to/IMP/</pre>
+            </div>
+            <div class="pipeline-card">
+                <span class="pipe-tag">Fix</span>
+                <h3>Auto-Fix Issues</h3>
+                <p>Repair hash mismatches, namespaces, and ContentKind.</p>
+<pre>dcpdoctor fix /path/to/DCP/
+<span class="cmt"># Dry-run (preview only)</span>
+dcpdoctor fix --dry-run /path/to/DCP/</pre>
             </div>
             <div class="pipeline-card">
                 <span class="pipe-tag">Reports</span>
