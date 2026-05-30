@@ -309,7 +309,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "dcpdoctor-cli"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "dcpdoctor-core"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "asdcplib",
  "base64",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "dcpdoctor-imf"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "quick-xml",
  "serde",
@@ -915,7 +915,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "postkit"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "asdcplib",
  "base64",
