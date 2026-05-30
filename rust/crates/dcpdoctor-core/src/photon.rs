@@ -1,87 +1,221 @@
-//! Optional integration with Netflix Photon for deep IMF validation.
+//! Netflix Photon integration for deep IMF Application 2/2E validation.
 //!
-//! When `photon.jar` is available on the system, dcpdoctor can delegate
-//! IMF Application 2/2E conformance checks to Photon and merge its
-//! findings into our unified report.
+//! Photon is automatically cloned and built to `~/.cache/dcpdoctor/photon/`
+//! on first use. Requires Java 11+ and git.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::{Code, Note, Severity};
 
-/// Check if Photon is available on the system.
-/// Looks for the JAR at well-known locations or via PHOTON_JAR env var.
+const PHOTON_REPO: &str = "https://github.com/Netflix/photon.git";
+
+/// Error returned when Photon cannot be used.
+#[derive(Debug)]
+pub enum PhotonError {
+    /// Java runtime not found
+    JavaNotFound,
+    /// Failed to obtain Photon
+    SetupFailed(String),
+    /// Failed to run Photon
+    ExecutionFailed(String),
+}
+
+impl std::fmt::Display for PhotonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PhotonError::JavaNotFound => write!(
+                f,
+                "Java runtime not found. Install Java 11+ (e.g. `apt install default-jre`)"
+            ),
+            PhotonError::SetupFailed(e) => write!(f, "Photon setup failed: {e}"),
+            PhotonError::ExecutionFailed(e) => write!(f, "Photon execution failed: {e}"),
+        }
+    }
+}
+
+/// Return the cache directory for dcpdoctor.
+fn cache_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        PathBuf::from(xdg).join("dcpdoctor")
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".cache").join("dcpdoctor")
+    } else {
+        PathBuf::from("/tmp/dcpdoctor-cache")
+    }
+}
+
+/// Find the Photon libs directory, checking (in order):
+/// 1. PHOTON_DIR environment variable (directory containing libs/*.jar)
+/// 2. Well-known system paths
+/// 3. Local cache (~/.cache/dcpdoctor/photon/build/libs/)
 pub fn find_photon() -> Option<PathBuf> {
     // 1. Environment variable
-    if let Ok(path) = std::env::var("PHOTON_JAR") {
+    if let Ok(path) = std::env::var("PHOTON_DIR") {
         let p = PathBuf::from(&path);
-        if p.exists() {
+        if has_photon_jars(&p) {
             return Some(p);
+        }
+        // Also check build/libs/ subdirectory
+        let libs = p.join("build").join("libs");
+        if has_photon_jars(&libs) {
+            return Some(libs);
         }
     }
 
     // 2. Well-known locations
     let candidates = [
-        "/usr/local/share/photon/photon.jar",
-        "/usr/share/photon/photon.jar",
-        "/opt/photon/photon.jar",
+        "/usr/local/share/photon/libs",
+        "/usr/share/photon/libs",
+        "/opt/photon/build/libs",
     ];
     for candidate in &candidates {
         let p = PathBuf::from(candidate);
-        if p.exists() {
+        if has_photon_jars(&p) {
             return Some(p);
         }
     }
 
-    // 3. Check if `photon` wrapper script is on PATH
-    if let Ok(output) = Command::new("which").arg("photon").output()
-        && output.status.success()
-    {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
+    // 3. Local cache
+    let cached = cache_dir().join("photon").join("build").join("libs");
+    if has_photon_jars(&cached) {
+        return Some(cached);
     }
 
     None
 }
 
+/// Check if a directory contains Photon JAR files.
+fn has_photon_jars(dir: &Path) -> bool {
+    dir.is_dir()
+        && std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .any(|e| e.path().extension() == Some("jar".as_ref()))
+            })
+            .unwrap_or(false)
+}
+
+/// Check if Java is available on the system.
+pub fn has_java() -> bool {
+    Command::new("java")
+        .arg("-version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Clone and build Photon from source into the local cache.
+/// Requires git and Java 11+.
+fn bootstrap_photon() -> Result<PathBuf, PhotonError> {
+    let photon_dir = cache_dir().join("photon");
+    let libs_dir = photon_dir.join("build").join("libs");
+
+    // Already built
+    if has_photon_jars(&libs_dir) {
+        return Ok(libs_dir);
+    }
+
+    eprintln!("[dcpdoctor] Bootstrapping Photon (one-time setup)...");
+
+    // Clone if needed
+    if !photon_dir.join(".git").exists() {
+        let _ = std::fs::remove_dir_all(&photon_dir);
+        std::fs::create_dir_all(cache_dir())
+            .map_err(|e| PhotonError::SetupFailed(e.to_string()))?;
+
+        let output = Command::new("git")
+            .args(["clone", "--depth", "1", PHOTON_REPO])
+            .arg(&photon_dir)
+            .output()
+            .map_err(|e| PhotonError::SetupFailed(format!("git not found: {e}")))?;
+
+        if !output.status.success() {
+            return Err(PhotonError::SetupFailed(format!(
+                "git clone failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+    }
+
+    // Build
+    let gradlew = if cfg!(windows) {
+        "gradlew.bat"
+    } else {
+        "./gradlew"
+    };
+
+    let output = Command::new(gradlew)
+        .args(["build", "-x", "test"])
+        .current_dir(&photon_dir)
+        .output()
+        .map_err(|e| PhotonError::SetupFailed(format!("gradle build failed to start: {e}")))?;
+
+    if !output.status.success() {
+        return Err(PhotonError::SetupFailed(format!(
+            "gradle build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    // Get dependencies
+    let output = Command::new(gradlew)
+        .args(["getDependencies"])
+        .current_dir(&photon_dir)
+        .output()
+        .map_err(|e| PhotonError::SetupFailed(format!("getDependencies failed: {e}")))?;
+
+    if !output.status.success() {
+        return Err(PhotonError::SetupFailed(format!(
+            "getDependencies failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    if has_photon_jars(&libs_dir) {
+        eprintln!("[dcpdoctor] Photon ready.");
+        Ok(libs_dir)
+    } else {
+        Err(PhotonError::SetupFailed(
+            "build succeeded but no JARs found in build/libs/".to_string(),
+        ))
+    }
+}
+
+/// Ensure Photon is ready to use — build from source if needed, check Java.
+pub fn ensure_photon() -> Result<PathBuf, PhotonError> {
+    if !has_java() {
+        return Err(PhotonError::JavaNotFound);
+    }
+
+    if let Some(path) = find_photon() {
+        return Ok(path);
+    }
+
+    bootstrap_photon()
+}
+
 /// Run Photon against an IMP directory and return validation notes.
 ///
-/// Requires Java to be installed. Returns an empty vec if Photon
-/// is unavailable or fails to run.
-pub fn run_photon(imp_dir: &Path) -> Vec<Note> {
-    let jar_path = match find_photon() {
-        Some(p) => p,
-        None => return Vec::new(),
-    };
+/// Auto-builds Photon from source if not cached. Returns error if Java
+/// is missing or Photon cannot be obtained.
+pub fn run_photon(imp_dir: &Path) -> Result<Vec<Note>, PhotonError> {
+    let libs_dir = ensure_photon()?;
 
-    // Determine how to invoke — JAR directly or wrapper script
-    let output = if jar_path.extension().and_then(|e| e.to_str()) == Some("jar") {
-        Command::new("java")
-            .args(["-jar", &jar_path.to_string_lossy()])
-            .arg("--imp")
-            .arg(imp_dir)
-            .output()
-    } else {
-        // Wrapper script
-        Command::new(&jar_path).arg("--imp").arg(imp_dir).output()
-    };
+    // Build classpath: all JARs in libs directory
+    let classpath = format!("{}/*:", libs_dir.display());
 
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::warn!("Failed to run Photon: {}", e);
-            return Vec::new();
-        }
-    };
+    let output = Command::new("java")
+        .args(["-cp", &classpath, "com.netflix.imflibrary.app.IMPAnalyzer"])
+        .arg(imp_dir)
+        .output()
+        .map_err(|e| PhotonError::ExecutionFailed(e.to_string()))?;
 
-    // Photon exits 0 on success, non-zero on validation failure
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     let combined = format!("{}\n{}", stdout, stderr);
-    parse_photon_output(&combined, imp_dir)
+    Ok(parse_photon_output(&combined, imp_dir))
 }
 
 /// Parse Photon's text output into dcpdoctor Notes.

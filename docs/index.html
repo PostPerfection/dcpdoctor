@@ -952,9 +952,12 @@
             <div class="pipeline-card">
                 <span class="pipe-tag">IMF</span>
                 <h3>IMF Validation (Photon)</h3>
-                <p>Deep IMF App 2/2E conformance via Netflix Photon.</p>
-<pre>PHOTON_JAR=/opt/photon/photon.jar \
-  dcpdoctor validate /path/to/IMP/</pre>
+                <p>Deep IMF App 2/2E conformance via Netflix Photon. Auto-bootstraps on first use (requires Java 11+ and git).</p>
+<pre># Auto-downloads and builds Photon on first run
+dcpdoctor validate /path/to/IMP/
+
+# Or point to existing installation
+PHOTON_DIR=/opt/photon dcpdoctor validate /path/to/IMP/</pre>
             </div>
             <div class="pipeline-card">
                 <span class="pipe-tag">Fix</span>

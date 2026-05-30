@@ -227,21 +227,24 @@ dcpdoctor fix /path/to/dcp && dcpdoctor validate --strict /path/to/dcp
 
 ### Photon Integration (IMF)
 
-When [Netflix Photon](https://github.com/Netflix/photon) is available, dcpdoctor automatically invokes it for deep IMF Application 2/2E conformance checks:
+dcpdoctor includes mandatory [Netflix Photon](https://github.com/Netflix/photon) integration for deep IMF Application 2/2E conformance checks. On first use, Photon is automatically cloned and built to `~/.cache/dcpdoctor/photon/`.
+
+**Requirements:** Java 11+ and git.
 
 ```bash
-# Set Photon JAR location
-export PHOTON_JAR=/opt/photon/photon.jar
+# Validate includes Photon's deep IMF checks (auto-bootstraps on first run)
+dcpdoctor validate /path/to/imp
 
-# Now validate includes Photon's deep IMF checks
+# Or point to an existing Photon installation
+export PHOTON_DIR=/opt/photon
 dcpdoctor validate /path/to/imp
 ```
 
 Photon findings are merged into dcpdoctor's report with `[Photon]` prefix. Discovery order:
-1. `PHOTON_JAR` environment variable
-2. `/usr/local/share/photon/photon.jar`
-3. `/opt/photon/photon.jar`
-4. `photon` on PATH
+1. `PHOTON_DIR` environment variable (directory with `build/libs/*.jar`)
+2. `/usr/local/share/photon/libs/`
+3. `/opt/photon/build/libs/`
+4. `~/.cache/dcpdoctor/photon/build/libs/` (auto-built)
 
 ### DCP Comparison
 
