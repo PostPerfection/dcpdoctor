@@ -113,17 +113,14 @@ pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
                     continue;
                 }
                 match sha1_base64(&full_path) {
-                    Ok(computed) if computed != pkl_asset.hash => {
-                        // Replace the old hash with the new one in the XML
-                        if xml.contains(&pkl_asset.hash) {
-                            xml = xml.replacen(&pkl_asset.hash, &computed, 1);
-                            pkl_modified = true;
-                            result.repairs.push(Repair {
-                                code: Code::PklHashMismatch,
-                                description: format!("Updated hash for {} in PKL", asset_rel),
-                                file: pkl_path.clone(),
-                            });
-                        }
+                    Ok(computed) if computed != pkl_asset.hash && xml.contains(&pkl_asset.hash) => {
+                        xml = xml.replacen(&pkl_asset.hash, &computed, 1);
+                        pkl_modified = true;
+                        result.repairs.push(Repair {
+                            code: Code::PklHashMismatch,
+                            description: format!("Updated hash for {} in PKL", asset_rel),
+                            file: pkl_path.clone(),
+                        });
                     }
                     _ => {}
                 }
