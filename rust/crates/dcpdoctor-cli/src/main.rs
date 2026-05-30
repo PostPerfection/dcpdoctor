@@ -93,6 +93,15 @@ enum Commands {
         #[arg(short, long, default_value = "8080")]
         port: u16,
     },
+
+    /// Automatically fix repairable issues in a DCP
+    Fix {
+        /// DCP directory to repair
+        dcp_dir: PathBuf,
+        /// Dry run — show what would be fixed without modifying files
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() {
@@ -228,6 +237,58 @@ fn main() {
         Some(Commands::Serve { bind, port }) => {
             dcpdoctor_core::server::start_server(&bind, port);
         }
+        Some(Commands::Fix { dcp_dir, dry_run }) => {
+            if dry_run {
+                // Validate and show what would be fixed
+                let opts = dcpdoctor_core::VerifyOptions {
+                    check_hashes: true,
+                    check_signatures: false,
+                    check_picture_details: false,
+                    strict_smpte: true,
+                };
+                let verify_result = dcpdoctor_core::verify(&dcp_dir, &opts);
+                let fixable: Vec<_> = verify_result
+                    .notes
+                    .iter()
+                    .filter(|n| is_fixable(n.code))
+                    .collect();
+                if fixable.is_empty() {
+                    println!("Nothing to fix.");
+                } else {
+                    println!("Would fix {} issue(s):", fixable.len());
+                    for note in fixable {
+                        println!("  [{}] {}", note.code.as_str(), note.message);
+                    }
+                }
+            } else {
+                let fix_result = dcpdoctor_core::fix::fix_dcp(&dcp_dir);
+                if fix_result.repairs.is_empty() {
+                    println!("Nothing to fix — DCP is clean.");
+                } else {
+                    println!("Fixed {} issue(s):", fix_result.repair_count());
+                    for repair in &fix_result.repairs {
+                        println!("  [{}] {}", repair.code.as_str(), repair.description);
+                    }
+                }
+                if !fix_result.skipped.is_empty() {
+                    let unfixable: Vec<_> = fix_result
+                        .skipped
+                        .iter()
+                        .filter(|n| n.severity == dcpdoctor_core::Severity::Error)
+                        .collect();
+                    if !unfixable.is_empty() {
+                        eprintln!(
+                            "\n{} error(s) remain that cannot be auto-fixed:",
+                            unfixable.len()
+                        );
+                        for note in unfixable {
+                            eprintln!("  [{}] {}", note.code.as_str(), note.message);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
         None => {
             // Default: validate the dcp_dirs passed as positional args
             if cli.dcp_dirs.is_empty() {
@@ -274,4 +335,14 @@ fn run_validate(
     if any_failed {
         std::process::exit(1);
     }
+}
+
+fn is_fixable(code: dcpdoctor_core::Code) -> bool {
+    matches!(
+        code,
+        dcpdoctor_core::Code::PklHashMismatch
+            | dcpdoctor_core::Code::SmpteNamespaceWrong
+            | dcpdoctor_core::Code::InteropNamespaceWrong
+            | dcpdoctor_core::Code::CplInvalidContentKind
+    )
 }

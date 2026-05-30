@@ -2,6 +2,7 @@ pub mod assetmap;
 pub mod cpl;
 pub mod dcp;
 pub mod diff;
+pub mod fix;
 pub mod hash;
 pub mod info;
 pub mod mxf;
