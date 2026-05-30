@@ -5,6 +5,7 @@ use wasm_bindgen::prelude::*;
 mod assetmap;
 mod cpl;
 mod hash;
+pub mod imf;
 pub mod j2k;
 mod j2k_validate;
 pub mod mxf;

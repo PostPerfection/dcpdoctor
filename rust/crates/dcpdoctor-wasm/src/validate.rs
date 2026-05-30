@@ -208,6 +208,18 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
         validate_cpl(cpl, path, &mut notes);
     }
 
+    // 7b. Native IMF validation (App 2E / App 5 checks)
+    for (path, _cpl) in &cpls {
+        if let Some(entry) = file_map.get(path.as_str()) {
+            let xml = get_content(entry);
+            if xml.contains("2067") {
+                let am_xml = get_content(assetmap_entry);
+                let imf_notes = crate::imf::validate_imf_cpl(&xml, Some(&am_xml), path);
+                notes.extend(imf_notes);
+            }
+        }
+    }
+
     // 8. Check for foreign files (files not in ASSETMAP)
     let known_paths: std::collections::HashSet<&str> = assetmap
         .assets

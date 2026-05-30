@@ -163,6 +163,12 @@ pub fn validate_imp(imp_dir: &Path) -> Vec<Note> {
 
         // Application-specific constraints
         validate_app_constraints(&cpl, cpl_path, &mut notes);
+
+        // Timeline alignment (all virtual tracks same duration)
+        validate_timeline_alignment(&cpl, cpl_path, &mut notes);
+
+        // Essence descriptor validation against application profile
+        validate_essence_descriptors(&cpl, imp_dir, cpl_path, &mut notes);
     }
 
     notes
@@ -442,6 +448,262 @@ fn validate_app5(cpl: &ImfCpl, cpl_path: &Path, notes: &mut Vec<Note>) {
     }
 }
 
+/// Validate all virtual tracks cover the same timeline span.
+fn validate_timeline_alignment(cpl: &ImfCpl, cpl_path: &Path, notes: &mut Vec<Note>) {
+    if cpl.virtual_tracks.is_empty() {
+        return;
+    }
+
+    // Get MainImage duration as reference
+    let image_duration = cpl
+        .virtual_tracks
+        .iter()
+        .find(|vt| vt.track_type == TrackType::MainImage)
+        .map(|vt| {
+            vt.resources
+                .iter()
+                .map(|r| r.effective_duration())
+                .sum::<u64>()
+        });
+
+    let reference_duration = match image_duration {
+        Some(d) if d > 0 => d,
+        _ => return,
+    };
+
+    // All non-marker tracks must match the reference duration
+    for vt in &cpl.virtual_tracks {
+        if vt.track_type == TrackType::Marker || vt.resources.is_empty() {
+            continue;
+        }
+        let track_duration: u64 = vt.resources.iter().map(|r| r.effective_duration()).sum();
+        if track_duration > 0 && track_duration != reference_duration {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::CplMismatchedDurations,
+                message: format!(
+                    "{:?} track {} duration ({}) differs from MainImage duration ({})",
+                    vt.track_type, vt.id, track_duration, reference_duration
+                ),
+                file: Some(cpl_path.to_path_buf()),
+                line: 0,
+            });
+        }
+    }
+}
+
+/// Validate MXF essence descriptors against the declared application profile.
+fn validate_essence_descriptors(
+    cpl: &ImfCpl,
+    imp_dir: &Path,
+    cpl_path: &Path,
+    notes: &mut Vec<Note>,
+) {
+    // Build AssetMap ID→path mapping
+    let assetmap_path = imp_dir.join("ASSETMAP.xml");
+    if !assetmap_path.exists() {
+        return;
+    }
+    let assetmap_xml = match std::fs::read_to_string(&assetmap_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let id_to_path = parse_assetmap_paths(&assetmap_xml);
+
+    // Find all track file IDs referenced in picture/audio sequences
+    for vt in &cpl.virtual_tracks {
+        for res in &vt.resources {
+            if res.track_file_id.is_empty() {
+                continue;
+            }
+            let rel_path = match id_to_path.get(&res.track_file_id) {
+                Some(p) => p,
+                None => continue,
+            };
+            let full_path = imp_dir.join(rel_path);
+            if !full_path.exists() {
+                continue;
+            }
+
+            // Only validate MXF files
+            let ext = full_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if ext != "mxf" {
+                continue;
+            }
+
+            let mxf_info = crate::mxf::read_mxf_info(&full_path);
+            if !mxf_info.valid {
+                notes.push(Note {
+                    severity: Severity::Error,
+                    code: Code::MxfUnreadable,
+                    message: format!("Cannot read MXF track file: {}", mxf_info.error),
+                    file: Some(full_path.clone()),
+                    line: 0,
+                });
+                continue;
+            }
+
+            match vt.track_type {
+                TrackType::MainImage => {
+                    validate_picture_essence(&mxf_info, cpl, &full_path, cpl_path, notes);
+                }
+                TrackType::MainAudio => {
+                    validate_audio_essence(&mxf_info, cpl, &full_path, cpl_path, notes);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Validate picture essence against application constraints.
+fn validate_picture_essence(
+    mxf: &crate::mxf::MxfInfo,
+    cpl: &ImfCpl,
+    mxf_path: &Path,
+    _cpl_path: &Path,
+    notes: &mut Vec<Note>,
+) {
+    let pic = match &mxf.picture {
+        Some(p) => p,
+        None => {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::MxfInvalidStructure,
+                message: "MainImage track file has no picture descriptor".to_string(),
+                file: Some(mxf_path.to_path_buf()),
+                line: 0,
+            });
+            return;
+        }
+    };
+
+    if cpl.application == ImfApplication::App2e {
+        // ST 2067-21 picture constraints:
+        // Resolution: HD (1920x1080), 2K (2048x1080), UHD (3840x2160), 4K (4096x2160)
+        let valid_resolutions = [(1920, 1080), (2048, 1080), (3840, 2160), (4096, 2160)];
+        if pic.width > 0 && pic.height > 0 && !valid_resolutions.contains(&(pic.width, pic.height))
+        {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::PictureInvalidResolution,
+                message: format!(
+                    "App 2E: invalid resolution {}x{} (allowed: 1920x1080, 2048x1080, 3840x2160, 4096x2160)",
+                    pic.width, pic.height
+                ),
+                file: Some(mxf_path.to_path_buf()),
+                line: 0,
+            });
+        }
+
+        // Bit depth: 8, 10, or 12 bits per component
+        if pic.bit_depth > 0 && !matches!(pic.bit_depth, 8 | 10 | 12) {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::MxfInvalidStructure,
+                message: format!(
+                    "App 2E: invalid picture bit depth {} (allowed: 8, 10, 12)",
+                    pic.bit_depth
+                ),
+                file: Some(mxf_path.to_path_buf()),
+                line: 0,
+            });
+        }
+
+        // Frame rate must match CPL edit rate
+        if pic.frame_rate_num > 0 && pic.frame_rate_den > 0 && cpl.edit_rate != (0, 0) {
+            let pic_fps = pic.frame_rate_num as f64 / pic.frame_rate_den as f64;
+            let cpl_fps = cpl.edit_rate.0 as f64 / cpl.edit_rate.1 as f64;
+            if (pic_fps - cpl_fps).abs() > 0.01 {
+                notes.push(Note {
+                    severity: Severity::Warning,
+                    code: Code::PictureInvalidFrameRate,
+                    message: format!(
+                        "Picture frame rate ({}/{} = {:.3} fps) differs from CPL edit rate ({}/{} = {:.3} fps)",
+                        pic.frame_rate_num, pic.frame_rate_den, pic_fps,
+                        cpl.edit_rate.0, cpl.edit_rate.1, cpl_fps
+                    ),
+                    file: Some(mxf_path.to_path_buf()),
+                    line: 0,
+                });
+            }
+        }
+    }
+}
+
+/// Validate audio essence against application constraints.
+fn validate_audio_essence(
+    mxf: &crate::mxf::MxfInfo,
+    cpl: &ImfCpl,
+    mxf_path: &Path,
+    _cpl_path: &Path,
+    notes: &mut Vec<Note>,
+) {
+    let snd = match &mxf.sound {
+        Some(s) => s,
+        None => {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::MxfInvalidStructure,
+                message: "MainAudio track file has no sound descriptor".to_string(),
+                file: Some(mxf_path.to_path_buf()),
+                line: 0,
+            });
+            return;
+        }
+    };
+
+    if cpl.application == ImfApplication::App2e {
+        // ST 2067-21 audio constraints:
+        // Sample rate: 48000 or 96000 Hz
+        if snd.sample_rate > 0 && !matches!(snd.sample_rate, 48000 | 96000) {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::SoundInvalidSampleRate,
+                message: format!(
+                    "App 2E: invalid audio sample rate {} Hz (allowed: 48000, 96000)",
+                    snd.sample_rate
+                ),
+                file: Some(mxf_path.to_path_buf()),
+                line: 0,
+            });
+        }
+
+        // Bit depth: 24 bits required
+        if snd.bit_depth > 0 && snd.bit_depth != 24 {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::SoundInvalidChannelCount,
+                message: format!(
+                    "App 2E: invalid audio bit depth {} (required: 24)",
+                    snd.bit_depth
+                ),
+                file: Some(mxf_path.to_path_buf()),
+                line: 0,
+            });
+        }
+
+        // Channel count: standard configs (mono through 7.1.4)
+        let valid_channels = [1, 2, 6, 8, 10, 12, 16, 24];
+        if snd.channels > 0 && !valid_channels.contains(&snd.channels) {
+            notes.push(Note {
+                severity: Severity::Warning,
+                code: Code::SoundInvalidChannelCount,
+                message: format!(
+                    "App 2E: unusual channel count {} (typical: 1, 2, 6, 8, 10, 12, 16, 24)",
+                    snd.channels
+                ),
+                file: Some(mxf_path.to_path_buf()),
+                line: 0,
+            });
+        }
+    }
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Find CPL XML files in an IMP directory.
@@ -497,6 +759,63 @@ fn parse_assetmap_ids(xml: &str) -> HashSet<String> {
         }
     }
     ids
+}
+
+/// Parse asset ID→path mapping from an ASSETMAP.xml.
+fn parse_assetmap_paths(xml: &str) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    let mut map = HashMap::new();
+    let mut reader = Reader::from_str(xml);
+    let mut in_asset = false;
+    let mut current_id = String::new();
+    let mut current_path = String::new();
+    let mut current_tag = String::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                let local = e.local_name();
+                let name = String::from_utf8_lossy(local.as_ref()).to_string();
+                match name.as_str() {
+                    "Asset" => {
+                        in_asset = true;
+                        current_id.clear();
+                        current_path.clear();
+                    }
+                    _ => current_tag = name,
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let local = e.local_name();
+                let name = String::from_utf8_lossy(local.as_ref());
+                if name == "Asset" && in_asset {
+                    if !current_id.is_empty() && !current_path.is_empty() {
+                        map.insert(current_id.clone(), current_path.clone());
+                    }
+                    in_asset = false;
+                }
+            }
+            Ok(Event::Text(ref e)) if in_asset => {
+                let text = e.unescape().unwrap_or_default().trim().to_string();
+                if text.is_empty() {
+                    continue;
+                }
+                match current_tag.as_str() {
+                    "Id" if current_id.is_empty() => {
+                        current_id = text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
+                    }
+                    "Path" => {
+                        current_path = text;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    map
 }
 
 /// Parse an IMF CPL from XML, extracting extended metadata.
