@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 const SOC: u16 = 0xFF4F; // Start of codestream
 const SIZ: u16 = 0xFF51; // Image and tile size
 const COD: u16 = 0xFF52; // Coding style default
+const TLM: u16 = 0xFF55; // Tile-part lengths
+const POC: u16 = 0xFF5F; // Progression order change
+const SOT: u16 = 0xFF90; // Start of tile-part
 
 /// Parsed J2K codestream header parameters relevant to DCI validation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -43,6 +46,12 @@ pub struct J2kHeader {
     pub num_layers: u16,
     /// Multi-component transform
     pub mct: bool,
+    /// Whether a TLM (tile-part lengths) marker is present
+    pub tlm_present: bool,
+    /// Whether a POC (progression order change) marker is present
+    pub poc_present: bool,
+    /// Number of tile-parts found (SOT markers)
+    pub tile_part_count: u32,
 }
 
 /// Find and parse J2K codestream header from MXF file data.
@@ -102,6 +111,25 @@ pub fn parse_j2k_from_mxf(data: &[u8]) -> Option<J2kHeader> {
     // Parse COD and merge into header
     let mut header = siz;
     parse_cod(cod_data, &mut header);
+
+    // Scan main header for TLM, POC markers and count tile-parts (SOT)
+    let scan_start = after_siz;
+    let scan_end = data.len().min(2 * 1024 * 1024); // Limit scan to 2 MB
+    header.tlm_present = find_marker(data, scan_start, TLM).is_some();
+    header.poc_present = find_marker(data, scan_start, POC).is_some();
+
+    // Count SOT markers (each marks one tile-part)
+    let mut sot_count: u32 = 0;
+    let mut pos = scan_start;
+    while pos < scan_end {
+        if let Some(offset) = find_marker(data, pos, SOT) {
+            sot_count += 1;
+            pos = offset + 2;
+        } else {
+            break;
+        }
+    }
+    header.tile_part_count = sot_count;
 
     Some(header)
 }

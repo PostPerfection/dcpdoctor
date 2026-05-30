@@ -139,5 +139,48 @@ pub fn validate_j2k(path: &str, header: &J2kHeader) -> Vec<Note> {
         }
     }
 
+    // TLM marker must be present (SMPTE 428-1 §6.1)
+    if !header.tlm_present {
+        notes.push(Note {
+            severity: Severity::Error,
+            code: "j2k_missing_tlm".to_string(),
+            message: "J2K codestream missing required TLM (tile-part length) marker".to_string(),
+            file: Some(path.to_string()),
+        });
+    }
+
+    // POC marker must NOT be present for DCI (SMPTE 428-1)
+    if header.poc_present {
+        notes.push(Note {
+            severity: Severity::Error,
+            code: "j2k_poc_present".to_string(),
+            message: "J2K codestream contains POC (progression order change) marker — not permitted for DCI".to_string(),
+            file: Some(path.to_string()),
+        });
+    }
+
+    // Number of tile-parts: DCI requires exactly 1 for single-tile (or 3 for 4K with 3 tiles)
+    if header.tile_part_count > 0 {
+        let expected = if header.tile_width > 0 && header.tile_width < header.width {
+            // Multi-tile: tile count × layers
+            let num_tiles_x = header.width.div_ceil(header.tile_width);
+            let num_tiles_y = header.height.div_ceil(header.tile_height);
+            num_tiles_x * num_tiles_y
+        } else {
+            1
+        };
+        if header.tile_part_count != expected {
+            notes.push(Note {
+                severity: Severity::Warning,
+                code: "j2k_tile_part_count".to_string(),
+                message: format!(
+                    "J2K has {} tile-part(s) (expected {})",
+                    header.tile_part_count, expected
+                ),
+                file: Some(path.to_string()),
+            });
+        }
+    }
+
     notes
 }
