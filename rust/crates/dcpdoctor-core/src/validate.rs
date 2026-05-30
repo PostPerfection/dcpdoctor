@@ -296,7 +296,13 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         }
     }
 
-    // 6. Photon integration — deep IMF conformance checks
+    // 6. Native IMF validation (works everywhere including WASM)
+    let imf_notes = crate::imf::validate_imp(dcp_dir);
+    for note in imf_notes {
+        result.add(note);
+    }
+
+    // 7. Photon integration — additional deep IMF conformance checks
     match crate::photon::run_photon(dcp_dir) {
         Ok(photon_notes) => {
             for note in photon_notes {

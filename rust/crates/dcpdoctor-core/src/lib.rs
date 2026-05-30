@@ -4,6 +4,7 @@ pub mod dcp;
 pub mod diff;
 pub mod fix;
 pub mod hash;
+pub mod imf;
 pub mod info;
 pub mod mxf;
 pub mod note;
