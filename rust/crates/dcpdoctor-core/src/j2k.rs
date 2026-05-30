@@ -273,11 +273,7 @@ fn analyze_j2k_from_mxf(path: &Path) -> Result<J2kCodestreamInfo, String> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(1);
 
-    let frame_bytes = if frame_count > 0 {
-        file_size / frame_count
-    } else {
-        0
-    };
+    let frame_bytes = file_size.checked_div(frame_count).unwrap_or(0);
 
     let bit_depth = stream["bits_per_raw_sample"]
         .as_str()
@@ -392,17 +388,15 @@ pub fn validate_j2k_dci(info: &J2kCodestreamInfo) -> Vec<Note> {
                     ));
                 }
             }
-            2 | 4 => {
+            2 | 4 if info.width > 4096 || info.height > 2160 => {
                 // Profile 1 / Cinema 4K
-                if info.width > 4096 || info.height > 2160 {
-                    notes.push(Note::error(
-                        Code::J2kInvalidProfile,
-                        format!(
-                            "Resolution {}x{} exceeds Cinema 4K maximum (4096x2160)",
-                            info.width, info.height
-                        ),
-                    ));
-                }
+                notes.push(Note::error(
+                    Code::J2kInvalidProfile,
+                    format!(
+                        "Resolution {}x{} exceeds Cinema 4K maximum (4096x2160)",
+                        info.width, info.height
+                    ),
+                ));
             }
             _ => {}
         }
