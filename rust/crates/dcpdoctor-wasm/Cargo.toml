@@ -9,6 +9,7 @@ description = "DCP/IMF validator — WebAssembly build for browser-based validat
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+dcpdoctor-imf = { path = "../dcpdoctor-imf" }
 wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

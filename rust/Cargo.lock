@@ -326,6 +326,7 @@ name = "dcpdoctor-core"
 version = "1.0.0"
 dependencies = [
  "base64",
+ "dcpdoctor-imf",
  "postkit",
  "quick-xml",
  "regex-lite",
@@ -337,6 +338,14 @@ dependencies = [
  "time",
  "tracing",
  "x509-parser",
+]
+
+[[package]]
+name = "dcpdoctor-imf"
+version = "1.0.0"
+dependencies = [
+ "quick-xml",
+ "serde",
 ]
 
 [[package]]

@@ -7,6 +7,7 @@ description = "DCP/IMF validation and analysis library"
 
 [dependencies]
 base64 = "0.22"
+dcpdoctor-imf.workspace = true
 postkit.workspace = true
 quick-xml.workspace = true
 regex-lite = "0.1"

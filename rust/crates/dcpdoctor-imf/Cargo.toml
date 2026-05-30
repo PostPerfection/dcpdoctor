@@ -1,0 +1,10 @@
+[package]
+name = "dcpdoctor-imf"
+version = "1.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Shared IMF validation logic for dcpdoctor (no I/O dependencies)"
+
+[dependencies]
+quick-xml = "0.37"
+serde = { version = "1", features = ["derive"] }

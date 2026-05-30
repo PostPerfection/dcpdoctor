@@ -1011,7 +1011,7 @@ dcpdoctor fix --dry-run /path/to/DCP/</pre>
     <div class="section-inner">
         <span class="section-label">Quick Start</span>
         <h2 class="section-title">Build in Minutes</h2>
-        <p class="section-desc">Rust toolchain and standard system libraries. No proprietary dependencies.</p>
+        <p class="section-desc">Pure Rust — just install the toolchain and build. No system libraries or proprietary dependencies.</p>
 
         <div class="code-block fade-in">
             <div class="tab-row">
@@ -1021,56 +1021,50 @@ dcpdoctor fix --dry-run /path/to/DCP/</pre>
             </div>
             <div class="tab-body">
                 <div class="tab-panel active" id="tab-linux">
-<pre><span class="cmt"># Install dependencies (Ubuntu/Debian)</span>
-sudo apt install -y cmake ninja-build pkg-config \
-    libxml2-dev libssl-dev libxerces-c-dev libsqlite3-dev
+<pre><span class="cmt"># Install Rust (if not already installed)</span>
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-<span class="cmt"># Clone with submodules</span>
-git clone --recursive https://github.com/DcpDoctor/dcpdoctor.git
+<span class="cmt"># Clone</span>
+git clone https://github.com/PostPerfection/dcpdoctor.git
 cd dcpdoctor
 
 <span class="cmt"># Build</span>
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+cd rust &amp;&amp; cargo build --release
 
 <span class="cmt"># Run</span>
-./build/dcpdoctor /path/to/your/DCP/
+./target/release/dcpdoctor-cli /path/to/your/DCP/
 
 <span class="cmt"># Run tests</span>
-cd build &amp;&amp; ctest --output-on-failure</pre>
+cargo test --all</pre>
                 </div>
                 <div class="tab-panel" id="tab-macos">
-<pre><span class="cmt"># Install dependencies (Homebrew)</span>
-brew install cmake ninja pkg-config \
-    libxml2 openssl xerces-c sqlite
+<pre><span class="cmt"># Install Rust (if not already installed)</span>
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-<span class="cmt"># Clone with submodules</span>
-git clone --recursive https://github.com/DcpDoctor/dcpdoctor.git
+<span class="cmt"># Clone</span>
+git clone https://github.com/PostPerfection/dcpdoctor.git
 cd dcpdoctor
 
-<span class="cmt"># Build (with OpenSSL path hints)</span>
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DOPENSSL_ROOT_DIR=$(brew --prefix openssl) \
-    -DCMAKE_PREFIX_PATH="$(brew --prefix libxml2);$(brew --prefix xerces-c)"
-cmake --build build -j$(sysctl -n hw.ncpu)
+<span class="cmt"># Build</span>
+cd rust &amp;&amp; cargo build --release
 
 <span class="cmt"># Run</span>
-./build/dcpdoctor /path/to/your/DCP/</pre>
+./target/release/dcpdoctor-cli /path/to/your/DCP/</pre>
                 </div>
                 <div class="tab-panel" id="tab-windows">
-<pre><span class="cmt"># Install dependencies via vcpkg</span>
-vcpkg install libxml2 openssl xerces-c sqlite3
+<pre><span class="cmt"># Install Rust via rustup (https://rustup.rs)</span>
+<span class="cmt"># Download and run rustup-init.exe</span>
 
-<span class="cmt"># Clone with submodules</span>
-git clone --recursive https://github.com/DcpDoctor/dcpdoctor.git
+<span class="cmt"># Clone</span>
+git clone https://github.com/PostPerfection/dcpdoctor.git
 cd dcpdoctor
 
-<span class="cmt"># Build with vcpkg toolchain</span>
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
-cmake --build build --config Release
+<span class="cmt"># Build</span>
+cd rust
+cargo build --release
 
 <span class="cmt"># Run</span>
-.\build\Release\dcpdoctor.exe C:\path\to\DCP\</pre>
+.\target\release\dcpdoctor-cli.exe C:\path\to\DCP\</pre>
                 </div>
             </div>
         </div>
