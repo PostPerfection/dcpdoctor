@@ -296,5 +296,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         }
     }
 
+    // 6. Photon integration (if available) — deep IMF conformance checks
+    let photon_notes = crate::photon::run_photon(dcp_dir);
+    for note in photon_notes {
+        result.add(note);
+    }
+
     result
 }

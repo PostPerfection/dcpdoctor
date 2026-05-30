@@ -7,6 +7,7 @@ pub mod hash;
 pub mod info;
 pub mod mxf;
 pub mod note;
+pub mod photon;
 pub mod pkl;
 pub mod report;
 pub mod schema;
