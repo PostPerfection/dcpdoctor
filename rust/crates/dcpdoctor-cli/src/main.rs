@@ -61,6 +61,10 @@ enum Commands {
         #[arg(long)]
         deep_j2k: bool,
 
+        /// Run studio-specific checks (naming conventions, asset organisation)
+        #[arg(long)]
+        studio: bool,
+
         /// Generate SVG timeline to file
         #[arg(long)]
         timeline: Option<PathBuf>,
@@ -380,6 +384,7 @@ fn main() {
             strict,
             bv21,
             deep_j2k,
+            studio,
             timeline,
             manifest,
             output,
@@ -391,6 +396,7 @@ fn main() {
                 check_mxf,
                 strict || bv21,
                 deep_j2k,
+                studio,
                 timeline,
                 manifest,
                 format,
@@ -1158,6 +1164,7 @@ fn main() {
                 false,
                 false,
                 false,
+                false,
                 None,
                 None,
                 format,
@@ -1175,6 +1182,7 @@ fn run_validate(
     check_mxf: bool,
     strict: bool,
     deep_j2k: bool,
+    studio: bool,
     timeline: Option<PathBuf>,
     manifest: Option<PathBuf>,
     format: ReportFormat,
@@ -1205,6 +1213,14 @@ fn run_validate(
         if let Some(ref manifest_path) = manifest {
             let manifest_notes = check_manifest(dir, manifest_path);
             for note in manifest_notes {
+                result.add(note);
+            }
+        }
+
+        // Studio checks
+        if studio {
+            let studio_notes = dcpdoctor_core::studio::run_studio_checks(dir, deep_j2k);
+            for note in studio_notes {
                 result.add(note);
             }
         }
