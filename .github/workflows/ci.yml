@@ -112,9 +112,19 @@ jobs:
       - name: Install OpenSSL (Windows)
         if: runner.os == 'Windows'
         run: |
-          vcpkg install openssl --triplet x64-windows
-          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" >> $env:GITHUB_ENV
-          echo "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" >> $env:GITHUB_PATH
+          vcpkg install openssl xerces-c --triplet x64-windows
+        shell: bash
+
+      - name: Set vcpkg env (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "VCPKG_ROOT=C:/vcpkg" >> $GITHUB_ENV
+          echo "CMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=C:/vcpkg/installed/x64-windows" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=C:/vcpkg/installed/x64-windows/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=C:/vcpkg/installed/x64-windows/include" >> $GITHUB_ENV
+          echo "C:/vcpkg/installed/x64-windows/bin" >> $GITHUB_PATH
 
       - name: Build
         working-directory: rust
