@@ -202,6 +202,123 @@ enum Commands {
         #[arg(long)]
         no_strict: bool,
     },
+
+    /// Extract video/audio essence from MXF containers
+    #[command(name = "mxf-extract")]
+    MxfExtract {
+        /// MXF file to extract from
+        mxf_file: PathBuf,
+        /// Output directory
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Skip video extraction
+        #[arg(long)]
+        no_video: bool,
+        /// Skip audio extraction
+        #[arg(long)]
+        no_audio: bool,
+        /// Start frame
+        #[arg(long)]
+        start_frame: Option<u32>,
+        /// End frame
+        #[arg(long)]
+        end_frame: Option<u32>,
+    },
+
+    /// Validate XML against SMPTE XSD schemas
+    #[command(name = "schema-validate")]
+    SchemaValidate {
+        /// DCP or IMP directory
+        dcp_dir: PathBuf,
+        /// Path to XSD schema directory
+        #[arg(long)]
+        schema_dir: Option<PathBuf>,
+    },
+
+    /// Generate detailed QC report
+    #[command(name = "qc-report")]
+    QcReport {
+        /// DCP or IMP directory
+        dcp_dir: PathBuf,
+        /// Output file
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Report title
+        #[arg(long)]
+        title: Option<String>,
+        /// Client name
+        #[arg(long)]
+        client: Option<String>,
+    },
+
+    /// Detect audio/video sync drift
+    #[command(name = "av-sync")]
+    AvSync {
+        /// Video file (MXF or image sequence directory)
+        #[arg(short = 'v', long)]
+        video: PathBuf,
+        /// Audio file (MXF or WAV)
+        #[arg(short = 'a', long)]
+        audio: PathBuf,
+        /// Frame rate numerator
+        #[arg(long, default_value = "24")]
+        fps_num: u32,
+        /// Frame rate denominator
+        #[arg(long, default_value = "1")]
+        fps_den: u32,
+    },
+
+    /// Validate HDR metadata
+    #[command(name = "hdr-validate")]
+    HdrValidate {
+        /// Video file (MXF)
+        video_file: PathBuf,
+        /// HDR standard (hdr10, hlg, dolby-vision)
+        #[arg(short = 's', long)]
+        standard: Option<String>,
+        /// Expected MaxCLL
+        #[arg(long)]
+        max_cll: Option<u32>,
+        /// Expected MaxFALL
+        #[arg(long)]
+        max_fall: Option<u32>,
+    },
+
+    /// Compare frames between two files or IMPs
+    #[command(name = "frame-compare")]
+    FrameCompare {
+        /// First IMP directory
+        #[arg(long)]
+        imp_a: Option<PathBuf>,
+        /// Second IMP directory
+        #[arg(long)]
+        imp_b: Option<PathBuf>,
+        /// First file
+        #[arg(long)]
+        file_a: Option<PathBuf>,
+        /// Second file
+        #[arg(long)]
+        file_b: Option<PathBuf>,
+        /// Include VMAF metrics
+        #[arg(long)]
+        vmaf: bool,
+        /// Generate HTML report
+        #[arg(long)]
+        html: bool,
+        /// Extract diff images
+        #[arg(long)]
+        extract_diffs: bool,
+        /// Output directory
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Display IMP package info
+    #[command(name = "imp-info")]
+    ImpInfo {
+        /// IMP directory
+        imp_dir: PathBuf,
+    },
 }
 
 fn main() {
@@ -780,6 +897,253 @@ fn main() {
                     );
                     std::process::exit(1);
                 }
+            }
+        }
+        Some(Commands::MxfExtract {
+            mxf_file,
+            output,
+            no_video,
+            no_audio,
+            start_frame,
+            end_frame,
+        }) => {
+            let opts = dcpdoctor_core::mxf_extract::MxfExtractOptions {
+                input: mxf_file,
+                output_dir: output,
+                extract_video: !no_video,
+                extract_audio: !no_audio,
+                start_frame: start_frame.unwrap_or(0),
+                end_frame: end_frame.unwrap_or(0),
+            };
+            let result = dcpdoctor_core::mxf_extract::extract_mxf(&opts);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else if result.success {
+                println!("Extracted {} frame(s)", result.frames_extracted);
+                for f in &result.extracted_files {
+                    println!("  {}", f.display());
+                }
+            } else {
+                eprintln!("Extraction failed: {}", result.error);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::SchemaValidate {
+            dcp_dir,
+            schema_dir,
+        }) => {
+            let notes = if let Some(ref sd) = schema_dir {
+                let mut n = dcpdoctor_core::schema_validate::check_namespace_consistency(&dcp_dir);
+                let schema_result = dcpdoctor_core::schema::validate_schema(&dcp_dir, sd);
+                for err in &schema_result.errors {
+                    n.push(dcpdoctor_core::Note::error(
+                        dcpdoctor_core::Code::XmlParseError,
+                        format!("{}:{}: {}", err.line, err.column, err.message),
+                    ));
+                }
+                n
+            } else {
+                dcpdoctor_core::schema_validate::check_namespace_consistency(&dcp_dir)
+            };
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&notes).unwrap());
+            } else if notes.is_empty() {
+                println!("Schema validation passed");
+            } else {
+                println!("{} schema issue(s):", notes.len());
+                for note in &notes {
+                    println!("{note}");
+                }
+                let errors = notes
+                    .iter()
+                    .filter(|n| n.severity == dcpdoctor_core::Severity::Error)
+                    .count();
+                if errors > 0 {
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::QcReport {
+            dcp_dir,
+            output,
+            title,
+            client,
+        }) => {
+            let opts = dcpdoctor_core::qc_report::DetailedQcOptions {
+                imp_dir: dcp_dir,
+                output_file: output.clone(),
+                title: title.unwrap_or_else(|| "QC Report".to_string()),
+                client: client.unwrap_or_default(),
+                include_loudness: true,
+            };
+            let result = dcpdoctor_core::qc_report::generate_detailed_qc(&opts);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else if result.success {
+                println!("QC report written to {}", output.display());
+            } else {
+                eprintln!("QC report generation failed: {}", result.error);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::AvSync {
+            video,
+            audio,
+            fps_num,
+            fps_den,
+        }) => {
+            let opts = dcpdoctor_core::av_sync::AvSyncOptions {
+                video_file: video,
+                audio_file: audio,
+                fps_num,
+                fps_den,
+                sample_rate: 48000,
+            };
+            let result = dcpdoctor_core::av_sync::detect_av_sync(&opts);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else {
+                println!("A/V Sync Analysis:");
+                println!(
+                    "  Drift:        {:.1} ms ({:.2} frames)",
+                    result.drift_ms, result.drift_frames
+                );
+                println!("  Drift samples: {}", result.drift_samples);
+                if result.in_sync {
+                    println!("  Status:       IN SYNC");
+                } else {
+                    println!("  Status:       OUT OF SYNC");
+                    if !result.recommendation.is_empty() {
+                        println!("  Recommendation: {}", result.recommendation);
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::HdrValidate {
+            video_file,
+            standard,
+            max_cll,
+            max_fall,
+        }) => {
+            let expected_transfer = match standard.as_deref() {
+                Some("hdr10") | Some("pq") => dcpdoctor_core::hdr_validate::TransferFunction::Pq,
+                Some("hlg") => dcpdoctor_core::hdr_validate::TransferFunction::Hlg,
+                _ => dcpdoctor_core::hdr_validate::TransferFunction::default(),
+            };
+            let opts = dcpdoctor_core::hdr_validate::HdrValidateOptions {
+                video_path: video_file,
+                expected_transfer,
+                expected_colorimetry: dcpdoctor_core::hdr_validate::Colorimetry::default(),
+                expected_bit_depth: 0,
+                expected_max_cll: max_cll.unwrap_or(0) as u16,
+                expected_max_luminance: max_fall.unwrap_or(0),
+            };
+            let result = dcpdoctor_core::hdr_validate::validate_hdr_metadata(&opts);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else {
+                println!("HDR Metadata Validation:");
+                println!("  Transfer:    {:?}", result.detected.transfer);
+                println!("  Colorimetry: {:?}", result.detected.colorimetry);
+                println!("  Bit depth:   {}", result.detected.bit_depth);
+                if let Some(ref cll) = result.detected.content_light {
+                    println!("  MaxCLL:      {}", cll.max_cll);
+                    println!("  MaxFALL:     {}", cll.max_fall);
+                }
+                if result.issues.is_empty() {
+                    println!("  Status: PASS");
+                } else {
+                    println!("  Issues:");
+                    for issue in &result.issues {
+                        println!("    - {}", issue.description);
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::FrameCompare {
+            imp_a,
+            imp_b,
+            file_a,
+            file_b,
+            vmaf,
+            html: generate_html,
+            extract_diffs,
+            output,
+        }) => {
+            let (a, b) = if let (Some(fa), Some(fb)) = (file_a, file_b) {
+                (fa, fb)
+            } else if let (Some(ia), Some(ib)) = (imp_a, imp_b) {
+                (ia, ib)
+            } else {
+                eprintln!("Provide either --file-a/--file-b or --imp-a/--imp-b");
+                std::process::exit(1);
+            };
+
+            let opts = dcpdoctor_core::frame_compare::CompareOptions {
+                start_frame: 0,
+                end_frame: 0,
+                sample_interval: 1,
+                threshold_psnr: 30.0,
+                threshold_ssim: 0.95,
+                compute_ssim: true,
+                compute_vmaf: vmaf,
+                extract_diff_frames: extract_diffs,
+                generate_report: true,
+                generate_html,
+                output_dir: output.unwrap_or_else(|| PathBuf::from(".")),
+                vmaf_model: PathBuf::new(),
+            };
+            let result = dcpdoctor_core::frame_compare::compare_files(&a, &b, &opts);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else {
+                println!("Frame Comparison:");
+                println!("  Frames compared: {}", result.frames_compared);
+                println!("  PSNR avg:        {:.2} dB", result.avg_psnr);
+                println!("  SSIM avg:        {:.4}", result.avg_ssim);
+                if vmaf {
+                    println!("  VMAF:            {:.2}", result.vmaf_score);
+                }
+                if result.identical {
+                    println!("  Result:          IDENTICAL");
+                } else {
+                    println!("  Diff frames:     {}", result.frames_different);
+                }
+            }
+        }
+        Some(Commands::ImpInfo { imp_dir }) => {
+            let opts = dcpdoctor_core::VerifyOptions {
+                check_hashes: false,
+                check_signatures: false,
+                check_picture_details: false,
+                strict_smpte: false,
+            };
+            let result = dcpdoctor_core::verify(&imp_dir, &opts);
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "directory": imp_dir,
+                        "errors": result.error_count,
+                        "warnings": result.warning_count,
+                        "notes": result.notes,
+                    }))
+                    .unwrap()
+                );
+            } else if let Some(info) = dcpdoctor_core::info::get_dcp_info(&imp_dir) {
+                println!("IMP Info: {}", imp_dir.display());
+                println!("  Title:    {}", info.title);
+                println!("  Standard: {}", info.standard);
+                println!("  Assets:   {}", info.asset_count);
+                println!("  CPLs:     {}", info.cpl_count);
+                println!("  PKLs:     {}", info.pkl_count);
+                println!("  Duration: {} frames", info.total_duration_frames);
+            } else {
+                eprintln!("Failed to read IMP at {}", imp_dir.display());
+                std::process::exit(1);
             }
         }
         None => {
