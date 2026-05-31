@@ -670,8 +670,8 @@
                 <div style="width: 38px;"></div>
             </div>
             <div class="demo-body">
-<span class="c"># Full validation with studio-level checks</span>
-<span class="p">$</span> <span class="w">dcpdoctor</span> <span class="v">--studio --deep</span> <span class="f">/mnt/dcp/MyFeature_FTR-1_S_EN_XX_2K_20241201/</span>
+<span class="c"># Full validation with deep J2K and MXF analysis</span>
+<span class="p">$</span> <span class="w">dcpdoctor</span> <span class="v">validate --check-mxf --deep-j2k</span> <span class="f">/mnt/dcp/MyFeature_FTR-1_S_EN_XX_2K_20241201/</span>
 
 <span class="o">Validating: MyFeature_FTR-1_S_EN_XX_2K_20241201</span>
 <span class="o">Standard:   SMPTE (Bv2.1)</span>
@@ -938,15 +938,15 @@
             <div class="pipeline-card">
                 <span class="pipe-tag">Studio</span>
                 <h3>Studio-Level Checks</h3>
-                <p>Loudness, color, resolution, encryption, reel continuity.</p>
-<pre>dcpdoctor --studio --deep \
+                <p>MXF essence inspection with deep J2K codestream analysis.</p>
+<pre>dcpdoctor validate --check-mxf --deep-j2k \
   /path/to/DCP/</pre>
             </div>
             <div class="pipeline-card">
                 <span class="pipe-tag">Premium</span>
-                <h3>Netflix + Atmos + HDR</h3>
-                <p>Full premium analysis for streaming delivery.</p>
-<pre>dcpdoctor --netflix --atmos --hdr \
+                <h3>Netflix IMF Compliance</h3>
+                <p>Full platform compliance checking for streaming delivery.</p>
+<pre>dcpdoctor imf-compliance --target netflix \
   /path/to/IMF/</pre>
             </div>
             <div class="pipeline-card">
