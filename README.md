@@ -121,7 +121,7 @@ The CLI binary is fully self-contained (all dependencies statically linked). Ext
 #### Linux (Ubuntu/Debian)
 
 ```bash
-sudo apt-get install -y cmake pkg-config libxml2-dev libssl-dev libxerces-c-dev
+sudo apt-get install -y pkg-config libxml2-dev libssl-dev libxerces-c-dev
 # For GUI: also install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
 
 cd rust
@@ -132,11 +132,10 @@ cargo build --release
 #### macOS
 
 ```bash
-brew install cmake pkg-config libxml2 openssl@3 xerces-c
+brew install pkg-config libxml2 openssl@3 xerces-c
 
 export OPENSSL_DIR=$(brew --prefix openssl@3)
 export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$(brew --prefix xerces-c)/lib/pkgconfig"
-export CMAKE_PREFIX_PATH="$(brew --prefix libxml2);$(brew --prefix xerces-c)"
 
 cd rust
 cargo build --release
@@ -149,7 +148,6 @@ cargo build --release
 vcpkg install libxml2 openssl xerces-c --triplet x64-windows
 
 $env:VCPKG_ROOT = "$env:VCPKG_INSTALLATION_ROOT"
-$env:CMAKE_TOOLCHAIN_FILE = "$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
 
 cd rust
 cargo build --release
