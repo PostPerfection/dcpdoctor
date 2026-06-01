@@ -24,7 +24,11 @@ fn help_flag() {
         .stdout(predicate::str::contains("Usage:"))
         .stdout(predicate::str::contains("validate"))
         .stdout(predicate::str::contains("diff"))
-        .stdout(predicate::str::contains("info"));
+        .stdout(predicate::str::contains("info"))
+        .stdout(predicate::str::contains("kdm"))
+        .stdout(predicate::str::contains("mxf-extract"))
+        .stdout(predicate::str::contains("qc-report"))
+        .stdout(predicate::str::contains("imp-info"));
 }
 
 #[test]
@@ -75,4 +79,56 @@ fn shorthand_positional_arg() {
     let dir = TempDir::new().unwrap();
     // Positional arg without subcommand should act like `validate`
     cmd().arg(dir.path().to_str().unwrap()).assert().failure();
+}
+
+#[test]
+fn rust_command_surface_help_smoke() {
+    let subcommands = [
+        "watch",
+        "serve",
+        "fix",
+        "kdm",
+        "profiles",
+        "checksum-verify",
+        "loudness",
+        "frame-qc",
+        "auto-qc",
+        "imf-compliance",
+        "mxf-extract",
+        "schema-validate",
+        "qc-report",
+        "av-sync",
+        "hdr-validate",
+        "frame-compare",
+        "imp-info",
+    ];
+
+    for subcommand in subcommands {
+        cmd().args([subcommand, "--help"]).assert().success();
+    }
+}
+
+#[test]
+fn kdm_missing_file_fails() {
+    cmd()
+        .args(["kdm", "/nonexistent/file.kdm.xml"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn checksum_verify_missing_directory_fails() {
+    cmd()
+        .args(["checksum-verify", "/nonexistent/path"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn imf_compliance_help_lists_target_flag() {
+    cmd()
+        .args(["imf-compliance", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--target"));
 }

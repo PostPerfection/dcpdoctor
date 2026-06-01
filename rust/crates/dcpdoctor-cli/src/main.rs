@@ -259,7 +259,7 @@ enum Commands {
     #[command(name = "av-sync")]
     AvSync {
         /// Video file (MXF or image sequence directory)
-        #[arg(short = 'v', long)]
+        #[arg(long)]
         video: PathBuf,
         /// Audio file (MXF or WAV)
         #[arg(short = 'a', long)]
@@ -619,6 +619,15 @@ fn main() {
             dcp_dir,
             stop_on_error,
         }) => {
+            if !dcp_dir.exists() {
+                eprintln!("Path not found: {}", dcp_dir.display());
+                std::process::exit(1);
+            }
+            if !dcp_dir.is_dir() {
+                eprintln!("Not a directory: {}", dcp_dir.display());
+                std::process::exit(1);
+            }
+
             let opts = dcpdoctor_core::VerifyOptions {
                 check_hashes: true,
                 check_signatures: false,
