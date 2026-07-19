@@ -6,5 +6,6 @@ license = "GPL-3.0-or-later"
 description = "Shared IMF validation logic for dcpdoctor (no I/O dependencies)"
 
 [dependencies]
-quick-xml = "0.37"
+quick-xml.workspace = true
+dcpdoctor-parse.workspace = true
 serde = { version = "1", features = ["derive"] }

@@ -1,5 +1,6 @@
 //! IMF CPL XML parsing (pure, no I/O).
 
+use dcpdoctor_parse::text_of as decode_text;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
@@ -200,7 +201,7 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                 }
             }
             Ok(Event::Text(ref e)) => {
-                let text = e.unescape().unwrap_or_default().trim().to_string();
+                let text = decode_text(e).trim().to_string();
                 if text.is_empty() {
                     continue;
                 }
@@ -403,7 +404,7 @@ pub fn parse_assetmap_ids(xml: &str) -> std::collections::HashSet<String> {
                 in_id = name == "Id";
             }
             Ok(Event::Text(ref e)) if in_id => {
-                let text = e.unescape().unwrap_or_default().trim().to_string();
+                let text = decode_text(e).trim().to_string();
                 let id = text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
                 if !id.is_empty() {
                     ids.insert(id);

@@ -67,7 +67,7 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
                 current_tag.clear();
             }
             Ok(Event::Text(e)) => {
-                let text = e.unescape().ok().map(|s| s.to_string()).unwrap_or_default();
+                let text = crate::text_of(&e);
                 if text.is_empty() {
                     continue;
                 }

@@ -4,6 +4,7 @@
 //! This module adds filesystem-specific validation (MXF essence, TTML,
 //! PKL cross-referencing, etc.) on top.
 
+use dcpdoctor_parse::text_of as decode_text;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -679,7 +680,7 @@ fn parse_assetmap_paths(xml: &str) -> HashMap<String, String> {
                 }
             }
             Ok(Event::Text(ref e)) if in_asset => {
-                let text = e.unescape().unwrap_or_default().trim().to_string();
+                let text = decode_text(e).trim().to_string();
                 if text.is_empty() {
                     continue;
                 }
@@ -736,7 +737,7 @@ fn parse_pkl_assets(xml: &str, ids: &mut HashSet<String>, types: &mut HashMap<St
                 }
             }
             Ok(Event::Text(ref e)) if in_asset => {
-                let text = e.unescape().unwrap_or_default().trim().to_string();
+                let text = decode_text(e).trim().to_string();
                 if text.is_empty() {
                     continue;
                 }
@@ -775,7 +776,7 @@ fn extract_cpl_id(xml: &str) -> String {
                 }
             }
             Ok(Event::Text(ref e)) if looking_for_id => {
-                let text = e.unescape().unwrap_or_default().trim().to_string();
+                let text = decode_text(e).trim().to_string();
                 return text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
             }
             Ok(Event::End(_)) => {

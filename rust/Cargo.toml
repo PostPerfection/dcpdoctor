@@ -13,7 +13,7 @@ clap = { version = "4", features = ["derive"] }
 dcpdoctor-imf = { path = "crates/dcpdoctor-imf" }
 dcpdoctor-parse = { path = "crates/dcpdoctor-parse" }
 postkit = { path = "../extern/postkit" }
-quick-xml = "0.37"
+quick-xml = "0.41"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"

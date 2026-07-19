@@ -13,6 +13,15 @@ pub fn strip_urn_uuid(s: &str) -> String {
     s.strip_prefix("urn:uuid:").unwrap_or(s).to_string()
 }
 
+/// Decode and unescape a text event. quick-xml 0.41 dropped BytesText::unescape,
+/// so this is decode + unescape, which is what it used to do.
+pub fn text_of(e: &quick_xml::events::BytesText) -> String {
+    e.decode()
+        .ok()
+        .and_then(|s| quick_xml::escape::unescape(&s).ok().map(|u| u.to_string()))
+        .unwrap_or_default()
+}
+
 /// Get local name from a start element (strip namespace prefix).
 pub(crate) fn local_name(e: &quick_xml::events::BytesStart) -> String {
     String::from_utf8_lossy(e.local_name().as_ref()).to_string()
