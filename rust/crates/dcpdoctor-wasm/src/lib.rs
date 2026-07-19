@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
-mod assetmap;
-mod cpl;
 mod hash;
 pub mod imf;
 pub mod j2k;
@@ -11,7 +9,6 @@ mod j2k_validate;
 pub mod mxf;
 mod mxf_validate;
 mod naming;
-mod pkl;
 mod validate;
 
 /// Severity level for validation notes.

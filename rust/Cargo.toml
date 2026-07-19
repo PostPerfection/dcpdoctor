@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/dcpdoctor-core", "crates/dcpdoctor-cli", "crates/dcpdoctor-imf"]
+members = ["crates/dcpdoctor-core", "crates/dcpdoctor-cli", "crates/dcpdoctor-imf", "crates/dcpdoctor-parse"]
 exclude = ["crates/dcpdoctor-wasm"]
 resolver = "2"
 
@@ -11,6 +11,7 @@ version = "0.1.1"
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
 dcpdoctor-imf = { path = "crates/dcpdoctor-imf" }
+dcpdoctor-parse = { path = "crates/dcpdoctor-parse" }
 postkit = { path = "../extern/postkit" }
 quick-xml = "0.37"
 serde = { version = "1", features = ["derive"] }

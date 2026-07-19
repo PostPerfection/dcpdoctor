@@ -1,0 +1,10 @@
+[package]
+name = "dcpdoctor-parse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure-string DCP XML parsers (ASSETMAP/CPL/PKL) shared by the native and wasm builds"
+
+[dependencies]
+quick-xml.workspace = true
+serde.workspace = true

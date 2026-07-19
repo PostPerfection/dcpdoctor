@@ -108,11 +108,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dcpdoctor-parse"
+version = "0.1.1"
+dependencies = [
+ "quick-xml",
+ "serde",
+]
+
+[[package]]
 name = "dcpdoctor-wasm"
 version = "0.1.1"
 dependencies = [
  "base64",
  "dcpdoctor-imf",
+ "dcpdoctor-parse",
  "js-sys",
  "quick-xml",
  "serde",

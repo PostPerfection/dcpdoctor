@@ -328,6 +328,7 @@ dependencies = [
  "asdcplib",
  "base64",
  "dcpdoctor-imf",
+ "dcpdoctor-parse",
  "postkit",
  "quick-xml",
  "regex-lite",
@@ -343,6 +344,14 @@ dependencies = [
 
 [[package]]
 name = "dcpdoctor-imf"
+version = "0.1.1"
+dependencies = [
+ "quick-xml",
+ "serde",
+]
+
+[[package]]
+name = "dcpdoctor-parse"
 version = "0.1.1"
 dependencies = [
  "quick-xml",

@@ -2,11 +2,10 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use std::collections::HashMap;
 
-use crate::assetmap::{self, AssetMap};
-use crate::cpl::{self, Cpl};
+use dcpdoctor_parse::{parse_assetmap, parse_cpl, parse_pkl, AssetMap, Cpl, Pkl, Reel};
+
 use crate::hash;
 use crate::naming;
-use crate::pkl::{self, Pkl};
 use crate::{FileEntry, Note, Severity, Summary, ValidationResult};
 
 /// Run full DCP validation on a set of in-memory files.
@@ -53,13 +52,13 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
 
     // 2. Parse ASSETMAP
     let assetmap_xml = get_content(assetmap_entry);
-    let assetmap = match assetmap::parse_assetmap(&assetmap_xml) {
-        Ok(am) => am,
-        Err(e) => {
+    let assetmap = match parse_assetmap(&assetmap_xml) {
+        Some(am) => am,
+        None => {
             notes.push(Note {
                 severity: Severity::Error,
                 code: "xml_parse_error".to_string(),
-                message: format!("Failed to parse ASSETMAP: {e}"),
+                message: "Failed to parse ASSETMAP: invalid XML".to_string(),
                 file: Some(assetmap_entry.path.clone()),
             });
             return build_result(false, standard, notes, files.len(), 0, 0, 0, HashMap::new());
@@ -100,13 +99,13 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
     for pkl_path in &pkl_paths {
         if let Some(entry) = file_map.get(pkl_path) {
             let xml = get_content(entry);
-            match pkl::parse_pkl(&xml) {
-                Ok(p) => pkls.push(p),
-                Err(e) => {
+            match parse_pkl(&xml) {
+                Some(p) => pkls.push(p),
+                None => {
                     notes.push(Note {
                         severity: Severity::Error,
                         code: "xml_parse_error".to_string(),
-                        message: format!("Failed to parse PKL {pkl_path}: {e}"),
+                        message: format!("Failed to parse PKL {pkl_path}: invalid XML"),
                         file: Some(pkl_path.to_string()),
                     });
                 }
@@ -163,13 +162,13 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
                 if let Some(path) = file_path {
                     if let Some(entry) = file_map.get(path.as_str()) {
                         let xml = get_content(entry);
-                        match cpl::parse_cpl(&xml) {
-                            Ok(c) => cpls.push((path, c)),
-                            Err(e) => {
+                        match parse_cpl(&xml) {
+                            Some(c) => cpls.push((path, c)),
+                            None => {
                                 notes.push(Note {
                                     severity: Severity::Error,
                                     code: "xml_parse_error".to_string(),
-                                    message: format!("Failed to parse CPL: {e}"),
+                                    message: "Failed to parse CPL: invalid XML".to_string(),
                                     file: Some(path.clone()),
                                 });
                             }
@@ -187,7 +186,7 @@ pub fn run_validation(files: &[FileEntry]) -> ValidationResult {
             if lower.contains("cpl") && lower.ends_with(".xml") {
                 let xml = get_content(entry);
                 if xml.contains("CompositionPlaylist") {
-                    if let Ok(c) = cpl::parse_cpl(&xml) {
+                    if let Some(c) = parse_cpl(&xml) {
                         cpls.push((path.to_string(), c));
                     }
                 }
@@ -309,7 +308,7 @@ fn validate_cpl(cpl: &Cpl, path: &str, notes: &mut Vec<Note>) {
     let mut edit_rates: Vec<&str> = cpl
         .reels
         .iter()
-        .map(|r| r.edit_rate.as_str())
+        .map(reel_edit_rate)
         .filter(|r| !r.is_empty())
         .collect();
     if edit_rates.is_empty() && !cpl.edit_rate.is_empty() {
@@ -337,7 +336,7 @@ fn validate_cpl(cpl: &Cpl, path: &str, notes: &mut Vec<Note>) {
 
     // Check reel durations
     for (i, reel) in cpl.reels.iter().enumerate() {
-        if reel.duration == 0 {
+        if reel_duration(reel) == 0 {
             notes.push(Note {
                 severity: Severity::Warning,
                 code: "cpl_zero_duration".to_string(),
@@ -345,7 +344,7 @@ fn validate_cpl(cpl: &Cpl, path: &str, notes: &mut Vec<Note>) {
                 file: Some(path.to_string()),
             });
         }
-        if reel.picture_asset_id.is_empty() {
+        if reel.picture.id.is_empty() {
             notes.push(Note {
                 severity: Severity::Warning,
                 code: "cpl_no_picture".to_string(),
@@ -383,6 +382,24 @@ fn validate_cpl(cpl: &Cpl, path: &str, notes: &mut Vec<Note>) {
             });
         }
     }
+}
+
+/// flat per-reel edit rate: first non-empty, picture ahead of sound
+fn reel_edit_rate(reel: &Reel) -> &str {
+    [&reel.picture, &reel.sound, &reel.subtitle]
+        .into_iter()
+        .map(|a| a.edit_rate.as_str())
+        .find(|r| !r.is_empty())
+        .unwrap_or_default()
+}
+
+/// flat per-reel duration: the picture's, falling back to the other essences
+fn reel_duration(reel: &Reel) -> i64 {
+    [&reel.picture, &reel.sound, &reel.subtitle]
+        .into_iter()
+        .map(|a| a.duration)
+        .find(|d| *d != 0)
+        .unwrap_or(0)
 }
 
 fn find_file_for_asset(

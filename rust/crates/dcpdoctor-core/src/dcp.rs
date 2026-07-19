@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::assetmap::AssetMap;
+use crate::assetmap::{AssetMap, ParseXmlFile};
 use crate::cpl::Cpl;
 use crate::pkl::Pkl;
 use crate::{Code, Note, Severity, Standard};
