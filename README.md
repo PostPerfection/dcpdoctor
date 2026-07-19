@@ -13,96 +13,96 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 ## Features
 
 ### Core Validation
-- **Structure validation** — ASSETMAP, PKL, CPL parsing with full cross-referencing
-- **Hash verification** — SHA-1 integrity checking for all assets (with SQLite cache for speed)
-- **XML digital signatures** — X.509 certificate chain and signature verification
+- **Structure validation**: ASSETMAP, PKL, CPL parsing with full cross-referencing
+- **Hash verification**: SHA-1 integrity checking for all assets (with SQLite cache for speed)
+- **XML digital signatures**: X.509 certificate chain and signature verification
 - **Schema validation:** Well-formedness checks for every package XML file, with full XSD validation when schemas are supplied
-- **Duplicate detection** — Identifies duplicate asset IDs across packages
+- **Duplicate detection**: Identifies duplicate asset IDs across packages
 
 ### Standards Compliance
-- **SMPTE ST 429** — Complete SMPTE DCP standard validation
-- **Interop** — Legacy Interop DCP support
-- **BV2.1 (Bv2.1)** — SMPTE Best Practices for theatrical distribution:
+- **SMPTE ST 429**: Complete SMPTE DCP standard validation
+- **Interop**: Legacy Interop DCP support
+- **BV2.1 (Bv2.1)**: SMPTE Best Practices for theatrical distribution:
   - ASSETMAP.xml naming enforcement
   - PKL .xml extension check
   - ContentVersion element requirement
   - ExtensionMetadata presence
   - MainMarkers in first reel
   - Approved EditRate validation (24/25/30/48/60 fps)
-- **ISDCF Naming** — Content title naming convention validation
+- **ISDCF Naming**: Content title naming convention validation
 
 ### Picture Validation
-- **J2K bitrate analysis** — Per-frame bitrate statistics (min/max/avg)
-- **DCI bitrate limits** — 250 Mbps (2K) / 500 Mbps (4K) enforcement
-- **Deep J2K codestream** — Profile (RSIZ), decomposition levels, code-block sizes, wavelet type, component validation
-- **4K/2K detection** — Resolution and aspect ratio verification
+- **J2K bitrate analysis**: Per-frame bitrate statistics (min/max/avg)
+- **DCI bitrate limits**: 250 Mbps (2K) / 500 Mbps (4K) enforcement
+- **Deep J2K codestream**: Profile (RSIZ), decomposition levels, code-block sizes, wavelet type, component validation
+- **4K/2K detection**: Resolution and aspect ratio verification
 
 ### Sound Validation
-- **Audio level analysis** — Per-channel peak and RMS in dBFS
-- **Clipping detection** — Flags audio near 0 dBFS
-- **Silence detection** — Warns on channels below -80 dBFS
-- **Channel count** — Validates channel configuration
-- **MCA labeling** — Multi-Channel Audio label presence check
-- **Audio sync drift** — Detects picture/sound duration mismatches per reel
+- **Audio level analysis**: Per-channel peak and RMS in dBFS
+- **Clipping detection**: Flags audio near 0 dBFS
+- **Silence detection**: Warns on channels below -80 dBFS
+- **Channel count**: Validates channel configuration
+- **MCA labeling**: Multi-Channel Audio label presence check
+- **Audio sync drift**: Detects picture/sound duration mismatches per reel
 
 ### Subtitle & Caption Validation
 - **SMPTE ST 429-5** timed text support
-- **Timing validation** — TimeIn/TimeOut ordering and overlap detection
-- **Required element checks** — ReelNumber, Language, LoadFont
-- **SubtitleID presence** — Unique identifier validation
+- **Timing validation**: TimeIn/TimeOut ordering and overlap detection
+- **Required element checks**: ReelNumber, Language, LoadFont
+- **SubtitleID presence**: Unique identifier validation
 
 ### Encryption & Security
-- **Encrypted content detection** — Identifies encrypted MXF assets
-- **KDM validation** — Parse and validate Key Delivery Messages:
+- **Encrypted content detection**: Identifies encrypted MXF assets
+- **KDM validation**: Parse and validate Key Delivery Messages:
   - Validity period checking (expired / not-yet-valid)
   - CPL reference cross-validation against DCP
   - Content title extraction
 
 ### Dolby Atmos
-- **IAB detection** — Identifies Immersive Audio Bitstream containers
-- **DC Data track** — Detects Dolby Atmos auxiliary data tracks
+- **IAB detection**: Identifies Immersive Audio Bitstream containers
+- **DC Data track**: Detects Dolby Atmos auxiliary data tracks
 
 ### Reel & Structure Analysis
-- **Reel continuity** — Validates sequential entry points across reels
-- **Stereo 3D** — Checks left/right eye consistency
-- **Marker validation** — FFOC, LFOC, FFMC, LFMC presence (strict mode)
-- **Cross-reference integrity** — All PKL/CPL asset references resolve
-- **Supplemental DCP** — Original Package List validation
+- **Reel continuity**: Validates sequential entry points across reels
+- **Stereo 3D**: Checks left/right eye consistency
+- **Marker validation**: FFOC, LFOC, FFMC, LFMC presence (strict mode)
+- **Cross-reference integrity**: All PKL/CPL asset references resolve
+- **Supplemental DCP**: Original Package List validation
 
 ### Advanced Tools
-- **DCP comparison/diff** — Side-by-side structural comparison of two DCPs
-- **Checksum verification** — Verify all PKL asset hashes and sizes (DCP or IMF)
-- **MXF essence extraction** — Extract video/audio tracks from MXF containers
-- **Automated QC** — Detect black frames, freeze frames, audio silence, and audio clipping
+- **DCP comparison/diff**: Side-by-side structural comparison of two DCPs
+- **Checksum verification**: Verify all PKL asset hashes and sizes (DCP or IMF)
+- **MXF essence extraction**: Extract video/audio tracks from MXF containers
+- **Automated QC**: Detect black frames, freeze frames, audio silence, and audio clipping
 - **IMP validation:** Route ST 2067 IMF packages to native checks and Netflix Photon without running IMF tools on DCPs
-- **Schema validation** — XML schema validation against SMPTE ST 2067 XSDs
-- **IMF compliance** — Platform-specific compliance checks (Netflix, Disney, Amazon, Apple, Cinema, Broadcast)
-- **Frame-level QC** — Per-frame J2K bitrate analysis with over/under-budget detection
-- **QC reports** — Detailed HTML/PDF QC reports with thumbnails, waveforms, loudness, bitrate charts
-- **Loudness measurement** — EBU R128 / ATSC A/85 loudness measurement and normalization
-- **AV sync detection** — Audio/video sync drift detection and measurement
-- **HDR validation** — HDR10, HLG, Dolby Vision metadata validation
-- **Frame comparison** — Frame-by-frame PSNR/SSIM/VMAF comparison between IMPs or files
-- **IMP info** — Display IMP package structure, tracks, and metadata
-- **Theater compatibility profiles** — Pre-built profiles for major server vendors:
+- **Schema validation**: XML schema validation against SMPTE ST 2067 XSDs
+- **IMF compliance**: Platform-specific compliance checks (Netflix, Disney, Amazon, Apple, Cinema, Broadcast)
+- **Frame-level QC**: Per-frame J2K bitrate analysis with over/under-budget detection
+- **QC reports**: Detailed HTML/PDF QC reports with thumbnails, waveforms, loudness, bitrate charts
+- **Loudness measurement**: EBU R128 / ATSC A/85 loudness measurement and normalization
+- **AV sync detection**: Audio/video sync drift detection and measurement
+- **HDR validation**: HDR10, HLG, Dolby Vision metadata validation
+- **Frame comparison**: Frame-by-frame PSNR/SSIM/VMAF comparison between IMPs or files
+- **IMP info**: Display IMP package structure, tracks, and metadata
+- **Theater compatibility profiles**: Pre-built profiles for major server vendors:
   - Dolby IMS3000, IMS2000, Cinema (Premium)
   - Barco SP4K, SP2K
   - Christie CP4440-RGB, CP2230
   - GDC SX-4000, SR-1000
   - IMAX Digital
-- **Automated fix suggestions** — Actionable remediation advice for common issues
-- **SVG timeline visualization** — Visual reel structure diagram with timecodes
-- **Manifest comparison** — Validate DCP against a reference manifest JSON
-- **Content hash cache** — SQLite-backed cache for instant re-validation of unchanged files
-- **Batch processing** — Multi-DCP validation with summary table
+- **Automated fix suggestions**: Actionable remediation advice for common issues
+- **SVG timeline visualization**: Visual reel structure diagram with timecodes
+- **Manifest comparison**: Validate DCP against a reference manifest JSON
+- **Content hash cache**: SQLite-backed cache for instant re-validation of unchanged files
+- **Batch processing**: Multi-DCP validation with summary table
 
 ### Output & Integration
-- **Colored terminal output** — ANSI colors (respects `NO_COLOR` and non-TTY)
-- **Progress bar** — Visual progress for batch operations
-- **Text/JSON/HTML reports** — Multiple output formats
-- **REST API** — HTTP server mode (POST /validate, GET /health)
-- **Directory watch** — Auto-validates new DCPs as they appear
-- **Exit codes** — Machine-parseable pass/fail status
+- **Colored terminal output**: ANSI colors (respects `NO_COLOR` and non-TTY)
+- **Progress bar**: Visual progress for batch operations
+- **Text/JSON/HTML reports**: Multiple output formats
+- **REST API**: HTTP server mode (POST /validate, GET /health)
+- **Directory watch**: Auto-validates new DCPs as they appear
+- **Exit codes**: Machine-parseable pass/fail status
 
 ## Installation
 
@@ -305,8 +305,8 @@ dcpdoctor watch /ingest/incoming --interval 5000
 ```
 
 REST API endpoints:
-- `GET /health` — Returns `{"status": "ok"}`
-- `POST /validate` — Body: `{"path": "/path/to/dcp"}`, returns validation result
+- `GET /health`: Returns `{"status": "ok"}`
+- `POST /validate`: Body: `{"path": "/path/to/dcp"}`, returns validation result
 
 ### Performance Options
 
@@ -504,12 +504,12 @@ DcpDoctor includes an optional desktop GUI built with [Tauri](https://tauri.app)
 
 ### GUI Features
 
-- **Drag & drop** — Drop a DCP folder to validate
-- **Visual results** — Color-coded severity badges (error/warning/info)
-- **Filterable table** — Filter results by severity
-- **Option chips** — Toggle Studio, Deep, Netflix, HDR, Atmos, IMF, Accessibility checks
-- **Cross-platform** — Builds for Linux (.deb, .rpm, AppImage), macOS (.dmg), Windows (.msi)
-- **Sidecar architecture** — Bundles the `dcpdoctor` CLI binary, no separate install needed
+- **Drag & drop**: Drop a DCP folder to validate
+- **Visual results**: Color-coded severity badges (error/warning/info)
+- **Filterable table**: Filter results by severity
+- **Option chips**: Toggle Studio, Deep, Netflix, HDR, Atmos, IMF, Accessibility checks
+- **Cross-platform**: Builds for Linux (.deb, .rpm, AppImage), macOS (.dmg), Windows (.msi)
+- **Sidecar architecture**: Bundles the `dcpdoctor` CLI binary, no separate install needed
 
 ### GUI Prerequisites
 
@@ -550,7 +550,7 @@ cd gui
 pnpm tauri dev
 ```
 
-This starts a hot-reloading dev server — edit `gui/src/` files and see changes live.
+This starts a hot-reloading dev server: edit `gui/src/` files and see changes live.
 
 ## Architecture
 

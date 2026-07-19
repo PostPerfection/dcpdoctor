@@ -689,10 +689,10 @@ async function runHashVerification() {
     updateHashControls();
 
     if (cancelled) {
-        hashProgressText.textContent = `Cancelled — ${passCount} passed, ${failCount} failed`;
+        hashProgressText.textContent = `Cancelled: ${passCount} passed, ${failCount} failed`;
     } else {
         hashProgressFill.style.width = '100%';
-        hashProgressText.textContent = `Done — ${passCount} passed, ${failCount} failed`;
+        hashProgressText.textContent = `Done: ${passCount} passed, ${failCount} failed`;
     }
 }
 
