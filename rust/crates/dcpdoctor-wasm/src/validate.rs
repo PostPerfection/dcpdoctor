@@ -304,14 +304,35 @@ fn validate_cpl(cpl: &Cpl, path: &str, notes: &mut Vec<Note>) {
         });
     }
 
-    // Check edit rate
-    if cpl.edit_rate.is_empty() {
+    // Check edit rate: SMPTE CPLs carry it per asset, Interop may have it at CPL level
+    const VALID_EDIT_RATES: [&str; 6] = ["24 1", "25 1", "30 1", "48 1", "50 1", "60 1"];
+    let mut edit_rates: Vec<&str> = cpl
+        .reels
+        .iter()
+        .map(|r| r.edit_rate.as_str())
+        .filter(|r| !r.is_empty())
+        .collect();
+    if edit_rates.is_empty() && !cpl.edit_rate.is_empty() {
+        edit_rates.push(&cpl.edit_rate);
+    }
+
+    if edit_rates.is_empty() {
         notes.push(Note {
             severity: Severity::Warning,
             code: "cpl_missing_edit_rate".to_string(),
             message: "CPL has no EditRate".to_string(),
             file: Some(path.to_string()),
         });
+    }
+    for rate in edit_rates {
+        if !VALID_EDIT_RATES.contains(&rate) {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: "cpl_invalid_edit_rate".to_string(),
+                message: format!("Non-DCI edit rate '{rate}' (allowed: 24, 25, 30, 48, 50, 60 fps)"),
+                file: Some(path.to_string()),
+            });
+        }
     }
 
     // Check reel durations
@@ -351,9 +372,13 @@ fn validate_cpl(cpl: &Cpl, path: &str, notes: &mut Vec<Note>) {
         ];
         if !valid_kinds.contains(&cpl.content_kind.to_lowercase().as_str()) {
             notes.push(Note {
-                severity: Severity::Info,
-                code: "cpl_unusual_content_kind".to_string(),
-                message: format!("Unusual ContentKind: '{}'", cpl.content_kind),
+                severity: Severity::Error,
+                code: "cpl_invalid_content_kind".to_string(),
+                message: format!(
+                    "Invalid ContentKind '{}' (expected one of: {})",
+                    cpl.content_kind,
+                    valid_kinds.join(", ")
+                ),
                 file: Some(path.to_string()),
             });
         }

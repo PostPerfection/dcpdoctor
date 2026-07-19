@@ -24,6 +24,7 @@ pub struct Reel {
     pub subtitle_asset_id: String,
     pub duration: u64,
     pub entry_point: u64,
+    pub edit_rate: String,
 }
 
 /// Parse a CPL XML string.
@@ -93,6 +94,10 @@ pub fn parse_cpl(xml: &str) -> Result<Cpl, String> {
                         }
                         "EntryPoint" => {
                             current_reel.entry_point = text.parse().unwrap_or(0);
+                        }
+                        // picture comes first in AssetList, so it wins over sound
+                        "EditRate" if current_reel.edit_rate.is_empty() => {
+                            current_reel.edit_rate = text;
                         }
                         _ => {}
                     }

@@ -127,12 +127,7 @@ async function enqueueFromHandle(dirHandle) {
 
     const files = [];
     await readDirHandle(dirHandle, '', files, item);
-
-    item.files = files;
-    item.fileCount = files.length;
-    item.status = 'pending';
-    renderQueue();
-    drainQueue();
+    finalizeItem(item, files);
 }
 
 async function readDirHandle(handle, prefix, files, item) {
@@ -159,12 +154,7 @@ async function enqueueFromEntry(entry) {
 
     const files = [];
     await readDirEntry(entry, '', files, item);
-
-    item.files = files;
-    item.fileCount = files.length;
-    item.status = 'pending';
-    renderQueue();
-    drainQueue();
+    finalizeItem(item, files);
 }
 
 function readDirEntry(dirEntry, prefix, files, item) {
@@ -210,14 +200,47 @@ async function enqueueFromFileList(fileList) {
         }
     }
 
-    item.files = files;
-    item.fileCount = files.length;
-    item.status = 'pending';
-    renderQueue();
-    drainQueue();
+    finalizeItem(item, files);
 }
 
 // === Helpers ===
+
+const ASSETMAP_NAMES = ['ASSETMAP.xml', 'ASSETMAP'];
+
+// A dropped folder is either one package or a folder of packages. Returns [name, files]
+// groups for the latter (paths rebased to each subdir), or null if it's a single package.
+function splitIntoPackages(files) {
+    if (files.some(f => ASSETMAP_NAMES.includes(f.path))) return null;
+
+    const groups = new Map();
+    for (const f of files) {
+        const slash = f.path.indexOf('/');
+        if (slash < 0) continue;
+        const dir = f.path.slice(0, slash);
+        if (!groups.has(dir)) groups.set(dir, []);
+        groups.get(dir).push({ ...f, path: f.path.slice(slash + 1) });
+    }
+
+    const pkgs = [...groups].filter(([, sub]) => sub.some(f => ASSETMAP_NAMES.includes(f.path)));
+    return pkgs.length > 0 ? pkgs : null;
+}
+
+// Replace the placeholder queue item with the package(s) actually found under it
+function finalizeItem(item, files) {
+    const split = splitIntoPackages(files);
+    if (split) {
+        const items = split.map(([name, sub]) => ({
+            ...item, id: nextId++, name, files: sub, fileCount: sub.length, status: 'pending',
+        }));
+        queue.splice(queue.indexOf(item), 1, ...items);
+    } else {
+        item.files = files;
+        item.fileCount = files.length;
+        item.status = 'pending';
+    }
+    renderQueue();
+    drainQueue();
+}
 
 function createQueueItem(name) {
     const item = {
