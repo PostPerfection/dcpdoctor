@@ -83,5 +83,12 @@ jobs:
         working-directory: gui
         run: pnpm build
 
+      - name: Build CLI sidecar
+        working-directory: rust
+        run: |
+          cargo build --release -p dcpdoctor-cli
+          TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
+          cp target/release/dcpdoctor ../gui/src-tauri/dcpdoctor-${TRIPLE}
+
       - name: Check GUI Rust
         run: cargo check --manifest-path gui/src-tauri/Cargo.toml
