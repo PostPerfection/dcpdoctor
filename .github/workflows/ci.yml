@@ -50,6 +50,15 @@ jobs:
         working-directory: rust
         run: cargo fmt --all -- --check
 
+      # the wasm crate is excluded from the workspace, so it needs its own pass
+      - name: Check wasm validator
+        if: runner.os == 'Linux'
+        working-directory: rust/crates/dcpdoctor-wasm
+        run: |
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+          cargo fmt -- --check
+
   gui:
     name: GUI
     runs-on: ubuntu-24.04

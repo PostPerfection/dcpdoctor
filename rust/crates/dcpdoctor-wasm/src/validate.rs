@@ -328,7 +328,9 @@ fn validate_cpl(cpl: &Cpl, path: &str, notes: &mut Vec<Note>) {
             notes.push(Note {
                 severity: Severity::Error,
                 code: "cpl_invalid_edit_rate".to_string(),
-                message: format!("Non-DCI edit rate '{rate}' (allowed: 24, 25, 30, 48, 50, 60 fps)"),
+                message: format!(
+                    "Non-DCI edit rate '{rate}' (allowed: 24, 25, 30, 48, 50, 60 fps)"
+                ),
                 file: Some(path.to_string()),
             });
         }
@@ -481,5 +483,135 @@ fn build_result(
         },
         asset_hashes,
         mxf_info: HashMap::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal in-memory SMPTE DCP, matching what the browser hands us: XML inline,
+    /// essence present but skipped. Edit rate and content kind are the knobs under test.
+    fn dcp(edit_rate: &str, content_kind: &str) -> Vec<FileEntry> {
+        let assetmap = r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:2eb286b8-e5b3-45ed-b22f-538c8ebf4607</Id>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:96803ff1-beb3-4529-ac6f-5ad9b22796b4</Id>
+      <PackingList>true</PackingList>
+      <ChunkList><Chunk><Path>PKL.xml</Path></Chunk></ChunkList>
+    </Asset>
+    <Asset>
+      <Id>urn:uuid:96558952-39b8-42d3-825e-9ddd31298219</Id>
+      <ChunkList><Chunk><Path>CPL.xml</Path></Chunk></ChunkList>
+    </Asset>
+    <Asset>
+      <Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id>
+      <ChunkList><Chunk><Path>picture.mxf</Path></Chunk></ChunkList>
+    </Asset>
+  </AssetList>
+</AssetMap>"#;
+
+        let pkl = r#"<?xml version="1.0" encoding="UTF-8"?>
+<PackingList xmlns="http://www.smpte-ra.org/schemas/429-8/2007/PKL">
+  <Id>urn:uuid:96803ff1-beb3-4529-ac6f-5ad9b22796b4</Id>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id>
+      <Hash>HOr3PfQOUx3zv7JrT7fNlft7/x0=</Hash>
+      <Size>4096</Size>
+      <Type>application/mxf</Type>
+    </Asset>
+  </AssetList>
+</PackingList>"#;
+
+        // EditRate lives under MainPicture, as it does in a real SMPTE CPL
+        let cpl = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:9ec7b0f3-9cd5-4ac9-8d67-b1e534d377e7</Id>
+  <ContentTitleText>TEST_TLR-1_F_EN-XX_51_2K_20250101_SMPTE</ContentTitleText>
+  <ContentKind>{content_kind}</ContentKind>
+  <ReelList>
+    <Reel>
+      <Id>urn:uuid:61fdefc9-1cec-45bd-b69d-d608ed8a5655</Id>
+      <AssetList>
+        <MainPicture>
+          <Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id>
+          <EditRate>{edit_rate}</EditRate>
+          <IntrinsicDuration>48</IntrinsicDuration>
+          <Duration>48</Duration>
+        </MainPicture>
+      </AssetList>
+    </Reel>
+  </ReelList>
+</CompositionPlaylist>"#
+        );
+
+        vec![
+            xml_file("ASSETMAP.xml", assetmap),
+            xml_file("PKL.xml", pkl),
+            xml_file("CPL.xml", &cpl),
+            FileEntry {
+                path: "picture.mxf".to_string(),
+                content: None,
+                is_base64: false,
+                size: 4096,
+                skipped: true,
+            },
+        ]
+    }
+
+    fn xml_file(path: &str, content: &str) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            content: Some(content.to_string()),
+            is_base64: false,
+            size: content.len() as u64,
+            skipped: false,
+        }
+    }
+
+    fn codes(result: &ValidationResult) -> Vec<&str> {
+        result
+            .notes
+            .iter()
+            .filter(|n| matches!(n.severity, Severity::Error))
+            .map(|n| n.code.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn dci_edit_rate_and_known_content_kind_pass() {
+        let result = run_validation(&dcp("24 1", "feature"));
+        assert_eq!(codes(&result), Vec::<&str>::new());
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn non_dci_edit_rate_is_an_error() {
+        let result = run_validation(&dcp("13 1", "feature"));
+        assert!(codes(&result).contains(&"cpl_invalid_edit_rate"));
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn unknown_content_kind_is_an_error() {
+        let result = run_validation(&dcp("24 1", "INVALID_KIND"));
+        assert!(codes(&result).contains(&"cpl_invalid_content_kind"));
+        assert!(!result.valid);
+    }
+
+    /// Regression: the edit rate sits under MainPicture, not at CPL level. Reading only
+    /// the CPL-level element made every real DCP look like it had no edit rate at all,
+    /// which also meant the rate was never checked.
+    #[test]
+    fn per_asset_edit_rate_is_found() {
+        let result = run_validation(&dcp("24 1", "feature"));
+        assert!(!result
+            .notes
+            .iter()
+            .any(|n| n.code == "cpl_missing_edit_rate"));
     }
 }
