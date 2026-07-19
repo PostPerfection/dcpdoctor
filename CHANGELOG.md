@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.1] - 2026-07-19
+
+### Fixed
+- IMF and Photon validation now run only for packages with an ST 2067-3 CPL.
+- `schema-validate` now parses every package XML file and applies supplied XSDs per file.
+
+### Changed
+- CI now checks the Rust workspace on all three platforms and the Tauri GUI on Linux.
+- GUI dependency management now uses pnpm.
+
 ## [1.1.0] — 2026-05-28
 
 ### Added

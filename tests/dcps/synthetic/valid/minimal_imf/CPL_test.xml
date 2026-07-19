@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016"
+                     xmlns:cc="http://www.smpte-ra.org/schemas/2067-2/2016">
+  <Id>urn:uuid:10000000-0000-0000-0000-000000000003</Id>
+  <IssueDate>2024-01-01T00:00:00Z</IssueDate>
+  <Issuer>DcpDoctor</Issuer>
+  <Creator>DcpDoctor</Creator>
+  <ContentTitle>Minimal IMF</ContentTitle>
+  <ContentKind>feature</ContentKind>
+  <CompositionTimecode>
+    <TimecodeDropFrame>0</TimecodeDropFrame>
+    <TimecodeRate>24</TimecodeRate>
+    <TimecodeStartAddress>00:00:00:00</TimecodeStartAddress>
+  </CompositionTimecode>
+  <EditRate>24 1</EditRate>
+  <SegmentList/>
+</CompositionPlaylist>

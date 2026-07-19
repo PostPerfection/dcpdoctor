@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PackingList xmlns="http://www.digicine.com/PROTO-ASDCP-PKL-20040311#">
+  <Id>urn:uuid:f0000000-0000-0000-0000-000000000002</Id>
+  <AnnotationText>Interop Test PKL</AnnotationText>
+  <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>DcpDoctor</Issuer>
+  <Creator>DcpDoctor</Creator>
+  <AssetList/>
+</PackingList>

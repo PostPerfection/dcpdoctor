@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PackingList xmlns="http://www.smpte-ra.org/schemas/429-8/2007/PKL">
+  <Id>urn:uuid:b2c3d4e5-f6a7-890b-cdef-234567890abc</Id>
+  <AnnotationText>Test PKL</AnnotationText>
+  <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>DcpDoctor Test Suite</Issuer>
+  <Creator>DcpDoctor</Creator>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:c3d4e5f6-a7b8-90cd-efab-34567890abcd</Id>
+      <AnnotationText>Test CPL</AnnotationText>
+      <Hash>placeholder</Hash>
+      <Size>1234</Size>
+      <Type>text/xml;asdcpKind=CPL</Type>
+    </Asset>
+  </AssetList>
+</PackingList>

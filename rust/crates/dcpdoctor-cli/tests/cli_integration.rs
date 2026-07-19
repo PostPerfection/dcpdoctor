@@ -132,3 +132,62 @@ fn imf_compliance_help_lists_target_flag() {
         .success()
         .stdout(predicate::str::contains("--target"));
 }
+
+#[test]
+fn schema_validate_rejects_malformed_package_xml_without_schemas() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("CPL_broken.xml"), "<CompositionPlaylist>").unwrap();
+
+    cmd()
+        .args(["schema-validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("XML parse error"));
+}
+
+#[test]
+fn schema_validate_uses_supplied_xsd_for_each_package_xml() {
+    if std::process::Command::new("xmllint")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let package_dir = TempDir::new().unwrap();
+    let schema_dir = TempDir::new().unwrap();
+    std::fs::write(
+        package_dir.path().join("CPL_test.xml"),
+        r#"<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL"><Id>test</Id></CompositionPlaylist>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        schema_dir.path().join("SMPTE-429-7-2006-CPL.xsd"),
+        r#"<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://www.smpte-ra.org/schemas/429-7/2006/CPL"
+           xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL"
+           elementFormDefault="qualified">
+  <xs:element name="CompositionPlaylist">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Required" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"#,
+    )
+    .unwrap();
+
+    cmd()
+        .args([
+            "schema-validate",
+            package_dir.path().to_str().unwrap(),
+            "--schema-dir",
+            schema_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Required"));
+}

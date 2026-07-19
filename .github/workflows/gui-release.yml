@@ -37,9 +37,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: gui/package.json
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -75,7 +80,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: gui
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build CLI sidecar (Unix)
         if: runner.os != 'Windows'

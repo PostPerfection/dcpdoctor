@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<AssetMap xmlns="http://www.digicine.com/PROTO-ASDCP-AM-20040311#">
+  <Id>urn:uuid:f0000000-0000-0000-0000-000000000001</Id>
+  <VolumeCount>1</VolumeCount>
+  <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>DcpDoctor</Issuer>
+  <Creator>DcpDoctor</Creator>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:f0000000-0000-0000-0000-000000000002</Id>
+      <PackingList>true</PackingList>
+      <ChunkList>
+        <Chunk><Path>PKL_interop.xml</Path></Chunk>
+      </ChunkList>
+    </Asset>
+  </AssetList>
+</AssetMap>

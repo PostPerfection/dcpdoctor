@@ -947,20 +947,64 @@ fn main() {
             dcp_dir,
             schema_dir,
         }) => {
-            let notes = if let Some(ref sd) = schema_dir {
-                let mut n = dcpdoctor_core::schema_validate::check_namespace_consistency(&dcp_dir);
-                let schema_result = dcpdoctor_core::schema::validate_schema(&dcp_dir, sd);
-                for err in &schema_result.errors {
-                    n.push(dcpdoctor_core::Note::error(
-                        dcpdoctor_core::Code::XmlParseError,
-                        format!("{}:{}: {}", err.line, err.column, err.message),
-                    ));
+            let mut notes = dcpdoctor_core::schema_validate::check_namespace_consistency(&dcp_dir);
+            let xml_files = match std::fs::read_dir(&dcp_dir) {
+                Ok(entries) => entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        if !path.is_file() {
+                            return false;
+                        }
+
+                        let file_name = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default();
+                        path.extension()
+                            .and_then(|extension| extension.to_str())
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                            || file_name.eq_ignore_ascii_case("ASSETMAP")
+                            || file_name.eq_ignore_ascii_case("VOLINDEX")
+                    })
+                    .collect::<Vec<_>>(),
+                Err(error) => {
+                    notes.push(dcpdoctor_core::Note {
+                        severity: dcpdoctor_core::Severity::Error,
+                        code: dcpdoctor_core::Code::XmlParseError,
+                        message: format!("Failed to read package directory: {error}"),
+                        file: Some(dcp_dir.clone()),
+                        line: 0,
+                    });
+                    Vec::new()
                 }
-                n
-            } else {
-                dcpdoctor_core::schema_validate::check_namespace_consistency(&dcp_dir)
             };
 
+            for xml_file in xml_files {
+                let schema_result = match schema_dir.as_deref() {
+                    Some(schema_dir) => {
+                        dcpdoctor_core::schema::validate_schema(&xml_file, schema_dir)
+                    }
+                    None => dcpdoctor_core::schema::validate_wellformed_file(&xml_file),
+                };
+                for error in schema_result.errors {
+                    notes.push(dcpdoctor_core::Note {
+                        severity: dcpdoctor_core::Severity::Error,
+                        code: if schema_dir.is_some() {
+                            dcpdoctor_core::Code::XmlSchemaViolation
+                        } else {
+                            dcpdoctor_core::Code::XmlParseError
+                        },
+                        message: format!("{}:{}: {}", error.line, error.column, error.message),
+                        file: Some(xml_file.clone()),
+                        line: error.line,
+                    });
+                }
+            }
+
+            let has_errors = notes
+                .iter()
+                .any(|note| note.severity == dcpdoctor_core::Severity::Error);
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&notes).unwrap());
             } else if notes.is_empty() {
@@ -970,13 +1014,9 @@ fn main() {
                 for note in &notes {
                     println!("{note}");
                 }
-                let errors = notes
-                    .iter()
-                    .filter(|n| n.severity == dcpdoctor_core::Severity::Error)
-                    .count();
-                if errors > 0 {
-                    std::process::exit(1);
-                }
+            }
+            if has_errors {
+                std::process::exit(1);
             }
         }
         Some(Commands::QcReport {

@@ -7,8 +7,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use quick_xml::Reader;
 use quick_xml::events::Event;
+use quick_xml::name::ResolveResult;
+use quick_xml::{NsReader, Reader};
 
 use crate::{Code, Note, Severity};
 
@@ -57,6 +58,49 @@ fn convert_note(n: &ImfNote, file: &Path) -> Note {
 }
 
 // ─── IMF Validation ────────────────────────────────────────────────────────────
+
+/// Return whether a directory contains an IMF Composition Playlist.
+pub fn is_imf_package(package_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(package_dir) else {
+        return false;
+    };
+
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if !path.is_file()
+            || path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_none_or(|extension| !extension.eq_ignore_ascii_case("xml"))
+        {
+            return false;
+        }
+
+        std::fs::read_to_string(path).is_ok_and(|xml| is_imf_composition_playlist(&xml))
+    })
+}
+
+fn is_imf_composition_playlist(xml: &str) -> bool {
+    let mut reader = NsReader::from_str(xml);
+
+    loop {
+        match reader.read_resolved_event() {
+            Ok((namespace, Event::Start(element) | Event::Empty(element))) => {
+                if element.local_name().as_ref() != b"CompositionPlaylist" {
+                    return false;
+                }
+
+                return matches!(
+                    namespace,
+                    ResolveResult::Bound(namespace)
+                        if String::from_utf8_lossy(namespace.as_ref()).contains("/2067-3/")
+                );
+            }
+            Ok((_, Event::Eof)) | Err(_) => return false,
+            Ok(_) => {}
+        }
+    }
+}
 
 /// Validate an IMP (Interoperable Master Package) directory.
 pub fn validate_imp(imp_dir: &Path) -> Vec<Note> {

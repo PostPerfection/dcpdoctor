@@ -648,7 +648,7 @@
     <div class="hero-content">
         <div class="hero-badge">
             <div class="badge-dot"></div>
-            Open Source &middot; <span>v0.1.0</span>
+            Open Source &middot; <span>v0.1.1</span>
         </div>
         <h1>Professional <em>DCP Validation</em><br>Without the Price Tag</h1>
         <p class="hero-sub">
@@ -719,7 +719,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128196;</div>
                 <h3>SMPTE Bv2.1 Compliance</h3>
-                <p>Full SMPTE ST 429 and Bv2.1 validation. XML schemas, namespace checks, required elements, and structure verification.</p>
+                <p>Full SMPTE ST 429 and Bv2.1 validation. Every package XML file gets parsed, with XSD checks when schemas are supplied.</p>
                 <span class="feat-tag tag-core">Core</span>
             </div>
             <div class="feat-card">
@@ -815,7 +815,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#9851;</div>
                 <h3>IMF via Netflix Photon</h3>
-                <p>Integrated Netflix Photon for complete IMF (ST 2067) validation. Automatic Photon build and execution.</p>
+                <p>Native and Netflix Photon checks run for ST 2067 IMF packages. SMPTE and Interop DCPs skip IMF tooling.</p>
                 <span class="feat-tag tag-imf">IMF</span>
             </div>
             <div class="feat-card">
@@ -952,7 +952,7 @@
             <div class="pipeline-card">
                 <span class="pipe-tag">IMF</span>
                 <h3>IMF Validation (Photon)</h3>
-                <p>Deep IMF App 2/2E conformance via Netflix Photon. Auto-bootstraps on first use (requires Java 11+ and git).</p>
+                <p>Deep IMF App 2/2E conformance via Netflix Photon. It runs only for packages with an ST 2067-3 CPL.</p>
 <pre># Auto-downloads and builds Photon on first run
 dcpdoctor validate /path/to/IMP/
 
@@ -1035,7 +1035,7 @@ cd rust &amp;&amp; cargo build --release
 ./target/release/dcpdoctor-cli /path/to/your/DCP/
 
 <span class="cmt"># Run tests</span>
-cargo test --all</pre>
+cargo test --workspace</pre>
                 </div>
                 <div class="tab-panel" id="tab-macos">
 <pre><span class="cmt"># Install Rust (if not already installed)</span>
@@ -1082,7 +1082,7 @@ cargo build --release
             <div class="deploy-card">
                 <div class="d-icon">&#128421;</div>
                 <h3>Linux</h3>
-                <p>Ubuntu 22.04+, Fedora 39+, any distribution with a Rust 1.85+ toolchain. Full CI tested on GitHub Actions.</p>
+                <p>Ubuntu 22.04+, Fedora 39+, any distribution with a Rust 1.85+ toolchain. Rust and Tauri GUI checks run in GitHub Actions.</p>
             </div>
             <div class="deploy-card">
                 <div class="d-icon">&#127822;</div>
@@ -1144,9 +1144,9 @@ cargo build --release
 <span style="color: var(--accent);">cd</span> rust &amp;&amp; cargo build --release
 
 <span style="color: var(--text-tertiary);"># Copy CLI as sidecar + build GUI</span>
-<span style="color: var(--accent);">cd</span> ../gui && npm install
+<span style="color: var(--accent);">cd</span> ../gui && pnpm install
 cp ../rust/target/release/dcpdoctor-cli src-tauri/dcpdoctor-cli-$(rustc -vV | grep host | cut -d' ' -f2)
-npx tauri build
+pnpm tauri build
 
 <span style="color: var(--text-tertiary);"># Packages in gui/src-tauri/target/release/bundle/</span></code></pre>
         </div>

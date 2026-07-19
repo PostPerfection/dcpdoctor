@@ -75,7 +75,7 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
                 }
             } else {
                 let stderr = String::from_utf8_lossy(&o.stderr);
-                let errors: Vec<SchemaError> = stderr
+                let mut errors: Vec<SchemaError> = stderr
                     .lines()
                     .filter(|l| l.contains("error") || l.contains("Error"))
                     .map(|line| {
@@ -92,6 +92,13 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
                         }
                     })
                     .collect();
+                if errors.is_empty() {
+                    errors.push(SchemaError {
+                        line: 0,
+                        column: 0,
+                        message: stderr.trim().to_string(),
+                    });
+                }
 
                 SchemaValidationResult {
                     valid: false,
@@ -114,10 +121,85 @@ fn validate_wellformed(content: &str) -> SchemaValidationResult {
 
     let mut reader = Reader::from_str(content);
     let mut errors = Vec::new();
+    let mut elements = Vec::new();
+    let mut root_count = 0u32;
 
     loop {
         match reader.read_event() {
-            Ok(Event::Eof) => break,
+            Ok(Event::Start(element)) => {
+                if elements.is_empty() {
+                    root_count += 1;
+                }
+                elements.push(element.name().as_ref().to_vec());
+            }
+            Ok(Event::Empty(_)) => {
+                if elements.is_empty() {
+                    root_count += 1;
+                }
+            }
+            Ok(Event::End(element)) => match elements.pop() {
+                Some(start) if start == element.name().as_ref() => {}
+                Some(start) => {
+                    errors.push(SchemaError {
+                        line: 0,
+                        column: reader.error_position() as u32,
+                        message: format!(
+                            "XML parse error: expected </{}>, found </{}>",
+                            String::from_utf8_lossy(&start),
+                            String::from_utf8_lossy(element.name().as_ref())
+                        ),
+                    });
+                    break;
+                }
+                None => {
+                    errors.push(SchemaError {
+                        line: 0,
+                        column: reader.error_position() as u32,
+                        message: "XML parse error: unexpected closing element".to_string(),
+                    });
+                    break;
+                }
+            },
+            Ok(Event::Text(text))
+                if elements.is_empty()
+                    && text.as_ref().iter().any(|byte| !byte.is_ascii_whitespace()) =>
+            {
+                errors.push(SchemaError {
+                    line: 0,
+                    column: reader.error_position() as u32,
+                    message: "XML parse error: text outside root element".to_string(),
+                });
+                break;
+            }
+            Ok(Event::CData(_)) if elements.is_empty() => {
+                errors.push(SchemaError {
+                    line: 0,
+                    column: reader.error_position() as u32,
+                    message: "XML parse error: CDATA outside root element".to_string(),
+                });
+                break;
+            }
+            Ok(Event::Eof) => {
+                if let Some(element) = elements.last() {
+                    errors.push(SchemaError {
+                        line: 0,
+                        column: reader.error_position() as u32,
+                        message: format!(
+                            "XML parse error: unexpected end of file inside <{}>",
+                            String::from_utf8_lossy(element)
+                        ),
+                    });
+                } else if root_count != 1 {
+                    errors.push(SchemaError {
+                        line: 0,
+                        column: reader.error_position() as u32,
+                        message: format!(
+                            "XML parse error: expected one root element, found {root_count}"
+                        ),
+                    });
+                }
+                break;
+            }
             Ok(_) => {}
             Err(e) => {
                 errors.push(SchemaError {
@@ -133,5 +215,37 @@ fn validate_wellformed(content: &str) -> SchemaValidationResult {
     SchemaValidationResult {
         valid: errors.is_empty(),
         errors,
+    }
+}
+
+/// Validate that an XML file is well-formed.
+pub fn validate_wellformed_file(xml_file: &Path) -> SchemaValidationResult {
+    let content = match std::fs::read_to_string(xml_file) {
+        Ok(content) => content,
+        Err(e) => {
+            return SchemaValidationResult {
+                valid: false,
+                errors: vec![SchemaError {
+                    line: 0,
+                    column: 0,
+                    message: format!("Failed to read XML file: {e}"),
+                }],
+            };
+        }
+    };
+
+    validate_wellformed(&content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wellformed_validation_checks_element_nesting() {
+        assert!(validate_wellformed("<root><child/></root>").valid);
+        assert!(!validate_wellformed("<root><child></root>").valid);
+        assert!(!validate_wellformed("<root/></other>").valid);
+        assert!(!validate_wellformed("<root/>text").valid);
     }
 }

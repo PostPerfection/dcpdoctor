@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:c3d4e5f6-a7b8-90cd-efab-34567890abcd</Id>
+  <AnnotationText>Test CPL</AnnotationText>
+  <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>DcpDoctor Test Suite</Issuer>
+  <Creator>DcpDoctor</Creator>
+  <ContentTitleText>DCPDOCTOR-TEST_FTR-1_F_EN-XX_US_51_2K_TEST_20240101_DCR_SMPTE_OV</ContentTitleText>
+  <ContentKind>feature</ContentKind>
+  <ContentVersion>
+    <Id>urn:uuid:d4e5f6a7-b890-cdef-abcd-4567890abcde</Id>
+    <LabelText>Test Version 1</LabelText>
+  </ContentVersion>
+  <RatingList/>
+  <ReelList>
+    <Reel>
+      <Id>urn:uuid:e5f6a7b8-90cd-efab-bcde-567890abcdef</Id>
+      <AssetList>
+      </AssetList>
+    </Reel>
+  </ReelList>
+</CompositionPlaylist>

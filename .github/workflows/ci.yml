@@ -22,18 +22,17 @@ jobs:
       - name: Install OpenSSL (Windows)
         if: runner.os == 'Windows'
         run: |
+          $env:VCPKG_BUILD_TYPE = "release"
           vcpkg install openssl xerces-c --triplet x64-windows
-        shell: bash
 
       - name: Set vcpkg env (Windows)
         if: runner.os == 'Windows'
-        shell: bash
         run: |
-          echo "VCPKG_ROOT=C:/vcpkg" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=C:/vcpkg/installed/x64-windows" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=C:/vcpkg/installed/x64-windows/lib" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=C:/vcpkg/installed/x64-windows/include" >> $GITHUB_ENV
-          echo "C:/vcpkg/installed/x64-windows/bin" >> $GITHUB_PATH
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+          "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows" >> $env:GITHUB_ENV
+          "OPENSSL_LIB_DIR=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/lib" >> $env:GITHUB_ENV
+          "OPENSSL_INCLUDE_DIR=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/include" >> $env:GITHUB_ENV
+          "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin" >> $env:GITHUB_PATH
 
       - name: Build
         working-directory: rust
@@ -45,8 +44,44 @@ jobs:
 
       - name: Clippy
         working-directory: rust
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Format check
         working-directory: rust
         run: cargo fmt --all -- --check
+
+  gui:
+    name: GUI
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: gui/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: gui/pnpm-lock.yaml
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install frontend dependencies
+        working-directory: gui
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: gui
+        run: pnpm build
+
+      - name: Check GUI Rust
+        run: cargo check --manifest-path gui/src-tauri/Cargo.toml

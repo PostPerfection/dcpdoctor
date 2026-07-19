@@ -4,6 +4,8 @@
 
 [Documentation](https://postperfection.github.io/dcpdoctor/)
 
+Current release: `v0.1.1`.
+
 A comprehensive, professional-grade DCP (Digital Cinema Package) validator, analyzer, and diagnostic tool. Written in Rust.
 
 DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standards with the depth and precision required for theatrical distribution.
@@ -14,7 +16,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Structure validation** — ASSETMAP, PKL, CPL parsing with full cross-referencing
 - **Hash verification** — SHA-1 integrity checking for all assets (with SQLite cache for speed)
 - **XML digital signatures** — X.509 certificate chain and signature verification
-- **Schema validation** — Full XML validation against SMPTE and Interop schemas
+- **Schema validation:** Well-formedness checks for every package XML file, with full XSD validation when schemas are supplied
 - **Duplicate detection** — Identifies duplicate asset IDs across packages
 
 ### Standards Compliance
@@ -72,7 +74,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Checksum verification** — Verify all PKL asset hashes and sizes (DCP or IMF)
 - **MXF essence extraction** — Extract video/audio tracks from MXF containers
 - **Automated QC** — Detect black frames, freeze frames, audio silence, and audio clipping
-- **IMP validation** — Validate IMF packages via Netflix Photon
+- **IMP validation:** Route ST 2067 IMF packages to native checks and Netflix Photon without running IMF tools on DCPs
 - **Schema validation** — XML schema validation against SMPTE ST 2067 XSDs
 - **IMF compliance** — Platform-specific compliance checks (Netflix, Disney, Amazon, Apple, Cinema, Broadcast)
 - **Frame-level QC** — Per-frame J2K bitrate analysis with over/under-budget detection
@@ -225,7 +227,7 @@ dcpdoctor fix /path/to/dcp && dcpdoctor validate --strict /path/to/dcp
 
 ### Photon Integration (IMF)
 
-dcpdoctor includes mandatory [Netflix Photon](https://github.com/Netflix/photon) integration for deep IMF Application 2/2E conformance checks. On first use, Photon is automatically cloned and built to `~/.cache/dcpdoctor/photon/`.
+dcpdoctor includes mandatory [Netflix Photon](https://github.com/Netflix/photon) integration for deep IMF Application 2/2E conformance checks. It runs only when an ST 2067-3 Composition Playlist identifies an IMF package. SMPTE and Interop DCPs skip IMF and Photon validation. On first use, Photon is automatically cloned and built to `~/.cache/dcpdoctor/photon/`.
 
 **Requirements:** Java 11+ and git.
 
@@ -368,8 +370,10 @@ dcpdoctor auto-qc --video /path/to/content.mxf \
 # Validate an IMF package via Netflix Photon
 dcpdoctor validate-imp /path/to/IMP/
 
-# Schema validation against SMPTE XSDs
+# Check every package XML file for well-formedness
 dcpdoctor schema-validate /path/to/IMP/
+
+# Also validate recognized package XML files against supplied XSDs
 dcpdoctor schema-validate /path/to/IMP/ --schema-dir /path/to/xsd/
 ```
 
@@ -465,8 +469,12 @@ dcpdoctor imp-info /path/to/IMP/
 
 ```bash
 cd rust
-cargo test
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+GitHub Actions runs these Rust checks on Linux, macOS, and Windows. It also builds the frontend and checks the Tauri Rust crate on Linux.
 
 ### Studio Validation
 
@@ -524,10 +532,10 @@ cd rust && cargo build --release && cd ..
 cp rust/target/release/dcpdoctor gui/src-tauri/dcpdoctor-$(rustc -vV | grep host | cut -d' ' -f2)
 
 # Install frontend dependencies
-cd gui && npm install
+cd gui && pnpm install
 
 # Build the desktop app
-npx tauri build
+pnpm tauri build
 ```
 
 Built packages are in `gui/src-tauri/target/release/bundle/`:
@@ -539,7 +547,7 @@ Built packages are in `gui/src-tauri/target/release/bundle/`:
 
 ```bash
 cd gui
-npx tauri dev
+pnpm tauri dev
 ```
 
 This starts a hot-reloading dev server — edit `gui/src/` files and see changes live.

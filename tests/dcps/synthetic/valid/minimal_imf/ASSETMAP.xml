@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/2067-2/2016/AM">
+  <Id>urn:uuid:10000000-0000-0000-0000-000000000001</Id>
+  <VolumeCount>1</VolumeCount>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:10000000-0000-0000-0000-000000000002</Id>
+      <PackingList>true</PackingList>
+      <ChunkList><Chunk><Path>PKL_test.xml</Path></Chunk></ChunkList>
+    </Asset>
+    <Asset>
+      <Id>urn:uuid:10000000-0000-0000-0000-000000000003</Id>
+      <ChunkList><Chunk><Path>CPL_test.xml</Path></Chunk></ChunkList>
+    </Asset>
+  </AssetList>
+</AssetMap>

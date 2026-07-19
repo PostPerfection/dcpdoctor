@@ -309,7 +309,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "dcpdoctor-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "dcpdoctor-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "asdcplib",
  "base64",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "dcpdoctor-imf"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "quick-xml",
  "serde",

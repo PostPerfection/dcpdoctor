@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:a1b2c3d4-e5f6-7890-abcd-ef1234567890</Id>
+  <AnnotationText>Test DCP</AnnotationText>
+  <VolumeCount>1</VolumeCount>
+  <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>DcpDoctor Test Suite</Issuer>
+  <Creator>DcpDoctor</Creator>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:b2c3d4e5-f6a7-890b-cdef-234567890abc</Id>
+      <PackingList>true</PackingList>
+      <ChunkList>
+        <Chunk><Path>PKL_test.xml</Path></Chunk>
+      </ChunkList>
+    </Asset>
+    <Asset>
+      <Id>urn:uuid:c3d4e5f6-a7b8-90cd-efab-34567890abcd</Id>
+      <ChunkList>
+        <Chunk><Path>CPL_test.xml</Path></Chunk>
+      </ChunkList>
+    </Asset>
+  </AssetList>
+</AssetMap>

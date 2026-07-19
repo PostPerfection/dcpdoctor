@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PackingList xmlns="http://www.smpte-ra.org/schemas/2067-2/2016/PKL">
+  <Id>urn:uuid:10000000-0000-0000-0000-000000000002</Id>
+  <IssueDate>2024-01-01T00:00:00Z</IssueDate>
+  <Issuer>DcpDoctor</Issuer>
+  <Creator>DcpDoctor</Creator>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:10000000-0000-0000-0000-000000000003</Id>
+      <Hash>2jmj7l5rSw0yVb/vlWAYkK/YBwk=</Hash>
+      <Size>0</Size>
+      <Type>text/xml</Type>
+    </Asset>
+  </AssetList>
+</PackingList>

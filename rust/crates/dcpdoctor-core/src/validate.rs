@@ -7,6 +7,10 @@ use crate::{Code, Note, Severity, VerifyOptions, VerifyResult};
 
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
+    if crate::imf::is_imf_package(dcp_dir) {
+        return verify_imp(dcp_dir);
+    }
+
     let mut result = VerifyResult::default();
 
     let dcp = match dcp::open_dcp(dcp_dir) {
@@ -296,24 +300,32 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         }
     }
 
-    // 6. Native IMF validation (works everywhere including WASM)
-    let imf_notes = crate::imf::validate_imp(dcp_dir);
-    for note in imf_notes {
+    result
+}
+
+fn verify_imp(imp_dir: &Path) -> VerifyResult {
+    let mut result = VerifyResult {
+        standard: crate::Standard::Smpte,
+        ..Default::default()
+    };
+
+    // Native IMF validation works everywhere including WASM.
+    for note in crate::imf::validate_imp(imp_dir) {
         result.add(note);
     }
 
-    // 7. Photon integration — additional deep IMF conformance checks
-    match crate::photon::run_photon(dcp_dir) {
+    // Photon adds deep IMF conformance checks.
+    match crate::photon::run_photon(imp_dir) {
         Ok(photon_notes) => {
             for note in photon_notes {
                 result.add(note);
             }
         }
-        Err(e) => {
+        Err(error) => {
             result.add(Note {
                 severity: Severity::Warning,
                 code: Code::MissingRequiredElement,
-                message: format!("[Photon] {}", e),
+                message: format!("[Photon] {error}"),
                 file: None,
                 line: 0,
             });
@@ -321,4 +333,38 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(relative_path: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/dcps/synthetic/valid")
+            .join(relative_path)
+    }
+
+    #[test]
+    fn smpte_dcp_skips_imf_validation() {
+        let result = verify_dcp(&fixture("minimal_smpte_2k"), &VerifyOptions::default());
+
+        assert!(!result.notes.iter().any(|note| {
+            note.message.contains("IMF Composition Playlist") || note.message.contains("[Photon]")
+        }));
+    }
+
+    #[test]
+    fn interop_dcp_skips_imf_validation() {
+        let result = verify_dcp(&fixture("minimal_interop"), &VerifyOptions::default());
+
+        assert!(!result.notes.iter().any(|note| {
+            note.message.contains("IMF Composition Playlist") || note.message.contains("[Photon]")
+        }));
+    }
+
+    #[test]
+    fn imf_package_is_detected_from_its_cpl_namespace() {
+        assert!(crate::imf::is_imf_package(&fixture("minimal_imf")));
+    }
 }
