@@ -237,6 +237,46 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         }
     }
 
+    // 4c. Structural CPL checks (markers, MCA labeling, cross-references,
+    // supplemental/OPL, reel continuity, stereo). Lightweight XML checks that
+    // run in the core path; --studio adds deeper ffprobe-based analysis.
+    let cpl_paths: Vec<std::path::PathBuf> = dcp.cpls.iter().map(|(p, _)| p.clone()).collect();
+    let known_asset_ids: Vec<String> = dcp.assetmap.assets.iter().map(|a| a.id.clone()).collect();
+
+    for note in crate::validators::check_encryption(dcp_dir, &cpl_paths) {
+        result.add(note);
+    }
+    for note in crate::validators::check_cross_references(&known_asset_ids, &cpl_paths) {
+        result.add(note);
+    }
+    for note in crate::validators::check_supplemental(&cpl_paths) {
+        result.add(note);
+    }
+    for (cpl_path, cpl) in &dcp.cpls {
+        if !cpl.content_title.is_empty() {
+            for note in crate::isdcf::check_isdcf_naming(&cpl.content_title, cpl_path) {
+                result.add(note);
+            }
+        }
+    }
+    for cpl_path in &cpl_paths {
+        for note in crate::validators::check_markers(cpl_path, opts.strict_smpte) {
+            result.add(note);
+        }
+        for note in crate::validators::check_audio_channels(cpl_path) {
+            result.add(note);
+        }
+        for note in crate::validators::check_reel_continuity(cpl_path) {
+            result.add(note);
+        }
+        for note in crate::validators::check_stereo(cpl_path) {
+            result.add(note);
+        }
+        for note in crate::hfr_stereo::check_hfr_compliance(cpl_path) {
+            result.add(note);
+        }
+    }
+
     // 5. MXF validation (if picture details requested)
     if opts.check_picture_details {
         for asset in &dcp.assetmap.assets {
@@ -458,6 +498,46 @@ mod tests {
                 .iter()
                 .any(|n| n.code == Code::SubtitleInvalidTiming),
             "expected subtitle timing note from pipeline, got: {:?}",
+            result.notes
+        );
+    }
+
+    #[test]
+    fn cpl_reference_to_unknown_asset_is_flagged_in_core() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#,
+        )
+        .unwrap();
+
+        // MainPicture references an id that is not present in the ASSETMAP
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:deadbeef-0000-0000-0000-000000000000</Id><Duration>48</Duration></MainPicture>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#,
+        )
+        .unwrap();
+
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result.notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "expected CrossRefBroken from the core pipeline, got: {:?}",
             result.notes
         );
     }

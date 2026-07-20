@@ -6,8 +6,10 @@ use std::path::Path;
 
 /// Start the REST API server.
 ///
-/// Listens for HTTP POST requests to `/verify` with a JSON body containing
-/// `{"dcp_dir": "/path/to/dcp"}`. Returns the `VerifyResult` as JSON.
+/// Endpoints:
+/// - `GET /health` returns `{"status":"ok"}`.
+/// - `POST /validate` with `{"path": "/path/to/dcp"}` returns the `VerifyResult`.
+/// - `POST /verify` with `{"dcp_dir": "/path/to/dcp"}` (legacy alias) does the same.
 pub fn start_server(bind: &str, port: u16) {
     let addr = format!("{bind}:{port}");
     let listener = match TcpListener::bind(&addr) {
@@ -37,8 +39,24 @@ pub fn start_server(bind: &str, port: u16) {
 
         let request = String::from_utf8_lossy(&buf[..n]);
 
-        // Parse HTTP request
-        if request.starts_with("POST /verify") {
+        // /validate takes {"path"}, /verify (legacy) takes {"dcp_dir"}
+        let route = if request.starts_with("POST /validate") {
+            Some("path")
+        } else if request.starts_with("POST /verify") {
+            Some("dcp_dir")
+        } else {
+            None
+        };
+
+        if request.starts_with("GET /health") {
+            let json = "{\"status\":\"ok\"}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                json.len(),
+                json
+            );
+            let _ = stream.write_all(response.as_bytes());
+        } else if let Some(key) = route {
             // Extract JSON body (after blank line)
             let body = request
                 .split("\r\n\r\n")
@@ -48,10 +66,15 @@ pub fn start_server(bind: &str, port: u16) {
 
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
 
-            let dcp_dir = parsed["dcp_dir"].as_str().unwrap_or("");
+            let dcp_dir = parsed[key].as_str().unwrap_or("");
 
             if dcp_dir.is_empty() {
-                let response = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{\"error\":\"missing dcp_dir\"}";
+                let json = format!("{{\"error\":\"missing {key}\"}}");
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    json.len(),
+                    json
+                );
                 let _ = stream.write_all(response.as_bytes());
                 continue;
             }

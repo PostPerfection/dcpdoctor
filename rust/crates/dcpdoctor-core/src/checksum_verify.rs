@@ -289,3 +289,40 @@ fn resolve_asset_path(
 
     pkg_dir.join(asset_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_mismatch_is_detected_without_hashing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.mxf"), b"hello").unwrap(); // 5 bytes
+        std::fs::write(
+            dir.path().join("PKL_test.xml"),
+            r#"<?xml version="1.0"?>
+<PackingList xmlns="http://www.smpte-ra.org/schemas/429-8/2007/PKL">
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:11111111-2222-3333-4444-555555555555</Id>
+      <Hash>abc</Hash>
+      <Size>999</Size>
+      <OriginalFileName>test.mxf</OriginalFileName>
+    </Asset>
+  </AssetList>
+</PackingList>"#,
+        )
+        .unwrap();
+
+        let opts = ChecksumVerifyOptions {
+            package_dir: dir.path().to_path_buf(),
+            verify_hashes: false,
+            verify_sizes: true,
+            stop_on_first_error: false,
+        };
+        let result = verify_package_checksums(&opts);
+        assert!(result.success);
+        assert_eq!(result.size_mismatches, 1, "entries: {:?}", result.entries);
+        assert!(!result.all_valid);
+    }
+}

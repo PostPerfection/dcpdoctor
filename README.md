@@ -14,8 +14,8 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 
 ### Core Validation
 - **Structure validation**: ASSETMAP, PKL, CPL parsing with full cross-referencing
-- **Hash verification**: SHA-1 integrity checking for all assets (with SQLite cache for speed)
-- **XML digital signatures**: X.509 certificate chain and signature verification
+- **Hash verification**: SHA-1 integrity checking for all assets
+- **XML digital signatures**: enveloped signature verification plus embedded X.509 chain linkage and expiry checks
 - **Schema validation:** Well-formedness checks for every package XML file, with full XSD validation when schemas are supplied
 - **Duplicate detection**: Identifies duplicate asset IDs across packages
 
@@ -59,8 +59,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
   - Content title extraction
 
 ### Dolby Atmos
-- **IAB detection**: Identifies Immersive Audio Bitstream containers
-- **DC Data track**: Detects Dolby Atmos auxiliary data tracks
+- **IAB detection**: Identifies Immersive Audio Bitstream essence via ffprobe (with an estimated object count)
 
 ### Reel & Structure Analysis
 - **Reel continuity**: Validates sequential entry points across reels
@@ -78,7 +77,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Schema validation**: XML schema validation against SMPTE ST 2067 XSDs
 - **IMF compliance**: Platform-specific compliance checks (Netflix, Disney, Amazon, Apple, Cinema, Broadcast)
 - **Frame-level QC**: Per-frame J2K bitrate analysis with over/under-budget detection
-- **QC reports**: Detailed HTML/PDF QC reports with thumbnails, waveforms, loudness, bitrate charts
+- **QC reports**: HTML/PDF QC reports with package and track summary, plus per-track EBU R128 loudness
 - **Loudness measurement**: EBU R128 / ATSC A/85 loudness measurement and normalization
 - **AV sync detection**: Audio/video sync drift detection and measurement
 - **HDR validation**: HDR10, HLG, Dolby Vision metadata validation
@@ -93,12 +92,10 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Automated fix suggestions**: Actionable remediation advice for common issues
 - **SVG timeline visualization**: Visual reel structure diagram with timecodes
 - **Manifest comparison**: Validate DCP against a reference manifest JSON
-- **Content hash cache**: SQLite-backed cache for instant re-validation of unchanged files
+- **Content fingerprinting**: Perceptual picture hash to compare two packages (`diff --fingerprint`)
 - **Batch processing**: Multi-DCP validation with summary table
 
 ### Output & Integration
-- **Colored terminal output**: ANSI colors (respects `NO_COLOR` and non-TTY)
-- **Progress bar**: Visual progress for batch operations
 - **Text/JSON/HTML reports**: Multiple output formats
 - **REST API**: HTTP server mode (POST /validate, GET /health)
 - **Directory watch**: Auto-validates new DCPs as they appear
@@ -120,11 +117,16 @@ The CLI binary is fully self-contained (all dependencies statically linked). Ext
 
 ### Install from source
 
+The build itself needs only a Rust toolchain (1.85+). The following tools are runtime dependencies, invoked when the relevant checks run:
+
+- `ffmpeg` / `ffprobe`: media analysis (auto-qc, loudness, HDR, Atmos, frame-compare, mxf-extract)
+- `xmllint`: XSD schema validation (`schema-validate --schema-dir`)
+
 #### Linux (Ubuntu/Debian)
 
 ```bash
-sudo apt-get install -y pkg-config libxml2-dev libssl-dev libxerces-c-dev
-# For GUI: also install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+sudo apt-get install -y ffmpeg libxml2-utils
+# For GUI: also install libwebkit2gtk-4.1-dev librsvg2-dev libgtk-3-dev libsoup-3.0-dev
 
 cd rust
 cargo build --release
@@ -134,10 +136,7 @@ cargo build --release
 #### macOS
 
 ```bash
-brew install pkg-config libxml2 openssl@3 xerces-c
-
-export OPENSSL_DIR=$(brew --prefix openssl@3)
-export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$(brew --prefix xerces-c)/lib/pkgconfig"
+brew install ffmpeg libxml2
 
 cd rust
 cargo build --release
@@ -146,10 +145,8 @@ cargo build --release
 #### Windows
 
 ```powershell
-# Using vcpkg (recommended)
-vcpkg install libxml2 openssl xerces-c --triplet x64-windows
-
-$env:VCPKG_ROOT = "$env:VCPKG_INSTALLATION_ROOT"
+# ffmpeg (includes ffprobe) and xmllint via your package manager, e.g.:
+winget install Gyan.FFmpeg
 
 cd rust
 cargo build --release
@@ -177,16 +174,16 @@ dcpdoctor /dcp1 /dcp2 /dcp3
 
 ```bash
 # BV2.1 application profile check
-dcpdoctor --bv21 /path/to/dcp
+dcpdoctor validate --bv21 /path/to/dcp
 
 # Strict SMPTE compliance
-dcpdoctor --strict /path/to/dcp
+dcpdoctor validate --strict /path/to/dcp
 
 # Deep J2K codestream validation
-dcpdoctor --deep-j2k /path/to/dcp
+dcpdoctor validate --deep-j2k /path/to/dcp
 
 # MXF essence inspection (bitrate, audio levels)
-dcpdoctor --check-mxf /path/to/dcp
+dcpdoctor validate --check-mxf /path/to/dcp
 ```
 
 ### Reports & Output
@@ -196,10 +193,10 @@ dcpdoctor --check-mxf /path/to/dcp
 dcpdoctor --json /path/to/dcp
 
 # HTML report
-dcpdoctor --html -o report.html /path/to/dcp
+dcpdoctor validate --html -o report.html /path/to/dcp
 
 # SVG timeline visualization
-dcpdoctor --timeline timeline.svg /path/to/dcp
+dcpdoctor validate --timeline timeline.svg /path/to/dcp
 
 # Auto-fix repairable issues
 dcpdoctor fix /path/to/dcp
@@ -254,6 +251,9 @@ dcpdoctor diff /path/to/dcp_v1 /path/to/dcp_v2
 
 # Include content hash comparison (slower)
 dcpdoctor diff --hashes /path/to/dcp_v1 /path/to/dcp_v2
+
+# Compare picture content by perceptual fingerprint
+dcpdoctor diff --fingerprint /path/to/dcp_v1 /path/to/dcp_v2
 ```
 
 ### KDM Validation
@@ -281,7 +281,7 @@ dcpdoctor profiles --check "imax" --dcp /path/to/dcp
 
 ```bash
 # Compare DCP against reference manifest
-dcpdoctor --manifest manifest.json /path/to/dcp
+dcpdoctor validate --manifest manifest.json /path/to/dcp
 ```
 
 Manifest JSON format:
@@ -312,10 +312,10 @@ REST API endpoints:
 
 ```bash
 # Skip hash verification (fast structural check only)
-dcpdoctor --no-hashes /path/to/dcp
+dcpdoctor validate --no-hashes /path/to/dcp
 
 # Skip signature verification
-dcpdoctor --no-signatures /path/to/dcp
+dcpdoctor validate --no-signatures /path/to/dcp
 ```
 
 ### Checksum Verification
@@ -434,14 +434,11 @@ dcpdoctor hdr-validate /path/to/video.mxf -s hdr10 --max-cll 1000 --max-fall 400
 ### Frame Comparison
 
 ```bash
-# Compare two IMPs
+# Compare two IMPs (resolves each IMP's picture asset)
 dcpdoctor frame-compare --imp-a /path/to/IMP_v1/ --imp-b /path/to/IMP_v2/
 
-# Compare two files with VMAF and HTML report
-dcpdoctor frame-compare --file-a ref.mxf --file-b test.mxf --vmaf --html -o results/
-
-# Extract diff images
-dcpdoctor frame-compare --file-a ref.mp4 --file-b test.mp4 --extract-diffs -o diffs/
+# Compare two files with VMAF
+dcpdoctor frame-compare --file-a ref.mxf --file-b test.mxf --vmaf
 ```
 
 ### IMP Info
@@ -463,7 +460,8 @@ dcpdoctor imp-info /path/to/IMP/
 
 | Variable | Effect |
 |---|---|
-| `NO_COLOR` | Disable colored output |
+| `PHOTON_DIR` | Path to an existing Netflix Photon install (skips auto-bootstrap) |
+| `RUST_BACKTRACE` | Set to `1` for a detailed backtrace on crash |
 
 ## Running Tests
 
@@ -596,4 +594,4 @@ dcpdoctor/
 
 ## License
 
-MIT
+GPL-3.0-or-later. See [LICENSE](LICENSE).

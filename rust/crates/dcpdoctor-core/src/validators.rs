@@ -291,9 +291,11 @@ pub fn check_cross_references(known_asset_ids: &[String], cpl_paths: &[PathBuf])
             continue;
         };
 
-        // Only check IDs within asset reference blocks
+        // Only check IDs within blocks that reference external asset files.
+        // MainMarkers is an inline marker track (no file in the ASSETMAP), so it
+        // is deliberately excluded to avoid false CrossRefBroken errors.
         let asset_block_re = regex_lite::Regex::new(
-            r"<(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|MainMarkers|ClosedCaption|MainImage|AuxData)>([\s\S]*?)</(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|MainMarkers|ClosedCaption|MainImage|AuxData)>",
+            r"<(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|ClosedCaption|MainImage|AuxData)>([\s\S]*?)</(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|ClosedCaption|MainImage|AuxData)>",
         ).unwrap();
 
         for block_cap in asset_block_re.captures_iter(&content) {

@@ -60,6 +60,10 @@ struct Cli {
     /// Accessibility track validation (AD/HI/CC)
     #[arg(long, global = true)]
     accessibility: bool,
+
+    /// Expect an IMF (IMP) package; warn if the target is a plain DCP
+    #[arg(long, global = true)]
+    imf: bool,
 }
 
 #[derive(Subcommand)]
@@ -116,6 +120,9 @@ enum Commands {
         /// Compare content hashes
         #[arg(long)]
         hashes: bool,
+        /// Compare picture content by perceptual fingerprint
+        #[arg(long)]
+        fingerprint: bool,
     },
 
     /// Display DCP information
@@ -353,15 +360,6 @@ enum Commands {
         /// Include VMAF metrics
         #[arg(long)]
         vmaf: bool,
-        /// Generate HTML report
-        #[arg(long)]
-        html: bool,
-        /// Extract diff images
-        #[arg(long)]
-        extract_diffs: bool,
-        /// Output directory
-        #[arg(short, long)]
-        output: Option<PathBuf>,
     },
 
     /// Display IMP package info
@@ -468,6 +466,7 @@ fn main() {
                 no_signatures,
                 check_mxf,
                 strict: strict || bv21,
+                bv21,
                 deep_j2k,
                 studio: cli.studio,
                 deep: cli.deep,
@@ -477,6 +476,7 @@ fn main() {
                 dolby_vision: cli.dolby_vision,
                 prores: cli.prores,
                 accessibility: cli.accessibility,
+                imf: cli.imf,
                 timeline,
                 manifest,
                 output,
@@ -487,6 +487,7 @@ fn main() {
             dcp_a,
             dcp_b,
             hashes,
+            fingerprint,
         }) => {
             let result = dcpdoctor_core::diff::diff_dcps(&dcp_a, &dcp_b, hashes);
             if cli.json {
@@ -500,6 +501,29 @@ fn main() {
                         "  [{}] {}: {} vs {}",
                         diff.category, diff.description, diff.value_a, diff.value_b
                     );
+                }
+            }
+
+            if fingerprint {
+                match (resolve_imp_video(&dcp_a), resolve_imp_video(&dcp_b)) {
+                    (Some(va), Some(vb)) => {
+                        let fa = dcpdoctor_core::premium::generate_fingerprint(&va);
+                        let fb = dcpdoctor_core::premium::generate_fingerprint(&vb);
+                        if fa.hash.is_empty() || fb.hash.is_empty() {
+                            eprintln!("Fingerprint unavailable (ffmpeg could not sample a frame)");
+                            std::process::exit(1);
+                        }
+                        let distance = dcpdoctor_core::premium::compare_fingerprints(&fa, &fb);
+                        let similarity = (1.0 - distance) * 100.0;
+                        println!(
+                            "\nPicture fingerprint: {} vs {} ({:.0}% similar)",
+                            fa.hash, fb.hash, similarity
+                        );
+                    }
+                    _ => {
+                        eprintln!("Fingerprint: no picture asset found in one or both packages");
+                        std::process::exit(1);
+                    }
                 }
             }
         }
@@ -556,17 +580,17 @@ fn main() {
                     strict_smpte: true,
                 };
                 let verify_result = dcpdoctor_core::verify(&dcp_dir, &opts);
-                let fixable: Vec<_> = verify_result
-                    .notes
-                    .iter()
-                    .filter(|n| is_fixable(n.code))
-                    .collect();
-                if fixable.is_empty() {
+                let suggestions = dcpdoctor_core::fixes::suggest_fixes(&verify_result.notes);
+                if suggestions.is_empty() {
                     println!("Nothing to fix.");
                 } else {
-                    println!("Would fix {} issue(s):", fixable.len());
-                    for note in fixable {
-                        println!("  [{}] {}", note.code.as_str(), note.message);
+                    println!("{} fix suggestion(s):", suggestions.len());
+                    for s in &suggestions {
+                        let tag = if s.auto_fixable { "auto" } else { "manual" };
+                        println!("  [{tag}] {}", s.description);
+                        if !s.command.is_empty() {
+                            println!("        $ {}", s.command);
+                        }
                     }
                 }
             } else {
@@ -709,36 +733,50 @@ fn main() {
                 std::process::exit(1);
             }
 
-            let opts = dcpdoctor_core::VerifyOptions {
-                check_hashes: !no_hash,
-                check_signatures: false,
-                check_picture_details: false,
-                strict_smpte: false,
+            // --no-hash still verifies sizes and presence, per docs
+            let opts = dcpdoctor_core::checksum_verify::ChecksumVerifyOptions {
+                package_dir: dcp_dir,
+                verify_hashes: !no_hash,
+                verify_sizes: true,
+                stop_on_first_error: stop_on_error,
             };
-            let result = dcpdoctor_core::verify(&dcp_dir, &opts);
-            let hash_notes: Vec<_> = result
-                .notes
-                .iter()
-                .filter(|n| {
-                    matches!(
-                        n.code,
-                        dcpdoctor_core::Code::PklHashMismatch | dcpdoctor_core::Code::AssetNotFound
-                    )
-                })
-                .collect();
+            let result = dcpdoctor_core::checksum_verify::verify_package_checksums(&opts);
+
+            if !result.error.is_empty() {
+                eprintln!("{}", result.error);
+                std::process::exit(1);
+            }
 
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&hash_notes).unwrap());
-            } else if hash_notes.is_empty() {
-                println!("All checksums verified OK");
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else if result.all_valid {
+                println!(
+                    "All checksums verified OK ({} asset(s))",
+                    result.total_assets
+                );
             } else {
-                println!("{} checksum issue(s):", hash_notes.len());
-                for note in &hash_notes {
-                    println!("  [{}] {}", note.code.as_str(), note.message);
-                    if stop_on_error {
-                        std::process::exit(1);
+                println!(
+                    "{} of {} asset(s) failed: {} hash, {} size, {} missing",
+                    result.total_assets - result.verified_ok,
+                    result.total_assets,
+                    result.hash_mismatches,
+                    result.size_mismatches,
+                    result.missing_files
+                );
+                for entry in &result.entries {
+                    if !entry.file_exists {
+                        println!("  [missing] {} ({})", entry.filename, entry.asset_id);
+                    } else if !entry.hash_match {
+                        println!("  [hash] {}", entry.filename);
+                    } else if !entry.size_match {
+                        println!(
+                            "  [size] {} (expected {}, got {})",
+                            entry.filename, entry.expected_size, entry.actual_size
+                        );
                     }
                 }
+            }
+            if !result.all_valid {
                 std::process::exit(1);
             }
         }
@@ -989,6 +1027,25 @@ fn main() {
             target,
             no_strict,
         }) => {
+            use dcpdoctor_core::imf_compliance::ImfComplianceTarget as T;
+            let compliance_target = match target.to_lowercase().as_str() {
+                "netflix" => T::Netflix,
+                "disney" | "disney+" => T::Disney,
+                "amazon" => T::Amazon,
+                "apple" => T::Apple,
+                "cinema2k" => T::Cinema2K,
+                "cinema4k" => T::Cinema4K,
+                "broadcast" | "broadcasthd" => T::BroadcastHd,
+                "broadcastuhd" => T::BroadcastUhd,
+                other => {
+                    eprintln!(
+                        "Unknown target '{other}' (netflix, disney, amazon, apple, cinema2k, cinema4k, broadcast, broadcastuhd)"
+                    );
+                    std::process::exit(1);
+                }
+            };
+
+            // Generic structural validation first
             let opts = dcpdoctor_core::VerifyOptions {
                 check_hashes: true,
                 check_signatures: true,
@@ -997,15 +1054,25 @@ fn main() {
             };
             let result = dcpdoctor_core::verify(&imp_dir, &opts);
 
+            // Real per-platform delivery-spec checks
+            let compliance = dcpdoctor_core::imf_compliance::check_imf_compliance(
+                &dcpdoctor_core::imf_compliance::ImfComplianceOptions {
+                    imp_dir: imp_dir.clone(),
+                    target: compliance_target,
+                },
+            );
+            let pass = result.ok() && compliance.compliant;
+
             if cli.json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "target": target,
-                        "pass": result.ok(),
+                        "pass": pass,
                         "errors": result.error_count,
                         "warnings": result.warning_count,
                         "notes": result.notes,
+                        "platform_checks": compliance.checks,
                     }))
                     .unwrap()
                 );
@@ -1015,15 +1082,30 @@ fn main() {
                 for note in &result.notes {
                     println!("{note}");
                 }
-                if result.ok() {
+                for c in &compliance.checks {
+                    println!(
+                        "  [{}] {}: expected {}, got {}",
+                        if c.passed { "PASS" } else { "FAIL" },
+                        c.rule,
+                        c.expected_value,
+                        if c.actual_value.is_empty() {
+                            "unknown"
+                        } else {
+                            &c.actual_value
+                        }
+                    );
+                }
+                if pass {
                     println!("\nPASS: Compliant with {target} requirements");
                 } else {
                     println!(
-                        "\nFAIL: {} error(s), {} warning(s)",
-                        result.error_count, result.warning_count
+                        "\nFAIL: {} error(s), {} warning(s), {} platform check(s) failed",
+                        result.error_count, result.warning_count, compliance.failed
                     );
-                    std::process::exit(1);
                 }
+            }
+            if !pass {
+                std::process::exit(1);
             }
         }
         Some(Commands::MxfExtract {
@@ -1194,20 +1276,32 @@ fn main() {
             max_cll,
             max_fall,
         }) => {
-            let expected_transfer = match standard.as_deref() {
-                Some("hdr10") | Some("pq") => dcpdoctor_core::hdr_validate::TransferFunction::Pq,
-                Some("hlg") => dcpdoctor_core::hdr_validate::TransferFunction::Hlg,
-                _ => dcpdoctor_core::hdr_validate::TransferFunction::default(),
+            use dcpdoctor_core::hdr_validate::{Colorimetry, TransferFunction};
+            // Dolby Vision is carried over a PQ (ST 2084) base layer
+            let (expected_transfer, expected_colorimetry) = match standard.as_deref() {
+                Some("hdr10") | Some("pq") => (TransferFunction::Pq, Colorimetry::Bt2020),
+                Some("hlg") => (TransferFunction::Hlg, Colorimetry::Bt2020),
+                Some("dolby-vision") | Some("dovi") => (TransferFunction::Pq, Colorimetry::Bt2020),
+                _ => (TransferFunction::default(), Colorimetry::default()),
             };
             let opts = dcpdoctor_core::hdr_validate::HdrValidateOptions {
                 video_path: video_file,
                 expected_transfer,
-                expected_colorimetry: dcpdoctor_core::hdr_validate::Colorimetry::default(),
+                expected_colorimetry,
                 expected_bit_depth: 0,
                 expected_max_cll: max_cll.unwrap_or(0) as u16,
-                expected_max_luminance: max_fall.unwrap_or(0),
+                expected_max_fall: max_fall.unwrap_or(0) as u16,
+                expected_max_luminance: 0,
             };
             let result = dcpdoctor_core::hdr_validate::validate_hdr_metadata(&opts);
+            if !result.success {
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                } else {
+                    eprintln!("HDR validation failed: {}", result.error);
+                }
+                std::process::exit(1);
+            }
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&result).unwrap());
             } else {
@@ -1236,14 +1330,18 @@ fn main() {
             file_a,
             file_b,
             vmaf,
-            html: generate_html,
-            extract_diffs,
-            output,
         }) => {
             let (a, b) = if let (Some(fa), Some(fb)) = (file_a, file_b) {
                 (fa, fb)
             } else if let (Some(ia), Some(ib)) = (imp_a, imp_b) {
-                (ia, ib)
+                let resolve = |imp: &std::path::Path| match resolve_imp_video(imp) {
+                    Some(v) => v,
+                    None => {
+                        eprintln!("No picture asset found in IMP: {}", imp.display());
+                        std::process::exit(1);
+                    }
+                };
+                (resolve(&ia), resolve(&ib))
             } else {
                 eprintln!("Provide either --file-a/--file-b or --imp-a/--imp-b");
                 std::process::exit(1);
@@ -1252,18 +1350,19 @@ fn main() {
             let opts = dcpdoctor_core::frame_compare::CompareOptions {
                 start_frame: 0,
                 end_frame: 0,
-                sample_interval: 1,
                 threshold_psnr: 30.0,
-                threshold_ssim: 0.95,
                 compute_ssim: true,
                 compute_vmaf: vmaf,
-                extract_diff_frames: extract_diffs,
-                generate_report: true,
-                generate_html,
-                output_dir: output.unwrap_or_else(|| PathBuf::from(".")),
-                vmaf_model: PathBuf::new(),
             };
             let result = dcpdoctor_core::frame_compare::compare_files(&a, &b, &opts);
+            if !result.success {
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                } else {
+                    eprintln!("Frame comparison failed: {}", result.error);
+                }
+                std::process::exit(1);
+            }
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&result).unwrap());
             } else {
@@ -1420,6 +1519,7 @@ fn main() {
                 dolby_vision: cli.dolby_vision,
                 prores: cli.prores,
                 accessibility: cli.accessibility,
+                imf: cli.imf,
                 ..Default::default()
             };
             run_validate(&cli.dcp_dirs, flags, format);
@@ -1433,6 +1533,7 @@ struct ValidateFlags {
     no_signatures: bool,
     check_mxf: bool,
     strict: bool,
+    bv21: bool,
     deep_j2k: bool,
     studio: bool,
     deep: bool,
@@ -1442,6 +1543,7 @@ struct ValidateFlags {
     dolby_vision: bool,
     prores: bool,
     accessibility: bool,
+    imf: bool,
     timeline: Option<PathBuf>,
     manifest: Option<PathBuf>,
     output: Option<PathBuf>,
@@ -1460,6 +1562,22 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
 
     for dir in dcp_dirs {
         let mut result = dcpdoctor_core::verify(dir, &opts);
+
+        // --imf: caller asserts this is an IMF package
+        if flags.imf && !dcpdoctor_core::imf::is_imf_package(dir) {
+            result.add(dcpdoctor_core::Note::warning(
+                dcpdoctor_core::Code::MissingRequiredElement,
+                "--imf given but target is not an IMF (IMP) package",
+            ));
+        }
+
+        // Full BV2.1 application-profile checks
+        if flags.bv21 {
+            let standard = dcpdoctor_core::dcp::detect_standard(dir);
+            for note in dcpdoctor_core::advanced::check_bv21_compliance(dir, standard) {
+                result.add(note);
+            }
+        }
 
         // Deep J2K validation
         if flags.deep_j2k {
@@ -1603,6 +1721,40 @@ fn run_qc_ffmpeg(video: &std::path::Path, filter: &str) -> Result<String, String
     Ok(String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
+/// Resolve the picture-track MXF inside a DCP/IMP directory.
+///
+/// Prefers the MainPicture asset referenced by a CPL; falls back to the largest
+/// MXF (the picture track is far larger than audio) so we never hand ffmpeg a
+/// directory.
+fn resolve_imp_video(imp_dir: &std::path::Path) -> Option<PathBuf> {
+    if let Ok(dcp) = dcpdoctor_core::dcp::open_dcp(imp_dir) {
+        let id_to_path: std::collections::HashMap<&str, &str> = dcp
+            .assetmap
+            .assets
+            .iter()
+            .map(|a| (a.id.as_str(), a.path.as_str()))
+            .collect();
+        for (_p, cpl) in &dcp.cpls {
+            for reel in &cpl.reels {
+                if reel.picture.id.is_empty() {
+                    continue;
+                }
+                if let Some(&path) = id_to_path.get(reel.picture.id.as_str()) {
+                    let full = imp_dir.join(path);
+                    if full.exists() {
+                        return Some(full);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: largest MXF in the directory.
+    mxf_files(imp_dir)
+        .into_iter()
+        .max_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+}
+
 /// List top-level MXF files in a directory.
 fn mxf_files(dir: &std::path::Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -1731,14 +1883,4 @@ fn check_manifest(
     }
 
     notes
-}
-
-fn is_fixable(code: dcpdoctor_core::Code) -> bool {
-    matches!(
-        code,
-        dcpdoctor_core::Code::PklHashMismatch
-            | dcpdoctor_core::Code::SmpteNamespaceWrong
-            | dcpdoctor_core::Code::InteropNamespaceWrong
-            | dcpdoctor_core::Code::CplInvalidContentKind
-    )
 }

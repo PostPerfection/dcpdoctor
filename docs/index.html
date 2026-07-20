@@ -755,7 +755,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#127760;</div>
                 <h3>Dolby Atmos / IAB</h3>
-                <p>Deep IAB bitstream inspection. Object count, bed channel validation, frame integrity, and Atmos compliance checking.</p>
+                <p>IAB essence detection via ffprobe, with an estimated object count and basic Atmos compliance checks.</p>
                 <span class="feat-tag tag-premium">Premium</span>
             </div>
             <div class="feat-card">
@@ -766,8 +766,8 @@
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128250;</div>
-                <h3>Dolby Vision 4.0</h3>
-                <p>RPU parsing and validation. Profile/level detection. Enhancement layer compliance. Mapping metadata checks.</p>
+                <h3>Dolby Vision</h3>
+                <p>Dolby Vision detection from ffprobe side-data flags, with RPU packet counting and basic compliance checks.</p>
                 <span class="feat-tag tag-premium">Premium</span>
             </div>
             <div class="feat-card">
@@ -838,8 +838,8 @@
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128273;</div>
-                <h3>KDM Generation &amp; Validation</h3>
-                <p>KDM XML parsing and validation. Key period checking. Certificate chain trust verification.</p>
+                <h3>KDM Validation</h3>
+                <p>KDM XML parsing and validation. Key period checking. CPL reference cross-validation.</p>
                 <span class="feat-tag tag-core">Core</span>
             </div>
             <div class="feat-card">
@@ -971,7 +971,7 @@ dcpdoctor fix --dry-run /path/to/DCP/</pre>
                 <span class="pipe-tag">Reports</span>
                 <h3>JSON Report</h3>
                 <p>Machine-readable output for CI pipelines.</p>
-<pre>dcpdoctor --format json \
+<pre>dcpdoctor --json \
   /path/to/DCP/ &gt; report.json</pre>
             </div>
             <div class="pipeline-card">

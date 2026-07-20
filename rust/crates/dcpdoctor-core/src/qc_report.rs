@@ -113,6 +113,32 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
     }
     html.push_str("</table>\n");
 
+    // Loudness (EBU R128) per audio essence, if requested
+    if opts.include_loudness {
+        let mut rows = String::new();
+        for t in &tracks {
+            if t.track_type != "essence" {
+                continue;
+            }
+            let path = opts.imp_dir.join(&t.filename);
+            if let Ok(m) = crate::audio::measure_loudness(&path) {
+                let _ = writeln!(
+                    rows,
+                    "<tr><td>{}</td><td>{:.1} LUFS</td><td>{:.1} dBTP</td><td>{:.1} LU</td></tr>",
+                    t.filename, m.integrated_lufs, m.true_peak_dbtp, m.loudness_range_lu
+                );
+            }
+        }
+        if !rows.is_empty() {
+            html.push_str("<h2>Loudness (EBU R128)</h2>\n<table>\n");
+            html.push_str(
+                "<tr><th>File</th><th>Integrated</th><th>True Peak</th><th>Range</th></tr>\n",
+            );
+            html.push_str(&rows);
+            html.push_str("</table>\n");
+        }
+    }
+
     html.push_str("</body>\n</html>\n");
 
     if std::fs::write(&html_path, &html).is_err() {

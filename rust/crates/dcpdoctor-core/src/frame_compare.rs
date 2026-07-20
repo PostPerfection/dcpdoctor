@@ -18,16 +18,9 @@ pub struct FrameDiff {
 pub struct CompareOptions {
     pub start_frame: u32,
     pub end_frame: u32,
-    pub sample_interval: u32,
     pub threshold_psnr: f64,
-    pub threshold_ssim: f64,
     pub compute_ssim: bool,
     pub compute_vmaf: bool,
-    pub extract_diff_frames: bool,
-    pub generate_report: bool,
-    pub generate_html: bool,
-    pub output_dir: PathBuf,
-    pub vmaf_model: PathBuf,
 }
 
 impl Default for CompareOptions {
@@ -35,16 +28,9 @@ impl Default for CompareOptions {
         Self {
             start_frame: 0,
             end_frame: 0,
-            sample_interval: 1,
             threshold_psnr: 40.0,
-            threshold_ssim: 0.98,
             compute_ssim: true,
             compute_vmaf: false,
-            extract_diff_frames: false,
-            generate_report: true,
-            generate_html: false,
-            output_dir: PathBuf::new(),
-            vmaf_model: PathBuf::new(),
         }
     }
 }
@@ -63,9 +49,6 @@ pub struct CompareResult {
     pub min_ssim: f64,
     pub vmaf_score: f64,
     pub diffs: Vec<FrameDiff>,
-    pub csv_path: PathBuf,
-    pub report_path: PathBuf,
-    pub html_report_path: PathBuf,
 }
 
 /// Quality metrics from reference-based comparison.
@@ -245,6 +228,14 @@ pub fn compare_files(file_a: &Path, file_b: &Path, opts: &CompareOptions) -> Com
                 return result;
             }
         }
+    }
+
+    // ffmpeg produced no per-frame PSNR: inputs unreadable or the run failed.
+    // Never report "0 frames, IDENTICAL".
+    if result.frames_compared == 0 {
+        let tail = output.trim().lines().last().unwrap_or("no output");
+        result.error = format!("no frames compared (ffmpeg produced no PSNR data): {tail}");
+        return result;
     }
 
     result.identical = result.frames_different == 0;

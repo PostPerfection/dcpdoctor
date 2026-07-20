@@ -108,11 +108,13 @@ fn validate_dcp(path: String, flags: Vec<String>) -> Result<ValidationResponse, 
     eprintln!("[dcpdoctor-gui] cwd: {:?}", std::env::current_dir());
     eprintln!("[dcpdoctor-gui] validating: {}", path);
 
+    // Flags must precede the path: the shorthand positional is trailing_var_arg,
+    // so anything after the path is captured as a value, not parsed as a flag.
     let mut cmd = Command::new(&binary);
-    cmd.arg(&path);
     for flag in &flags {
         cmd.arg(flag);
     }
+    cmd.arg(&path);
 
     let output = cmd.output().map_err(|e| {
         format!(

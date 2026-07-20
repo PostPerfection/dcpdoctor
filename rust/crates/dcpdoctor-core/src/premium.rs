@@ -883,68 +883,6 @@ pub fn detect_prores(mxf_path: &Path) -> ProResInfo {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 7. Extended HFR / HBR
-// ════════════════════════════════════════════════════════════════════════════════
-
-/// Check for ultra-HFR content (>60fps).
-pub fn check_extended_hfr(cpl_path: &Path) -> Vec<Note> {
-    let mut notes = Vec::new();
-
-    let content = match std::fs::read_to_string(cpl_path) {
-        Ok(c) => c,
-        Err(_) => return notes,
-    };
-
-    let rate_re = regex_lite::Regex::new(r"<EditRate>(\d+)\s+(\d+)</EditRate>").unwrap();
-    let cap = match rate_re.captures(&content) {
-        Some(c) => c,
-        None => return notes,
-    };
-
-    let num: f64 = cap[1].parse().unwrap_or(0.0);
-    let den: f64 = cap[2].parse().unwrap_or(1.0);
-    if den <= 0.0 {
-        return notes;
-    }
-    let fps = num / den;
-
-    let file = Some(cpl_path.to_path_buf());
-
-    if fps > 60.0 {
-        notes.push(Note {
-            severity: Severity::Info,
-            code: Code::CplInvalidEditRate,
-            message: format!("Ultra-HFR content: {} fps", fps as u32),
-            file: file.clone(),
-            line: 0,
-        });
-
-        if fps > 120.0 {
-            notes.push(Note {
-                severity: Severity::Error,
-                code: Code::CplInvalidEditRate,
-                message: format!(
-                    "Frame rate {} fps exceeds maximum supported rate (120fps)",
-                    fps as u32
-                ),
-                file: file.clone(),
-                line: 0,
-            });
-        }
-
-        notes.push(Note {
-            severity: Severity::Info,
-            code: Code::J2kBitrateExceeded,
-            message: "Ultra-HFR: DCI maximum bitrate is 500 Mbps".into(),
-            file,
-            line: 0,
-        });
-    }
-
-    notes
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
 // 8. Accessibility Track Validation
 // ════════════════════════════════════════════════════════════════════════════════
 

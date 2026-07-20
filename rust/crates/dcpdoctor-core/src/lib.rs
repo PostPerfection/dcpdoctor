@@ -4,7 +4,6 @@ pub mod audio;
 pub mod auto_qc;
 pub mod av_sync;
 pub mod bitrate;
-pub mod cache;
 pub mod checksum_verify;
 pub mod compliance;
 pub mod conformance;
@@ -95,7 +94,6 @@ pub enum Code {
     CplInvalidDuration,
     CplMismatchedDurations,
     CplMissingReel,
-    CplInvalidFrameRate,
     CplInvalidEditRate,
     CplInvalidContentKind,
 
@@ -177,7 +175,6 @@ impl Code {
             Code::CplInvalidDuration => "cpl_invalid_duration",
             Code::CplMismatchedDurations => "cpl_mismatched_durations",
             Code::CplMissingReel => "cpl_missing_reel",
-            Code::CplInvalidFrameRate => "cpl_invalid_frame_rate",
             Code::CplInvalidEditRate => "cpl_invalid_edit_rate",
             Code::CplInvalidContentKind => "cpl_invalid_content_kind",
             Code::MxfUnreadable => "mxf_unreadable",

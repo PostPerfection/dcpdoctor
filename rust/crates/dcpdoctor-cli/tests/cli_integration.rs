@@ -125,6 +125,40 @@ fn checksum_verify_missing_directory_fails() {
 }
 
 #[test]
+fn imf_compliance_rejects_unknown_target() {
+    let dir = TempDir::new().unwrap();
+    cmd()
+        .args([
+            "imf-compliance",
+            dir.path().to_str().unwrap(),
+            "--target",
+            "bogus",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown target"));
+}
+
+#[test]
+fn validate_accepts_imf_flag() {
+    // --imf is a real global flag now; a plain path with --imf must parse (not exit 2)
+    let dir = TempDir::new().unwrap();
+    cmd()
+        .args([dir.path().to_str().unwrap(), "--imf"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn diff_help_lists_fingerprint_flag() {
+    cmd()
+        .args(["diff", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--fingerprint"));
+}
+
+#[test]
 fn imf_compliance_help_lists_target_flag() {
     cmd()
         .args(["imf-compliance", "--help"])

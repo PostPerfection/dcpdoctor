@@ -67,6 +67,7 @@ pub struct HdrValidateOptions {
     pub expected_colorimetry: Colorimetry,
     pub expected_bit_depth: u16,
     pub expected_max_cll: u16,
+    pub expected_max_fall: u16,
     pub expected_max_luminance: u32,
 }
 
@@ -251,6 +252,19 @@ pub fn validate_hdr_metadata(opts: &HdrValidateOptions) -> HdrValidateResult {
         });
     }
 
+    if opts.expected_max_fall > 0
+        && let Some(ref cll) = result.detected.content_light
+        && cll.max_fall > opts.expected_max_fall
+    {
+        result.issues.push(HdrIssue {
+            field: "MaxFALL".into(),
+            expected: format!("≤ {} nits", opts.expected_max_fall),
+            actual: format!("{} nits", cll.max_fall),
+            severity: "warning".into(),
+            description: "MaxFALL exceeds expected limit".into(),
+        });
+    }
+
     if opts.expected_max_luminance > 0
         && let Some(ref md) = result.detected.mastering_display
         && md.max_luminance != opts.expected_max_luminance
@@ -316,6 +330,7 @@ pub fn validate_cpl_hdr(cpl_path: &Path, video_path: &Path) -> HdrValidateResult
         expected_colorimetry: cpl_color,
         expected_bit_depth: 0,
         expected_max_cll: 0,
+        expected_max_fall: 0,
         expected_max_luminance: 0,
     };
     let video_result = validate_hdr_metadata(&opts);
