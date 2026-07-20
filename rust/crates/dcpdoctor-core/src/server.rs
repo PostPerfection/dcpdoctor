@@ -4,12 +4,25 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 
+/// Extract the optional OV package path from a parsed request body.
+/// Accepts either `"ov"` or the `"ov_dir"` alias; empty strings are ignored.
+fn request_ov(parsed: &serde_json::Value) -> Option<std::path::PathBuf> {
+    parsed["ov"]
+        .as_str()
+        .or_else(|| parsed["ov_dir"].as_str())
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 /// Start the REST API server.
 ///
 /// Endpoints:
 /// - `GET /health` returns `{"status":"ok"}`.
 /// - `POST /validate` with `{"path": "/path/to/dcp"}` returns the `VerifyResult`.
-/// - `POST /verify` with `{"dcp_dir": "/path/to/dcp"}` (legacy alias) does the same.
+///   An optional `"ov": "/path/to/ov"` resolves a supplemental package's
+///   cross-package references against the OV.
+/// - `POST /verify` with `{"dcp_dir": "/path/to/dcp"}` (legacy alias) does the
+///   same, also honoring an optional `"ov"`.
 pub fn start_server(bind: &str, port: u16) {
     let addr = format!("{bind}:{port}");
     let listener = match TcpListener::bind(&addr) {
@@ -79,7 +92,11 @@ pub fn start_server(bind: &str, port: u16) {
                 continue;
             }
 
-            let opts = crate::VerifyOptions::standard();
+            // Optional OV package for supplemental cross-package validation.
+            let opts = crate::VerifyOptions {
+                ov: request_ov(&parsed),
+                ..crate::VerifyOptions::standard()
+            };
             let result = crate::verify(Path::new(dcp_dir), &opts);
             let json = serde_json::to_string(&result).unwrap_or_default();
 
@@ -139,5 +156,31 @@ pub fn watch_directory(
         }
 
         std::thread::sleep(interval);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ov_field_reaches_verify_options() {
+        let body: serde_json::Value =
+            serde_json::from_str(r#"{"path":"/dcp","ov":"/ov"}"#).unwrap();
+        let opts = crate::VerifyOptions {
+            ov: request_ov(&body),
+            ..crate::VerifyOptions::standard()
+        };
+        assert_eq!(opts.ov, Some(std::path::PathBuf::from("/ov")));
+    }
+
+    #[test]
+    fn ov_dir_alias_is_accepted_and_empty_ignored() {
+        let aliased: serde_json::Value =
+            serde_json::from_str(r#"{"dcp_dir":"/dcp","ov_dir":"/ov"}"#).unwrap();
+        assert_eq!(request_ov(&aliased), Some(std::path::PathBuf::from("/ov")));
+
+        let none: serde_json::Value = serde_json::from_str(r#"{"path":"/dcp","ov":""}"#).unwrap();
+        assert_eq!(request_ov(&none), None);
     }
 }

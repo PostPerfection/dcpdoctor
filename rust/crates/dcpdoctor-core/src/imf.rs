@@ -20,6 +20,9 @@ pub use dcpdoctor_imf::{
     TrackType, VirtualTrack,
 };
 
+// Shared OV-aware cross-ref resolver (also used by the DCP path in validators).
+use dcpdoctor_imf::{RefStatus, resolve_track_ref};
+
 // ─── Note Conversion ───────────────────────────────────────────────────────────
 
 /// Convert a shared `ImfNote` into the core's `Note` type, attaching a file path.
@@ -185,36 +188,6 @@ pub fn validate_imp(imp_dir: &Path, ov_dir: Option<&Path>) -> Vec<Note> {
 }
 
 // ─── Filesystem-specific Validators ────────────────────────────────────────────
-
-/// Where a CPL-referenced track-file id resolves across the supplemental and OV.
-#[derive(Debug, PartialEq, Eq)]
-enum RefStatus {
-    /// present in this package's ASSETMAP
-    Local,
-    /// present only in the OV package
-    Ov,
-    /// present in neither, and an OV was supplied: a genuine broken reference
-    BrokenWithOv,
-    /// present in neither and no OV supplied: likely a supplemental reference
-    UnresolvedNoOv,
-}
-
-fn resolve_track_ref(
-    id: &str,
-    local: &HashSet<String>,
-    ov: &HashSet<String>,
-    ov_provided: bool,
-) -> RefStatus {
-    if local.contains(id) {
-        RefStatus::Local
-    } else if ov.contains(id) {
-        RefStatus::Ov
-    } else if ov_provided {
-        RefStatus::BrokenWithOv
-    } else {
-        RefStatus::UnresolvedNoOv
-    }
-}
 
 fn validate_track_file_refs(
     cpl: &ImfCpl,

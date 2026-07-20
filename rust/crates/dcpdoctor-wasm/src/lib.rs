@@ -185,6 +185,33 @@ pub fn validate_mxf_file(data: &[u8], path: &str) -> String {
     serde_json::to_string(&notes).unwrap()
 }
 
+/// OV-aware IMF supplemental validation for the browser.
+///
+/// Since the browser has no filesystem, the OV can't be a path: pass its
+/// available asset ids (a JSON array of uuid strings, `urn:uuid:` prefix
+/// optional) alongside the supplemental CPL + ASSETMAP XML. A ref that resolves
+/// in the OV passes; a ref in neither package is a `cross_ref_broken`. Returns
+/// a JSON array of Note objects.
+///
+/// UI wiring (a second OV-folder drop in web/) is not yet built; this exposes
+/// the core capability at the binding so a future OV-upload flow can call it.
+#[wasm_bindgen]
+pub fn validate_imf_supplemental(
+    cpl_xml: &str,
+    assetmap_xml: &str,
+    ov_asset_ids_json: &str,
+    cpl_path: &str,
+) -> String {
+    let ov_ids: std::collections::HashSet<String> =
+        serde_json::from_str::<Vec<String>>(ov_asset_ids_json)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| id.strip_prefix("urn:uuid:").unwrap_or(&id).to_string())
+            .collect();
+    let notes = imf::validate_imf_supplemental(cpl_xml, assetmap_xml, &ov_ids, cpl_path);
+    serde_json::to_string(&notes).unwrap()
+}
+
 /// Get the version of dcpdoctor-wasm.
 #[wasm_bindgen]
 pub fn version() -> String {

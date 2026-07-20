@@ -11,11 +11,14 @@ These have zero callers. They are not advertised as wired checks, so they are lo
 - `kdm_advanced.rs`, `mxf_advanced.rs`, `dci_ctp.rs`: advanced KDM/MXF/DCI-CTP helpers with no caller.
 - Leftover dead functions inside otherwise-wired modules: `advanced::compare_manifest`/`BatchResult`/`write_batch_summary`, `validators::check_color_space`, `fixes::apply_fixes` (duplicates `fix.rs`), and the unused `hfr_stereo` helpers (`analyze_multi_cpl`, `analyze_stereo3d`, `trace_cpl_chain`, `check_cpl_chain`).
 
-## OV-aware supplemental validation: remaining surfaces
+## OV-aware supplemental validation: done
 
-- Core CLI is wired: `--ov <ov_dir>` resolves a supplemental's cross-package refs against the OV. wasm and REST server are not.
-- `dcpdoctor-wasm/src/imf.rs` calls `dcpdoctor_imf::validate_track_refs` directly against a single package's asset ids. No OV surface in the browser (second-directory access model differs). Supplementals validated there still report the OV track files as broken.
-- REST server (`POST /validate {"path"}`) has no OV field; `VerifyOptions.ov` is plumbed but the server never sets it. Add an optional `ov` to the request if supplemental validation over HTTP is needed.
+All surfaces are wired. The shared resolver (`resolve_track_ref`/`RefStatus`/`validate_track_refs_ov`) lives in `dcpdoctor-imf` and is reused by the IMF path, the DCP path, and wasm.
+
+- CLI: `--ov <ov_dir>` (IMF or DCP) resolves cross-package refs.
+- REST: `POST /validate`/`/verify` accept an optional `"ov"` (alias `"ov_dir"`), threaded into `VerifyOptions.ov`.
+- DCP path: `validators::check_cross_references` is OV-aware for SMPTE supplemental DCPs (429-7), sharing the IMF resolver over id sets.
+- wasm: `validate_imf_supplemental(cpl_xml, assetmap_xml, ov_asset_ids_json, cpl_path)` exposes the OV capability at the binding. Remaining: the web/ UI has no second-folder (OV) drop, so nothing calls it yet; wire an OV-upload flow that passes the OV ASSETMAP's asset ids to this function.
 
 ## GUI
 

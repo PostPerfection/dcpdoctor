@@ -103,6 +103,86 @@ pub fn validate_track_refs(cpl: &ImfCpl, asset_ids: &HashSet<String>) -> Vec<Imf
     notes
 }
 
+/// Where a CPL-referenced track-file id resolves across a package and its OV.
+/// Shared by the IMF and DCP cross-ref checkers.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RefStatus {
+    /// present in this package
+    Local,
+    /// present only in the OV package
+    Ov,
+    /// present in neither, and an OV was supplied: a genuine broken reference
+    BrokenWithOv,
+    /// present in neither and no OV supplied: likely a supplemental reference
+    UnresolvedNoOv,
+}
+
+pub fn resolve_track_ref(
+    id: &str,
+    local: &HashSet<String>,
+    ov: &HashSet<String>,
+    ov_provided: bool,
+) -> RefStatus {
+    if local.contains(id) {
+        RefStatus::Local
+    } else if ov.contains(id) {
+        RefStatus::Ov
+    } else if ov_provided {
+        RefStatus::BrokenWithOv
+    } else {
+        RefStatus::UnresolvedNoOv
+    }
+}
+
+/// OV-aware track-ref validation for a supplemental CPL. Refs resolving in the
+/// OV pass; a ref in neither package is a hard error when the OV is present,
+/// and a single `supplemental_ov_not_provided` warning when it is not (a
+/// legitimate supplemental ref and a corrupt one are indistinguishable without
+/// the OV).
+pub fn validate_track_refs_ov(
+    cpl: &ImfCpl,
+    local_ids: &HashSet<String>,
+    ov_ids: &HashSet<String>,
+    ov_provided: bool,
+) -> Vec<ImfNote> {
+    let mut notes = Vec::new();
+    let referenced_ids: HashSet<&str> = cpl
+        .virtual_tracks
+        .iter()
+        .flat_map(|vt| vt.resources.iter())
+        .map(|r| r.track_file_id.as_str())
+        .filter(|id| !id.is_empty())
+        .collect();
+
+    let mut needs_ov = 0usize;
+    for ref_id in &referenced_ids {
+        match resolve_track_ref(ref_id, local_ids, ov_ids, ov_provided) {
+            RefStatus::Local | RefStatus::Ov => {}
+            RefStatus::BrokenWithOv => notes.push(ImfNote {
+                severity: ImfSeverity::Error,
+                code: "cross_ref_broken",
+                message: format!(
+                    "Track file {} referenced in CPL not found in this package or the OV",
+                    ref_id
+                ),
+            }),
+            RefStatus::UnresolvedNoOv => needs_ov += 1,
+        }
+    }
+
+    if needs_ov > 0 {
+        notes.push(ImfNote {
+            severity: ImfSeverity::Warning,
+            code: "supplemental_ov_not_provided",
+            message: format!(
+                "CPL references {needs_ov} asset(s) not in this package; supply the OV to fully validate"
+            ),
+        });
+    }
+
+    notes
+}
+
 // ─── Individual Validators ─────────────────────────────────────────────────────
 
 fn validate_application(cpl: &ImfCpl, notes: &mut Vec<ImfNote>) {
@@ -833,5 +913,36 @@ mod tests {
         let asset_ids: HashSet<String> = ["other-id".to_string()].into_iter().collect();
         let notes = validate_track_refs(&cpl, &asset_ids);
         assert!(notes.iter().any(|n| n.code == "cross_ref_broken"));
+    }
+
+    #[test]
+    fn ov_track_refs_resolve_local_ov_broken_and_needs_ov() {
+        let cpl = ImfCpl {
+            virtual_tracks: vec![VirtualTrack {
+                track_type: TrackType::MainImage,
+                resources: vec![TrackResource {
+                    track_file_id: "pic".to_string(),
+                    intrinsic_duration: 100,
+                    source_duration: 100,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let local: HashSet<String> = HashSet::new();
+        let ov: HashSet<String> = ["pic".to_string()].into();
+
+        // resolves in OV -> clean
+        assert!(validate_track_refs_ov(&cpl, &local, &ov, true).is_empty());
+        // OV given but ref in neither -> hard break
+        let broken = validate_track_refs_ov(&cpl, &local, &HashSet::new(), true);
+        assert!(broken.iter().any(|n| n.code == "cross_ref_broken"));
+        // no OV -> soft supplemental warning, not a break
+        let soft = validate_track_refs_ov(&cpl, &local, &HashSet::new(), false);
+        assert!(soft
+            .iter()
+            .any(|n| n.code == "supplemental_ov_not_provided"));
+        assert!(!soft.iter().any(|n| n.code == "cross_ref_broken"));
     }
 }

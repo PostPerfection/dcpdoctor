@@ -1583,14 +1583,23 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
             ));
         }
 
-        // --ov must point at an IMF (IMP) package to resolve references against
-        if let Some(ref ov_dir) = flags.ov
-            && !dcpdoctor_core::imf::is_imf_package(ov_dir)
-        {
-            result.add(dcpdoctor_core::Note::warning(
-                dcpdoctor_core::Code::MissingRequiredElement,
-                "--ov given but the OV target is not an IMF (IMP) package",
-            ));
+        // --ov must match the main package type: an IMP for IMF, a DCP for a DCP.
+        if let Some(ref ov_dir) = flags.ov {
+            let main_is_imf = dcpdoctor_core::imf::is_imf_package(dir);
+            let ov_is_imf = dcpdoctor_core::imf::is_imf_package(ov_dir);
+            let ov_is_package =
+                ov_dir.join("ASSETMAP").exists() || ov_dir.join("ASSETMAP.xml").exists();
+            let mismatch = if main_is_imf {
+                !ov_is_imf
+            } else {
+                ov_is_imf || !ov_is_package
+            };
+            if mismatch {
+                result.add(dcpdoctor_core::Note::warning(
+                    dcpdoctor_core::Code::MissingRequiredElement,
+                    "--ov given but the OV target does not match the main package type",
+                ));
+            }
         }
 
         // Full BV2.1 application-profile checks

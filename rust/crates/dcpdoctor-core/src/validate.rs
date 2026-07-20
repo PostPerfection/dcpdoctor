@@ -243,10 +243,20 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     let cpl_paths: Vec<std::path::PathBuf> = dcp.cpls.iter().map(|(p, _)| p.clone()).collect();
     let known_asset_ids: Vec<String> = dcp.assetmap.assets.iter().map(|a| a.id.clone()).collect();
 
+    // OV-aware cross-ref for supplemental DCPs: resolve refs across this package
+    // and the OV DCP when --ov is given.
+    let ov_asset_ids: Option<HashSet<String>> = opts.ov.as_deref().map(dcp_asset_ids);
+    let supplemental = crate::validators::is_supplemental_dcp(&cpl_paths);
+
     for note in crate::validators::check_encryption(dcp_dir, &cpl_paths) {
         result.add(note);
     }
-    for note in crate::validators::check_cross_references(&known_asset_ids, &cpl_paths) {
+    for note in crate::validators::check_cross_references(
+        &known_asset_ids,
+        ov_asset_ids.as_ref(),
+        &cpl_paths,
+        supplemental,
+    ) {
         result.add(note);
     }
     for note in crate::validators::check_supplemental(&cpl_paths) {
@@ -373,6 +383,20 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     }
 
     result
+}
+
+/// Collect a DCP's ASSETMAP asset ids (urn:uuid: prefix stripped) for OV
+/// cross-referencing. Returns empty if the OV can't be opened.
+fn dcp_asset_ids(dir: &Path) -> HashSet<String> {
+    match dcp::open_dcp(dir) {
+        Ok(dcp) => dcp
+            .assetmap
+            .assets
+            .iter()
+            .map(|a| a.id.strip_prefix("urn:uuid:").unwrap_or(&a.id).to_string())
+            .collect(),
+        Err(_) => HashSet::new(),
+    }
 }
 
 fn verify_imp(imp_dir: &Path, ov_dir: Option<&Path>) -> VerifyResult {
@@ -545,5 +569,169 @@ mod tests {
     #[test]
     fn imf_package_is_detected_from_its_cpl_namespace() {
         assert!(crate::imf::is_imf_package(&fixture("minimal_imf")));
+    }
+
+    // ─── OV-aware supplemental DCP cross-reference ─────────────────────────
+
+    const PIC_ID: &str = "aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa";
+    const SND_ID: &str = "bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb";
+
+    /// Write a minimal SMPTE DCP dir: an ASSETMAP listing `asset_ids` plus a CPL
+    /// referencing `pic_id`/`snd_id`. When `supplemental`, the CPL carries an OPL
+    /// marker so it is detected as a version-file package.
+    fn write_dcp(
+        dir: &Path,
+        cpl_id: &str,
+        asset_ids: &[&str],
+        pic_id: &str,
+        snd_id: &str,
+        supplemental: bool,
+    ) {
+        let mut asset_entries = format!(
+            r#"<Asset><Id>urn:uuid:{cpl_id}</Id><ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>"#
+        );
+        for id in asset_ids {
+            asset_entries.push_str(&format!(
+                r#"<Asset><Id>urn:uuid:{id}</Id><ChunkList><Chunk><Path>{id}.mxf</Path></Chunk></ChunkList></Asset>"#
+            ));
+        }
+        std::fs::write(
+            dir.join("ASSETMAP.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <AssetList>{asset_entries}</AssetList>
+</AssetMap>"#
+            ),
+        )
+        .unwrap();
+
+        let opl = if supplemental {
+            "<OriginalPackagingList>ov</OriginalPackagingList>"
+        } else {
+            ""
+        };
+        std::fs::write(
+            dir.join("cpl.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:{cpl_id}</Id>
+  <ContentTitleText>t</ContentTitleText>
+  {opl}
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:{pic_id}</Id><Duration>48</Duration></MainPicture>
+      <MainSound><Id>urn:uuid:{snd_id}</Id><Duration>48</Duration></MainSound>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn supplemental_dcp_with_ov_resolves_cross_package_refs() {
+        let ov = tempfile::tempdir().unwrap();
+        write_dcp(
+            ov.path(),
+            "0f0f0f0f-0000-0000-0000-000000000000",
+            &[PIC_ID],
+            PIC_ID,
+            PIC_ID,
+            false,
+        );
+        let supp = tempfile::tempdir().unwrap();
+        // supp physically holds only SND_ID; its CPL references OV's PIC_ID + local SND_ID
+        write_dcp(
+            supp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[SND_ID],
+            PIC_ID,
+            SND_ID,
+            true,
+        );
+
+        let opts = VerifyOptions {
+            ov: Some(ov.path().to_path_buf()),
+            ..VerifyOptions::default()
+        };
+        let result = verify_dcp(supp.path(), &opts);
+        assert!(
+            !result.notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "OV must satisfy the picture ref, got: {:?}",
+            result.notes
+        );
+        assert!(
+            !result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::SupplementalOvNotProvided),
+            "everything resolves, no OV-missing note expected"
+        );
+    }
+
+    #[test]
+    fn supplemental_dcp_alone_reports_missing_ov_not_broken() {
+        let supp = tempfile::tempdir().unwrap();
+        write_dcp(
+            supp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[SND_ID],
+            PIC_ID,
+            SND_ID,
+            true,
+        );
+
+        let result = verify_dcp(supp.path(), &VerifyOptions::default());
+        assert!(
+            !result.notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "supplemental with no OV must not hard-fail as broken, got: {:?}",
+            result.notes
+        );
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::SupplementalOvNotProvided),
+            "expected SupplementalOvNotProvided diagnostic, got: {:?}",
+            result.notes
+        );
+    }
+
+    #[test]
+    fn supplemental_dcp_with_ov_still_catches_genuinely_broken_ref() {
+        let ov = tempfile::tempdir().unwrap();
+        write_dcp(
+            ov.path(),
+            "0f0f0f0f-0000-0000-0000-000000000000",
+            &[PIC_ID],
+            PIC_ID,
+            PIC_ID,
+            false,
+        );
+        let supp = tempfile::tempdir().unwrap();
+        // picture ref points at an id present in neither OV nor supp
+        write_dcp(
+            supp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[SND_ID],
+            "deadbeef-0000-0000-0000-000000000000",
+            SND_ID,
+            true,
+        );
+
+        let opts = VerifyOptions {
+            ov: Some(ov.path().to_path_buf()),
+            ..VerifyOptions::default()
+        };
+        let result = verify_dcp(supp.path(), &opts);
+        assert!(
+            result.notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "a ref in neither package is a real break even with --ov, got: {:?}",
+            result.notes
+        );
     }
 }

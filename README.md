@@ -306,7 +306,7 @@ dcpdoctor watch /ingest/incoming --interval 5000
 
 REST API endpoints:
 - `GET /health`: Returns `{"status": "ok"}`
-- `POST /validate`: Body: `{"path": "/path/to/dcp"}`, returns validation result
+- `POST /validate`: Body: `{"path": "/path/to/dcp"}`, returns validation result. Add an optional `"ov": "/path/to/ov"` to resolve a supplemental package's cross-package references against the OV.
 
 ### Performance Options
 
