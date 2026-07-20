@@ -224,7 +224,7 @@ dcpdoctor fix /path/to/dcp && dcpdoctor validate --strict /path/to/dcp
 
 ### Photon Integration (IMF)
 
-dcpdoctor includes mandatory [Netflix Photon](https://github.com/Netflix/photon) integration for deep IMF Application 2/2E conformance checks. It runs only when an ST 2067-3 Composition Playlist identifies an IMF package. SMPTE and Interop DCPs skip IMF and Photon validation. On first use, Photon is automatically cloned and built to `~/.cache/dcpdoctor/photon/`.
+dcpdoctor integrates [Netflix Photon](https://github.com/Netflix/photon) for deep IMF Application 2/2E conformance checks. It runs only when an ST 2067-3 Composition Playlist identifies an IMF package. SMPTE and Interop DCPs skip IMF and Photon validation. On first use, Photon is automatically cloned and built to `~/.cache/dcpdoctor/photon/`.
 
 **Requirements:** Java 11+ and git.
 
