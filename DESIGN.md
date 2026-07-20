@@ -17,6 +17,7 @@ DCP/IMF validation tool. Rust core with CLI, Tauri GUI, and a browser WASM valid
 
 - Structure validation: ASSETMAP/PKL/CPL parse, duplicate IDs, asset existence, PKL hash verify, PKL to ASSETMAP cross-reference.
 - Core CPL checks (always on): encrypted-content/KDM detection, CPL-to-ASSETMAP cross-reference, supplemental/OPL detection, marker validation (FFMC/LFMC required in strict, others recommended), MCA channel labeling, reel continuity, stereo 3D consistency, HFR compliance, ISDCF naming.
+- OV-aware IMF supplemental validation: `validate --imf <supp> --ov <ov>` resolves a supplemental CPL's track-file references across both packages (supplemental ASSETMAP + OV ASSETMAP). A ref found in either passes; a ref in neither is `cross_ref_broken`. Without `--ov`, refs missing locally are reported as `supplemental_ov_not_provided` (warning) rather than a hard `cross_ref_broken`, since a legitimate supplemental ref and a corrupt one are indistinguishable without the OV. Threaded via `VerifyOptions.ov`.
 - XML-DSig signature verification, plus embedded X.509 certificate chain linkage and expiry checks (self-contained DCI trust model: leaf to root within the DCP's own certs).
 - BV2.1 full application-profile checks behind `validate --bv21`.
 - Subtitle timing and required-element checks.

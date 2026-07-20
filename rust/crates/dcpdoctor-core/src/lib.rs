@@ -156,6 +156,7 @@ pub enum Code {
 
     // Supplemental DCP
     SupplementalOplMissing,
+    SupplementalOvNotProvided,
 }
 
 impl Code {
@@ -209,6 +210,7 @@ impl Code {
             Code::MarkerInvalid => "marker_invalid",
             Code::CrossRefBroken => "cross_ref_broken",
             Code::SupplementalOplMissing => "supplemental_opl_missing",
+            Code::SupplementalOvNotProvided => "supplemental_ov_not_provided",
         }
     }
 }
@@ -272,6 +274,10 @@ pub struct VerifyOptions {
     pub check_signatures: bool,
     pub check_picture_details: bool,
     pub strict_smpte: bool,
+    /// OV IMP directory to resolve cross-package references when validating a
+    /// supplemental IMF package. Ignored for plain DCPs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ov: Option<PathBuf>,
 }
 
 impl VerifyOptions {
@@ -281,6 +287,7 @@ impl VerifyOptions {
             check_signatures: true,
             check_picture_details: false,
             strict_smpte: false,
+            ov: None,
         }
     }
 
@@ -290,6 +297,7 @@ impl VerifyOptions {
             check_signatures: true,
             check_picture_details: true,
             strict_smpte: true,
+            ov: None,
         }
     }
 }

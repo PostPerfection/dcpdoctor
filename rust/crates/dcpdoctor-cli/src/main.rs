@@ -64,6 +64,11 @@ struct Cli {
     /// Expect an IMF (IMP) package; warn if the target is a plain DCP
     #[arg(long, global = true)]
     imf: bool,
+
+    /// OV (Original Version) IMP directory, to resolve a supplemental's
+    /// cross-package references against the OV's assets
+    #[arg(long, global = true, value_name = "OV_DIR")]
+    ov: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -477,6 +482,7 @@ fn main() {
                 prores: cli.prores,
                 accessibility: cli.accessibility,
                 imf: cli.imf,
+                ov: cli.ov.clone(),
                 timeline,
                 manifest,
                 output,
@@ -578,6 +584,7 @@ fn main() {
                     check_signatures: false,
                     check_picture_details: false,
                     strict_smpte: true,
+                    ov: None,
                 };
                 let verify_result = dcpdoctor_core::verify(&dcp_dir, &opts);
                 let suggestions = dcpdoctor_core::fixes::suggest_fixes(&verify_result.notes);
@@ -1051,6 +1058,7 @@ fn main() {
                 check_signatures: true,
                 check_picture_details: true,
                 strict_smpte: !no_strict,
+                ov: cli.ov.clone(),
             };
             let result = dcpdoctor_core::verify(&imp_dir, &opts);
 
@@ -1386,6 +1394,7 @@ fn main() {
                 check_signatures: false,
                 check_picture_details: false,
                 strict_smpte: false,
+                ov: None,
             };
             let result = dcpdoctor_core::verify(&imp_dir, &opts);
             if cli.json {
@@ -1520,6 +1529,7 @@ fn main() {
                 prores: cli.prores,
                 accessibility: cli.accessibility,
                 imf: cli.imf,
+                ov: cli.ov.clone(),
                 ..Default::default()
             };
             run_validate(&cli.dcp_dirs, flags, format);
@@ -1544,6 +1554,7 @@ struct ValidateFlags {
     prores: bool,
     accessibility: bool,
     imf: bool,
+    ov: Option<PathBuf>,
     timeline: Option<PathBuf>,
     manifest: Option<PathBuf>,
     output: Option<PathBuf>,
@@ -1555,6 +1566,7 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
         check_signatures: !flags.no_signatures,
         check_picture_details: flags.check_mxf || flags.deep_j2k,
         strict_smpte: flags.strict,
+        ov: flags.ov.clone(),
     };
 
     let mut any_failed = false;
@@ -1568,6 +1580,16 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
             result.add(dcpdoctor_core::Note::warning(
                 dcpdoctor_core::Code::MissingRequiredElement,
                 "--imf given but target is not an IMF (IMP) package",
+            ));
+        }
+
+        // --ov must point at an IMF (IMP) package to resolve references against
+        if let Some(ref ov_dir) = flags.ov
+            && !dcpdoctor_core::imf::is_imf_package(ov_dir)
+        {
+            result.add(dcpdoctor_core::Note::warning(
+                dcpdoctor_core::Code::MissingRequiredElement,
+                "--ov given but the OV target is not an IMF (IMP) package",
             ));
         }
 

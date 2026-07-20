@@ -8,7 +8,7 @@ use crate::{Code, Note, Severity, VerifyOptions, VerifyResult};
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
-        return verify_imp(dcp_dir);
+        return verify_imp(dcp_dir, opts.ov.as_deref());
     }
 
     let mut result = VerifyResult::default();
@@ -375,14 +375,14 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     result
 }
 
-fn verify_imp(imp_dir: &Path) -> VerifyResult {
+fn verify_imp(imp_dir: &Path, ov_dir: Option<&Path>) -> VerifyResult {
     let mut result = VerifyResult {
         standard: crate::Standard::Smpte,
         ..Default::default()
     };
 
     // Native IMF validation works everywhere including WASM.
-    for note in crate::imf::validate_imp(imp_dir) {
+    for note in crate::imf::validate_imp(imp_dir, ov_dir) {
         result.add(note);
     }
 

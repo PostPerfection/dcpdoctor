@@ -104,8 +104,22 @@ fn is_imf_composition_playlist(xml: &str) -> bool {
 }
 
 /// Validate an IMP (Interoperable Master Package) directory.
-pub fn validate_imp(imp_dir: &Path) -> Vec<Note> {
+///
+/// `ov_dir` is the Original Version IMP for a supplemental package. When set,
+/// cross-references that resolve in the OV pass; a reference in neither package
+/// is a real break. When unset, references missing locally are reported as
+/// [`Code::SupplementalOvNotProvided`] instead of hard errors, since we cannot
+/// tell a legitimate supplemental reference from a corrupt one without the OV.
+pub fn validate_imp(imp_dir: &Path, ov_dir: Option<&Path>) -> Vec<Note> {
     let mut notes = Vec::new();
+
+    // Asset ids available in the OV package (its ASSETMAP is authoritative for
+    // physically-present track files).
+    let ov_ids: HashSet<String> = ov_dir
+        .and_then(|dir| std::fs::read_to_string(dir.join("ASSETMAP.xml")).ok())
+        .map(|xml| dcpdoctor_imf::parse_assetmap_ids(&xml))
+        .unwrap_or_default();
+    let ov_provided = ov_dir.is_some();
 
     let cpl_files = find_cpls(imp_dir);
     if cpl_files.is_empty() {
@@ -154,8 +168,8 @@ pub fn validate_imp(imp_dir: &Path) -> Vec<Note> {
             notes.push(convert_note(n, cpl_path));
         }
 
-        // Track file references (filesystem)
-        validate_track_file_refs(&cpl, imp_dir, cpl_path, &mut notes);
+        // Track file references (filesystem, OV-aware)
+        validate_track_file_refs(&cpl, imp_dir, &ov_ids, ov_provided, cpl_path, &mut notes);
 
         // MXF essence validation (filesystem)
         validate_essence_descriptors(&cpl, imp_dir, cpl_path, &mut notes);
@@ -172,7 +186,44 @@ pub fn validate_imp(imp_dir: &Path) -> Vec<Note> {
 
 // ─── Filesystem-specific Validators ────────────────────────────────────────────
 
-fn validate_track_file_refs(cpl: &ImfCpl, imp_dir: &Path, cpl_path: &Path, notes: &mut Vec<Note>) {
+/// Where a CPL-referenced track-file id resolves across the supplemental and OV.
+#[derive(Debug, PartialEq, Eq)]
+enum RefStatus {
+    /// present in this package's ASSETMAP
+    Local,
+    /// present only in the OV package
+    Ov,
+    /// present in neither, and an OV was supplied: a genuine broken reference
+    BrokenWithOv,
+    /// present in neither and no OV supplied: likely a supplemental reference
+    UnresolvedNoOv,
+}
+
+fn resolve_track_ref(
+    id: &str,
+    local: &HashSet<String>,
+    ov: &HashSet<String>,
+    ov_provided: bool,
+) -> RefStatus {
+    if local.contains(id) {
+        RefStatus::Local
+    } else if ov.contains(id) {
+        RefStatus::Ov
+    } else if ov_provided {
+        RefStatus::BrokenWithOv
+    } else {
+        RefStatus::UnresolvedNoOv
+    }
+}
+
+fn validate_track_file_refs(
+    cpl: &ImfCpl,
+    imp_dir: &Path,
+    ov_ids: &HashSet<String>,
+    ov_provided: bool,
+    cpl_path: &Path,
+    notes: &mut Vec<Note>,
+) {
     let referenced_ids: HashSet<&str> = cpl
         .virtual_tracks
         .iter()
@@ -191,21 +242,38 @@ fn validate_track_file_refs(cpl: &ImfCpl, imp_dir: &Path, cpl_path: &Path, notes
         Err(_) => return,
     };
 
-    let asset_ids = dcpdoctor_imf::parse_assetmap_ids(&assetmap_xml);
+    let local_ids = dcpdoctor_imf::parse_assetmap_ids(&assetmap_xml);
 
+    let mut needs_ov = 0usize;
     for ref_id in &referenced_ids {
-        if !asset_ids.contains(*ref_id) {
-            notes.push(Note {
-                severity: Severity::Error,
-                code: Code::CrossRefBroken,
-                message: format!(
-                    "Track file {} referenced in CPL not found in AssetMap",
-                    ref_id
-                ),
-                file: Some(cpl_path.to_path_buf()),
-                line: 0,
-            });
+        match resolve_track_ref(ref_id, &local_ids, ov_ids, ov_provided) {
+            RefStatus::Local | RefStatus::Ov => {}
+            RefStatus::BrokenWithOv => {
+                notes.push(Note {
+                    severity: Severity::Error,
+                    code: Code::CrossRefBroken,
+                    message: format!(
+                        "Track file {} referenced in CPL not found in this package or the OV",
+                        ref_id
+                    ),
+                    file: Some(cpl_path.to_path_buf()),
+                    line: 0,
+                });
+            }
+            RefStatus::UnresolvedNoOv => needs_ov += 1,
         }
+    }
+
+    if needs_ov > 0 {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: Code::SupplementalOvNotProvided,
+            message: format!(
+                "CPL references {needs_ov} asset(s) not in this package; supply the OV with --ov to fully validate"
+            ),
+            file: Some(cpl_path.to_path_buf()),
+            line: 0,
+        });
     }
 }
 
@@ -830,6 +898,191 @@ mod tests {
         assert_eq!(cpl.virtual_tracks[0].resources.len(), 1);
         assert_eq!(cpl.virtual_tracks[0].resources[0].intrinsic_duration, 240);
         assert_eq!(cpl.total_duration, 240);
+    }
+
+    // ─── OV-aware supplemental cross-reference ─────────────────────────────
+
+    const VIDEO_ID: &str = "aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa";
+    const AUDIO_ID: &str = "bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb";
+
+    #[test]
+    fn resolve_track_ref_covers_local_ov_broken_and_needs_ov() {
+        let local: HashSet<String> = [AUDIO_ID.to_string()].into();
+        let ov: HashSet<String> = [VIDEO_ID.to_string()].into();
+
+        assert_eq!(
+            resolve_track_ref(AUDIO_ID, &local, &ov, true),
+            RefStatus::Local
+        );
+        assert_eq!(
+            resolve_track_ref(VIDEO_ID, &local, &ov, true),
+            RefStatus::Ov
+        );
+        assert_eq!(
+            resolve_track_ref("dead", &local, &ov, true),
+            RefStatus::BrokenWithOv
+        );
+        assert_eq!(
+            resolve_track_ref("dead", &local, &HashSet::new(), false),
+            RefStatus::UnresolvedNoOv
+        );
+    }
+
+    /// Write a minimal IMP dir: ASSETMAP listing `asset_ids` as track files plus
+    /// a supplemental CPL that references `cpl_track_ids`.
+    fn write_imp(dir: &Path, cpl_id: &str, asset_ids: &[&str], cpl_track_ids: &[&str]) {
+        let mut asset_entries = format!(
+            r#"<Asset><Id>urn:uuid:{cpl_id}</Id><ChunkList><Chunk><Path>CPL.xml</Path></Chunk></ChunkList></Asset>"#
+        );
+        for id in asset_ids {
+            asset_entries.push_str(&format!(
+                r#"<Asset><Id>urn:uuid:{id}</Id><ChunkList><Chunk><Path>{id}.mxf</Path></Chunk></ChunkList></Asset>"#
+            ));
+        }
+        std::fs::write(
+            dir.join("ASSETMAP.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:dddddddd-0000-0000-0000-000000000000</Id><PackingList>true</PackingList><ChunkList><Chunk><Path>PKL.xml</Path></Chunk></ChunkList></Asset>
+    {asset_entries}
+  </AssetList>
+</AssetMap>"#
+            ),
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.join("PKL.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<PackingList xmlns="http://www.smpte-ra.org/schemas/2067-2/2016/PKL">
+  <Id>urn:uuid:dddddddd-0000-0000-0000-000000000000</Id>
+  <AssetList><Asset><Id>urn:uuid:{cpl_id}</Id><Type>text/xml</Type></Asset></AssetList>
+</PackingList>"#
+            ),
+        )
+        .unwrap();
+
+        // Two virtual tracks: image references the first track id, audio the second.
+        let img = cpl_track_ids.first().copied().unwrap_or(VIDEO_ID);
+        let aud = cpl_track_ids.get(1).copied().unwrap_or(AUDIO_ID);
+        std::fs::write(
+            dir.join("CPL.xml"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016"
+                     xmlns:cc="http://www.smpte-ra.org/schemas/2067-2/2016">
+  <Id>urn:uuid:{cpl_id}</Id>
+  <ContentTitle>Supp</ContentTitle>
+  <EditRate>24 1</EditRate>
+  <SegmentList>
+    <Segment>
+      <MainImageSequence>
+        <Id>urn:uuid:eeeeeeee-0000-0000-0000-000000000000</Id>
+        <ResourceList><Resource>
+          <Id>urn:uuid:11110000-0000-0000-0000-000000000000</Id>
+          <TrackFileId>urn:uuid:{img}</TrackFileId>
+          <EditRate>24 1</EditRate><IntrinsicDuration>24</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint><SourceDuration>24</SourceDuration>
+        </Resource></ResourceList>
+      </MainImageSequence>
+      <MainAudioSequence>
+        <Id>urn:uuid:ffffffff-0000-0000-0000-000000000000</Id>
+        <ResourceList><Resource>
+          <Id>urn:uuid:22220000-0000-0000-0000-000000000000</Id>
+          <TrackFileId>urn:uuid:{aud}</TrackFileId>
+          <EditRate>24 1</EditRate><IntrinsicDuration>24</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint><SourceDuration>24</SourceDuration>
+        </Resource></ResourceList>
+      </MainAudioSequence>
+    </Segment>
+  </SegmentList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn supplemental_with_ov_resolves_cross_package_refs() {
+        let ov = tempfile::tempdir().unwrap();
+        write_imp(
+            ov.path(),
+            "0f0f0f0f-0000-0000-0000-000000000000",
+            &[VIDEO_ID],
+            &[],
+        );
+        let supp = tempfile::tempdir().unwrap();
+        // supp physically holds only AUDIO_ID; its CPL references OV's VIDEO_ID + local AUDIO_ID
+        write_imp(
+            supp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[AUDIO_ID],
+            &[VIDEO_ID, AUDIO_ID],
+        );
+
+        let notes = validate_imp(supp.path(), Some(ov.path()));
+        assert!(
+            !notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "OV must satisfy the video ref, got: {notes:?}"
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.code == Code::SupplementalOvNotProvided),
+            "everything resolves, no OV-missing note expected"
+        );
+    }
+
+    #[test]
+    fn supplemental_alone_reports_missing_ov_not_broken() {
+        let supp = tempfile::tempdir().unwrap();
+        write_imp(
+            supp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[AUDIO_ID],
+            &[VIDEO_ID, AUDIO_ID],
+        );
+
+        let notes = validate_imp(supp.path(), None);
+        assert!(
+            !notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "no OV -> must not hard-fail as broken, got: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SupplementalOvNotProvided),
+            "expected SupplementalOvNotProvided diagnostic, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn supplemental_with_ov_still_catches_genuinely_broken_ref() {
+        let ov = tempfile::tempdir().unwrap();
+        write_imp(
+            ov.path(),
+            "0f0f0f0f-0000-0000-0000-000000000000",
+            &[VIDEO_ID],
+            &[],
+        );
+        let supp = tempfile::tempdir().unwrap();
+        // CPL references an id present in neither OV nor supp
+        write_imp(
+            supp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[AUDIO_ID],
+            &["deadbeef-0000-0000-0000-000000000000", AUDIO_ID],
+        );
+
+        let notes = validate_imp(supp.path(), Some(ov.path()));
+        assert!(
+            notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "a ref in neither package is a real break even with --ov, got: {notes:?}"
+        );
     }
 
     #[test]
