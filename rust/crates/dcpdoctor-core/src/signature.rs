@@ -14,7 +14,7 @@ use x509_parser::prelude::*;
 ///
 /// Returns an error note if the signature is present but invalid, plus
 /// certificate expiry / chain notes; empty if the file carries no signature.
-pub fn verify_signature(xml_file: &Path) -> Vec<Note> {
+pub fn verify_signature(xml_file: &Path, strict: bool) -> Vec<Note> {
     let content = match std::fs::read_to_string(xml_file) {
         Ok(c) => c,
         Err(e) => {
@@ -42,7 +42,7 @@ pub fn verify_signature(xml_file: &Path) -> Vec<Note> {
         );
     }
 
-    notes.extend(verify_cert_chain(&content, xml_file));
+    notes.extend(verify_cert_chain(&content, xml_file, strict));
     notes.extend(crate::cert_rules::check_certificates(&content, xml_file));
     notes
 }
@@ -71,7 +71,7 @@ fn common_name<'a>(name: &'a X509Name<'a>) -> String {
 }
 
 /// Validate the embedded DCI certificate chain: expiry and issuer linkage.
-fn verify_cert_chain(content: &str, xml_file: &Path) -> Vec<Note> {
+fn verify_cert_chain(content: &str, xml_file: &Path, strict: bool) -> Vec<Note> {
     let ders = extract_certs(content);
     if ders.is_empty() {
         return Vec::new();
@@ -92,22 +92,23 @@ fn verify_cert_chain(content: &str, xml_file: &Path) -> Vec<Note> {
         }
     }
 
-    // Expiry / not-yet-valid per certificate.
+    // Expiry / not-yet-valid per certificate. Projectors don't block playback on an
+    // expired CPL/PKL signing cert, so this is a warning by default, error under strict.
     for cert in &certs {
         if !cert.validity().is_valid() {
             let v = cert.validity();
-            notes.push(
-                Note::error(
-                    Code::CertificateExpired,
-                    format!(
-                        "Certificate '{}' is outside its validity period ({} to {})",
-                        common_name(cert.subject()),
-                        v.not_before,
-                        v.not_after
-                    ),
-                )
-                .with_file(xml_file),
+            let msg = format!(
+                "Certificate '{}' is outside its validity period ({} to {})",
+                common_name(cert.subject()),
+                v.not_before,
+                v.not_after
             );
+            let note = if strict {
+                Note::error(Code::CertificateExpired, msg)
+            } else {
+                Note::warning(Code::CertificateExpired, msg)
+            };
+            notes.push(note.with_file(xml_file));
         }
     }
 
@@ -201,7 +202,7 @@ mod tests {
             "cpl.xml",
             "<CompositionPlaylist><Id>x</Id></CompositionPlaylist>",
         );
-        assert!(verify_signature(&p).is_empty());
+        assert!(verify_signature(&p, false).is_empty());
     }
 
     #[test]
@@ -213,7 +214,7 @@ mod tests {
             r#"<CompositionPlaylist xmlns="x"><Id>u</Id><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{bad_cert}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature></CompositionPlaylist>"#
         );
         let (_d, p) = write("cpl.xml", &xml);
-        let notes = verify_signature(&p);
+        let notes = verify_signature(&p, false);
         assert!(
             notes.iter().any(|n| n.code == Code::CertificateChainBroken),
             "an unparseable embedded cert must break the chain, got: {notes:?}"
@@ -225,7 +226,7 @@ mod tests {
         // Has a ds:Signature but the value is garbage, so verification must fail.
         let xml = r#"<CompositionPlaylist xmlns="x"><Id>u</Id><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:Reference URI=""><ds:DigestValue>AAAA</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue>bogus</ds:SignatureValue></ds:Signature></CompositionPlaylist>"#;
         let (_d, p) = write("cpl.xml", xml);
-        let notes = verify_signature(&p);
+        let notes = verify_signature(&p, false);
         assert!(
             notes.iter().any(|n| n.code == Code::SignatureInvalid),
             "a broken signature must be reported invalid, got: {notes:?}"

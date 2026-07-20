@@ -93,7 +93,7 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
 
     for (pkl_path, pkl) in &dcp.pkls {
         if opts.check_signatures {
-            for note in crate::signature::verify_signature(pkl_path) {
+            for note in crate::signature::verify_signature(pkl_path, opts.strict_smpte) {
                 result.add(note);
             }
         }
@@ -148,7 +148,7 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
 
     for (cpl_path, cpl) in &dcp.cpls {
         if opts.check_signatures {
-            for note in crate::signature::verify_signature(cpl_path) {
+            for note in crate::signature::verify_signature(cpl_path, opts.strict_smpte) {
                 result.add(note);
             }
         }
