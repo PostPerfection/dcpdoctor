@@ -151,6 +151,7 @@ pub enum Code {
 
     // Reel continuity
     ReelDiscontinuity,
+    ReelIncoherent,
 
     // 3D
     StereoMismatch,
@@ -220,6 +221,7 @@ impl Code {
             Code::KdmExpired => "kdm_expired",
             Code::KdmNotYetValid => "kdm_not_yet_valid",
             Code::ReelDiscontinuity => "reel_discontinuity",
+            Code::ReelIncoherent => "reel_incoherent",
             Code::StereoMismatch => "stereo_mismatch",
             Code::MarkerMissing => "marker_missing",
             Code::MarkerInvalid => "marker_invalid",

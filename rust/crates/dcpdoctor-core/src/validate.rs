@@ -299,6 +299,9 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         for note in crate::validators::check_reel_continuity(cpl_path) {
             result.add(note);
         }
+        for note in crate::validators::check_reel_coherence(cpl_path) {
+            result.add(note);
+        }
         for note in crate::validators::check_stereo(cpl_path) {
             result.add(note);
         }

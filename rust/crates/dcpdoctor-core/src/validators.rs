@@ -112,6 +112,138 @@ pub fn check_reel_continuity(cpl_path: &Path) -> Vec<Note> {
     notes
 }
 
+// ─── Reel Coherence ───────────────────────────────────────────────────────────
+
+/// Check that essence parameters are coherent across all reels of a composition.
+///
+/// Mirrors ClairMeta's `check_cpl_reel_coherence` (SMPTE ST 429-2 8.7): every
+/// per-reel essence parameter that ClairMeta derives from the CPL must hold one
+/// value across all reels that carry it. A parameter with two differing values is
+/// "Mixed" and reported as an error. Encryption coherence is included: ClairMeta
+/// keys it off `<KeyId>` presence, which is what makes ECL32 (one clear picture
+/// reel among encrypted ones) incoherent. Values are only collected from reels
+/// where the essence is present, so a track missing on some reels is not a
+/// mismatch. Reports the first divergent reel per parameter.
+pub fn check_reel_coherence(cpl_path: &Path) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    let reels: Vec<&str> = reel_re
+        .captures_iter(&content)
+        .map(|c| c.get(1).unwrap().as_str())
+        .collect();
+
+    if reels.len() < 2 {
+        return notes; // single reel is trivially coherent
+    }
+
+    // (label, essence tag alternatives, value extractor). Only the CPL-derivable
+    // essence keys ClairMeta uses; MXF-probe keys (resolution, channel count,
+    // sample rate) are read where present but the CPL rarely carries them.
+    type ValueFn = fn(&str) -> Option<String>;
+    let params: &[(&str, &[&str], ValueFn)] = &[
+        (
+            "picture edit rate",
+            &["MainPicture", "MainStereoscopicPicture"],
+            |b| extract_tag(b, "EditRate"),
+        ),
+        (
+            "picture frame rate",
+            &["MainPicture", "MainStereoscopicPicture"],
+            |b| extract_tag(b, "FrameRate"),
+        ),
+        (
+            "picture frame size",
+            &["MainPicture", "MainStereoscopicPicture"],
+            |b| extract_tag(b, "ScreenAspectRatio"),
+        ),
+        (
+            "picture encryption",
+            &["MainPicture", "MainStereoscopicPicture"],
+            |b| Some(encrypted_str(b)),
+        ),
+        (
+            "picture resolution",
+            &["MainPicture", "MainStereoscopicPicture"],
+            |b| extract_tag(b, "Resolution"),
+        ),
+        ("sound edit rate", &["MainSound"], |b| {
+            extract_tag(b, "EditRate")
+        }),
+        ("sound encryption", &["MainSound"], |b| {
+            Some(encrypted_str(b))
+        }),
+        ("sound channel count", &["MainSound"], |b| {
+            extract_tag(b, "ChannelCount")
+        }),
+        ("sound sample rate", &["MainSound"], |b| {
+            extract_tag(b, "SampleRate")
+        }),
+        ("subtitle edit rate", &["MainSubtitle"], |b| {
+            extract_tag(b, "EditRate")
+        }),
+    ];
+
+    let mut established: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let mut flagged: HashSet<&str> = HashSet::new();
+
+    for (i, reel) in reels.iter().enumerate() {
+        for (label, tags, value_of) in params {
+            let Some(block) = essence_block(reel, tags) else {
+                continue;
+            };
+            let Some(value) = value_of(block) else {
+                continue;
+            };
+            match established.get(label) {
+                None => {
+                    established.insert(label, value);
+                }
+                Some(first) if *first != value && !flagged.contains(label) => {
+                    notes.push(Note {
+                        severity: Severity::Error,
+                        code: Code::ReelIncoherent,
+                        message: format!(
+                            "Reel {} {label} '{value}' is not coherent with earlier reels ('{first}')",
+                            i + 1
+                        ),
+                        file: Some(cpl_path.to_path_buf()),
+                        line: 0,
+                    });
+                    flagged.insert(label);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    notes
+}
+
+/// First matching essence block in a reel (handles the stereoscopic alias).
+fn essence_block<'a>(reel: &'a str, tags: &[&str]) -> Option<&'a str> {
+    for tag in tags {
+        let re = regex_lite::Regex::new(&format!(r"<{tag}>([\s\S]*?)</{tag}>")).unwrap();
+        if let Some(cap) = re.captures(reel) {
+            return Some(cap.get(1).unwrap().as_str());
+        }
+    }
+    None
+}
+
+/// ClairMeta keys per-asset encryption off `<KeyId>` presence in the CPL.
+fn encrypted_str(block: &str) -> String {
+    if block.contains("<KeyId>") {
+        "encrypted".into()
+    } else {
+        "clear".into()
+    }
+}
+
 // ─── Stereoscopic 3D ──────────────────────────────────────────────────────────
 
 /// Check stereoscopic reels for left/right eye and duration consistency.
@@ -465,4 +597,72 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
 
 fn extract_u64(xml: &str, tag: &str) -> Option<u64> {
     extract_tag(xml, tag)?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    // two-reel CPL; {enc0}/{enc1} inject a picture KeyId, {fr0}/{fr1} the frame rate
+    fn two_reel_cpl(enc0: &str, enc1: &str, fr0: &str, fr1: &str) -> String {
+        let reel = |enc: &str, fr: &str| {
+            format!(
+                r#"<Reel><Id>urn:uuid:{id}</Id><AssetList>
+  <MainPicture>
+    <Id>urn:uuid:{id}</Id>
+    <EditRate>24 1</EditRate>
+    <FrameRate>{fr}</FrameRate>
+    <ScreenAspectRatio>2048 858</ScreenAspectRatio>
+    {enc}
+  </MainPicture>
+  <MainSound>
+    <Id>urn:uuid:{id}</Id>
+    <EditRate>24 1</EditRate>
+  </MainSound>
+</AssetList></Reel>"#,
+                id = "00000000-0000-0000-0000-000000000000",
+                enc = enc,
+                fr = fr,
+            )
+        };
+        format!(
+            "<CompositionPlaylist>{}{}</CompositionPlaylist>",
+            reel(enc0, fr0),
+            reel(enc1, fr1),
+        )
+    }
+
+    fn write_cpl(xml: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(xml.as_bytes()).unwrap();
+        f
+    }
+
+    #[test]
+    fn coherent_reels_pass() {
+        let xml = two_reel_cpl("<KeyId>k</KeyId>", "<KeyId>k</KeyId>", "24 1", "24 1");
+        let f = write_cpl(&xml);
+        assert!(check_reel_coherence(f.path()).is_empty());
+    }
+
+    #[test]
+    fn mixed_encryption_flags_incoherent() {
+        // one encrypted picture reel, one clear: this is exactly ECL32
+        let xml = two_reel_cpl("<KeyId>k</KeyId>", "", "24 1", "24 1");
+        let f = write_cpl(&xml);
+        let notes = check_reel_coherence(f.path());
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].code, Code::ReelIncoherent);
+        assert_eq!(notes[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn mixed_frame_rate_flags_incoherent() {
+        let xml = two_reel_cpl("<KeyId>k</KeyId>", "<KeyId>k</KeyId>", "24 1", "48 1");
+        let f = write_cpl(&xml);
+        let notes = check_reel_coherence(f.path());
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].code, Code::ReelIncoherent);
+    }
 }

@@ -12,6 +12,15 @@ These have zero callers. They are not advertised as wired checks, so they are lo
 - `mxf_advanced.rs`: partition-structure check now wired into `--check-mxf`; the ffprobe Dolby-Vision/DTS:X helpers remain unwired.
 - Leftover dead functions inside otherwise-wired modules: `advanced::compare_manifest`/`BatchResult`/`write_batch_summary`, `validators::check_color_space`, `fixes::apply_fixes` (duplicates `fix.rs`), and the unused `hfr_stereo` helpers (`analyze_multi_cpl`, `analyze_stereo3d`, `trace_cpl_chain`, `check_cpl_chain`).
 
+## Reel coherence: done
+
+`validators::check_reel_coherence` (`reel_incoherent`) closes the last differential
+gap vs ClairMeta `check_cpl_reel_coherence`. Wired into the core verify path. The
+diff harness now shows CLAIRMETA_ONLY_FAIL 0 (ECL32 moved to BOTH_FAIL). MXF-probe
+coherence keys (resolution/channels/sample rate) are read only where the CPL carries
+them; deeper essence-level coherence would need MXF probing, which ClairMeta itself
+skips in the harness env (no asdcp-info).
+
 ## OV-aware supplemental validation: done
 
 All surfaces are wired. The shared resolver (`resolve_track_ref`/`RefStatus`/`validate_track_refs_ov`) lives in `dcpdoctor-imf` and is reused by the IMF path, the DCP path, and wasm.
