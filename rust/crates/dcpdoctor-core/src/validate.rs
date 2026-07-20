@@ -73,6 +73,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         .collect();
 
     for (pkl_path, pkl) in &dcp.pkls {
+        if opts.check_signatures {
+            for note in crate::signature::verify_signature(pkl_path) {
+                result.add(note);
+            }
+        }
         // Verify PKL asset hashes
         if opts.check_hashes {
             for pkl_asset in &pkl.assets {
@@ -123,6 +128,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     }
 
     for (cpl_path, cpl) in &dcp.cpls {
+        if opts.check_signatures {
+            for note in crate::signature::verify_signature(cpl_path) {
+                result.add(note);
+            }
+        }
         if cpl.reels.is_empty() {
             result.add(Note {
                 severity: Severity::Error,
