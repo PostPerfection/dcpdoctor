@@ -33,7 +33,11 @@ pub fn validate_subtitle(file: &Path, standard: Standard) -> Vec<Note> {
             }
         }
         Standard::Interop => {
-            if !xml.contains("http://www.digicine.com/PROTO-ASDCP-TT-DEF") {
+            // Interop DCSubtitle is the DTD-era format and carries no namespace;
+            // only flag a doc that is neither a DCSubtitle nor the namespaced form.
+            if !xml.contains("<DCSubtitle")
+                && !xml.contains("http://www.digicine.com/PROTO-ASDCP-TT-DEF")
+            {
                 notes.push(warn(
                     Code::InteropNamespaceWrong,
                     "Subtitle file does not use Interop namespace",
@@ -107,8 +111,8 @@ impl Scan {
             "ReelNumber" => self.has_reel_number = true,
             "Language" => self.has_language = true,
             "LoadFont" => self.has_load_font = true,
-            // SMPTE DCST top-level identifier element
-            "Id" => self.capture_id = true,
+            // SMPTE DCST uses <Id>; Interop DCSubtitle uses a <SubtitleID> element
+            "Id" | "SubtitleID" => self.capture_id = true,
             "Subtitle" => {
                 let spot = attr(e, "SpotNumber").unwrap_or_default();
                 let raw_in = attr(e, "TimeIn").unwrap_or_default();

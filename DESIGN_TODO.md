@@ -8,7 +8,8 @@ These have zero callers. They are not advertised as wired checks, so they are lo
 
 - `qc.rs`: QC helpers with no caller (the `auto-qc` command uses inline ffmpeg + `audio::analyze_audio`).
 - `auto_qc.rs`: superseded by the inline `auto-qc` implementation in the CLI; delete or route the command through it.
-- `kdm_advanced.rs`, `mxf_advanced.rs`, `dci_ctp.rs`: advanced KDM/MXF/DCI-CTP helpers with no caller.
+- `kdm_advanced.rs`, `dci_ctp.rs`: advanced KDM/DCI-CTP helpers with no caller.
+- `mxf_advanced.rs`: partition-structure check now wired into `--check-mxf`; the ffprobe Dolby-Vision/DTS:X helpers remain unwired.
 - Leftover dead functions inside otherwise-wired modules: `advanced::compare_manifest`/`BatchResult`/`write_batch_summary`, `validators::check_color_space`, `fixes::apply_fixes` (duplicates `fix.rs`), and the unused `hfr_stereo` helpers (`analyze_multi_cpl`, `analyze_stereo3d`, `trace_cpl_chain`, `check_cpl_chain`).
 
 ## OV-aware supplemental validation: done

@@ -94,7 +94,7 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
                 if now < start {
                     notes.push(
                         Note::warning(
-                            Code::KdmRequired,
+                            Code::KdmNotYetValid,
                             format!("KDM is not yet valid (starts {})", info.not_valid_before),
                         )
                         .with_file(kdm_path),
@@ -103,7 +103,7 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
                 if now > end {
                     notes.push(
                         Note::error(
-                            Code::KdmRequired,
+                            Code::KdmExpired,
                             format!("KDM has expired (ended {})", info.not_valid_after),
                         )
                         .with_file(kdm_path),

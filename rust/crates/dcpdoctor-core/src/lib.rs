@@ -4,6 +4,7 @@ pub mod audio;
 pub mod auto_qc;
 pub mod av_sync;
 pub mod bitrate;
+pub mod cert_rules;
 pub mod checksum_verify;
 pub mod compliance;
 pub mod conformance;
@@ -106,6 +107,13 @@ pub enum Code {
     SignatureInvalid,
     CertificateExpired,
     CertificateChainBroken,
+    CertificateBasicConstraintsInvalid,
+    CertificateKeyUsageInvalid,
+    CertificateKeySizeInvalid,
+    CertificateSignatureAlgorithmInvalid,
+    CertificateRoleInvalid,
+    CertificateThumbprintInvalid,
+    CertificateOrganizationInconsistent,
 
     // SMPTE compliance
     SmpteNamingViolation,
@@ -184,6 +192,13 @@ impl Code {
             Code::SignatureInvalid => "signature_invalid",
             Code::CertificateExpired => "certificate_expired",
             Code::CertificateChainBroken => "certificate_chain_broken",
+            Code::CertificateBasicConstraintsInvalid => "certificate_basic_constraints_invalid",
+            Code::CertificateKeyUsageInvalid => "certificate_key_usage_invalid",
+            Code::CertificateKeySizeInvalid => "certificate_key_size_invalid",
+            Code::CertificateSignatureAlgorithmInvalid => "certificate_signature_algorithm_invalid",
+            Code::CertificateRoleInvalid => "certificate_role_invalid",
+            Code::CertificateThumbprintInvalid => "certificate_thumbprint_invalid",
+            Code::CertificateOrganizationInconsistent => "certificate_organization_inconsistent",
             Code::SmpteNamingViolation => "smpte_naming_violation",
             Code::SmpteNamespaceWrong => "smpte_namespace_wrong",
             Code::InteropNamespaceWrong => "interop_namespace_wrong",

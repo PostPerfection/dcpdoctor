@@ -197,7 +197,8 @@ fn schema_validate_uses_supplied_xsd_for_each_package_xml() {
     )
     .unwrap();
     std::fs::write(
-        schema_dir.path().join("SMPTE-429-7-2006-CPL.xsd"),
+        // SMPTE CPLs map to the 429-16 metadata schema (ClairMeta's convention)
+        schema_dir.path().join("SMPTE-429-16-2014-CPL-Metadata.xsd"),
         r#"<?xml version="1.0"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            targetNamespace="http://www.smpte-ra.org/schemas/429-7/2006/CPL"

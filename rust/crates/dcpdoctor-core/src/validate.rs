@@ -25,6 +25,25 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
 
     result.standard = dcp.standard;
 
+    // 0. XSD schema validation, when a schema dir is available (schema-path
+    // driven, see schema::locate_schema_dir). Validates every CPL/PKL/ASSETMAP
+    // against the SMPTE/Interop XSDs, emitting xml_schema_violation.
+    if let Some(schema_dir) = crate::schema::locate_schema_dir() {
+        for note in crate::schema::check_schema(&dcp.assetmap_path, &schema_dir) {
+            result.add(note);
+        }
+        for (pkl_path, _) in &dcp.pkls {
+            for note in crate::schema::check_schema(pkl_path, &schema_dir) {
+                result.add(note);
+            }
+        }
+        for (cpl_path, _) in &dcp.cpls {
+            for note in crate::schema::check_schema(cpl_path, &schema_dir) {
+                result.add(note);
+            }
+        }
+    }
+
     // 1. Check for duplicate asset IDs
     let mut seen_ids = HashSet::new();
     for asset in &dcp.assetmap.assets {
@@ -246,7 +265,6 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     // OV-aware cross-ref for supplemental DCPs: resolve refs across this package
     // and the OV DCP when --ov is given.
     let ov_asset_ids: Option<HashSet<String>> = opts.ov.as_deref().map(dcp_asset_ids);
-    let supplemental = crate::validators::is_supplemental_dcp(&cpl_paths);
 
     for note in crate::validators::check_encryption(dcp_dir, &cpl_paths) {
         result.add(note);
@@ -255,11 +273,13 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         &known_asset_ids,
         ov_asset_ids.as_ref(),
         &cpl_paths,
-        supplemental,
     ) {
         result.add(note);
     }
     for note in crate::validators::check_supplemental(&cpl_paths) {
+        result.add(note);
+    }
+    for note in crate::compliance::check_uuids(dcp_dir) {
         result.add(note);
     }
     for (cpl_path, cpl) in &dcp.cpls {
@@ -298,6 +318,12 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 .to_lowercase();
             if ext != "mxf" || !full_path.exists() {
                 continue;
+            }
+
+            // MXF partition structure (SMPTE 377-1): header/footer/closed-complete.
+            let partitions = crate::mxf_advanced::validate_mxf_partitions(&full_path);
+            for note in crate::mxf_advanced::check_mxf_partitions(&partitions, &full_path) {
+                result.add(note);
             }
 
             let mxf_info = crate::mxf::read_mxf_info(&full_path);
@@ -526,8 +552,11 @@ mod tests {
         );
     }
 
+    // Without --ov an unresolved ref is treated as a VF referencing an external
+    // OV (matching ClairMeta): a warning, not a hard error. The broken-with-ov
+    // case is covered by supplemental_dcp_with_ov_still_catches_genuinely_broken_ref.
     #[test]
-    fn cpl_reference_to_unknown_asset_is_flagged_in_core() {
+    fn cpl_reference_to_unknown_asset_warns_without_ov() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("ASSETMAP.xml"),
@@ -560,8 +589,16 @@ mod tests {
 
         let result = verify_dcp(dir.path(), &VerifyOptions::default());
         assert!(
-            result.notes.iter().any(|n| n.code == Code::CrossRefBroken),
-            "expected CrossRefBroken from the core pipeline, got: {:?}",
+            !result.notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "without --ov an unresolved ref must not hard-fail, got: {:?}",
+            result.notes
+        );
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::SupplementalOvNotProvided),
+            "expected SupplementalOvNotProvided warning, got: {:?}",
             result.notes
         );
     }

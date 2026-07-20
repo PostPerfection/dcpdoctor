@@ -43,11 +43,12 @@ pub fn verify_signature(xml_file: &Path) -> Vec<Note> {
     }
 
     notes.extend(verify_cert_chain(&content, xml_file));
+    notes.extend(crate::cert_rules::check_certificates(&content, xml_file));
     notes
 }
 
 /// Extract base64 X509Certificate blobs from ds:KeyInfo.
-fn extract_certs(content: &str) -> Vec<Vec<u8>> {
+pub(crate) fn extract_certs(content: &str) -> Vec<Vec<u8>> {
     let re =
         regex_lite::Regex::new(r"(?s)<(?:ds:)?X509Certificate>(.*?)</(?:ds:)?X509Certificate>")
             .unwrap();

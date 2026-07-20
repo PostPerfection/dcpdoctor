@@ -277,19 +277,18 @@ pub fn check_markers(cpl_path: &Path, strict: bool) -> Vec<Note> {
 
 /// Verify that asset IDs referenced in CPLs exist in the known set (ASSETMAP/PKL).
 ///
-/// OV-aware for supplemental DCPs: when `ov_asset_ids` is `Some`, a reference
-/// that resolves in the OV package passes and a reference in neither package is
-/// a real break. When no OV is supplied and the package looks supplemental
-/// (`supplemental`), unresolved refs are reported once as
-/// [`Code::SupplementalOvNotProvided`] (a warning) rather than hard errors,
-/// since a legitimate supplemental ref and a corrupt one are indistinguishable
-/// without the OV. A complete (non-supplemental) DCP still hard-errors on any
-/// unresolved ref, with or without an OV.
+/// OV-aware: when `ov_asset_ids` is `Some`, a reference that resolves in the OV
+/// package passes and a reference in neither package is a real break. When no OV
+/// is supplied, an unresolved ref means the package is a version file (VF)
+/// referencing an external OV: this matches ClairMeta, which classifies any CPL
+/// asset missing locally as VF. Since a legitimate VF ref and a corrupt one are
+/// indistinguishable without the OV, unresolved refs are reported once as
+/// [`Code::SupplementalOvNotProvided`] (a warning), not a hard error. Supply
+/// `--ov` to turn genuinely broken refs back into errors.
 pub fn check_cross_references(
     known_asset_ids: &[String],
     ov_asset_ids: Option<&HashSet<String>>,
     cpl_paths: &[PathBuf],
-    supplemental: bool,
 ) -> Vec<Note> {
     use dcpdoctor_imf::{RefStatus, resolve_track_ref};
 
@@ -337,16 +336,7 @@ pub fn check_cross_references(
                         file: Some(cpl_path.clone()),
                         line: 0,
                     }),
-                    RefStatus::UnresolvedNoOv if supplemental => needs_ov += 1,
-                    RefStatus::UnresolvedNoOv => notes.push(Note {
-                        severity: Severity::Error,
-                        code: Code::CrossRefBroken,
-                        message: format!(
-                            "CPL references asset {normalized} not found in ASSETMAP/PKL"
-                        ),
-                        file: Some(cpl_path.clone()),
-                        line: 0,
-                    }),
+                    RefStatus::UnresolvedNoOv => needs_ov += 1,
                 }
             }
         }
@@ -374,15 +364,6 @@ fn cpl_is_supplemental(content: &str) -> bool {
     content.contains("<OPL>")
         || content.contains("<OriginalPackagingList")
         || content.contains("<OriginalFileName")
-}
-
-/// Whether any of the given CPLs looks like a supplemental/version-file package.
-pub fn is_supplemental_dcp(cpl_paths: &[PathBuf]) -> bool {
-    cpl_paths.iter().any(|p| {
-        std::fs::read_to_string(p)
-            .map(|c| cpl_is_supplemental(&c))
-            .unwrap_or(false)
-    })
 }
 
 /// Detect if CPLs are supplemental/version-file packages (OPL references).

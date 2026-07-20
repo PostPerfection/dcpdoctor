@@ -1,6 +1,110 @@
 /// XML schema validation via the system xmllint tool.
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use crate::{Code, Note, Severity};
+
+/// Pick the XSD to validate against from the document's root element and
+/// standard (Interop docs carry the digicine.com namespace). Mirrors the
+/// namespace->schema mapping in ClairMeta's XML catalog. `None` if the file is
+/// not a CPL/PKL/ASSETMAP we schema-check.
+fn schema_file_for(content: &str) -> Option<&'static str> {
+    let interop = content.contains("digicine.com");
+    // Key off the root element tag. AssetMap must be checked first: a SMPTE
+    // ASSETMAP carries a <PackingList>true</PackingList> boolean per asset, so a
+    // bare "PackingList" substring would mis-route it to the PKL schema.
+    if content.contains("<AssetMap") {
+        Some(if interop {
+            "PROTO-ASDCP-AM-20040311.xsd"
+        } else {
+            "SMPTE-429-9-2007-AM.xsd"
+        })
+    } else if content.contains("<CompositionPlaylist") {
+        // The 429-16 metadata schema extends 429-7 and is what ClairMeta uses.
+        Some(if interop {
+            "PROTO-ASDCP-CPL-20040511.xsd"
+        } else {
+            "SMPTE-429-16-2014-CPL-Metadata.xsd"
+        })
+    } else if content.contains("<PackingList") {
+        Some(if interop {
+            "PROTO-ASDCP-PKL-20040311.xsd"
+        } else {
+            "SMPTE-429-8-2006-PKL.xsd"
+        })
+    } else {
+        None
+    }
+}
+
+/// Locate a directory of SMPTE/Interop XSDs. Schema-path driven: the
+/// `DCPDOCTOR_SCHEMA_DIR` env override wins, else a bundled `schemas/` dir next
+/// to the executable or in the source tree. `None` means schema checks are
+/// skipped (the schemas are not vendored, since SMPTE XSDs are copyrighted).
+pub fn locate_schema_dir() -> Option<PathBuf> {
+    let has_xsd = |dir: &Path| {
+        std::fs::read_dir(dir).ok().is_some_and(|mut entries| {
+            entries.any(|e| {
+                e.ok().is_some_and(|e| {
+                    e.path()
+                        .extension()
+                        .is_some_and(|x| x.eq_ignore_ascii_case("xsd"))
+                })
+            })
+        })
+    };
+
+    if let Ok(dir) = std::env::var("DCPDOCTOR_SCHEMA_DIR") {
+        let p = PathBuf::from(dir);
+        if has_xsd(&p) {
+            return Some(p);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        candidates.push(exe_dir.join("schemas"));
+        candidates.push(exe_dir.join("../schemas"));
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../schemas"));
+
+    candidates.into_iter().find(|p| has_xsd(p))
+}
+
+/// Schema-validate a single CPL/PKL/ASSETMAP against the XSDs in `schema_dir`,
+/// emitting [`Code::XmlSchemaViolation`] for each violation. Returns empty when
+/// the file is not schema-checkable, its schema is absent, or xmllint is not
+/// installed (schema validation is best-effort and never a hard dependency).
+pub fn check_schema(xml_file: &Path, schema_dir: &Path) -> Vec<Note> {
+    let Ok(content) = std::fs::read_to_string(xml_file) else {
+        return Vec::new();
+    };
+    let Some(schema_file) = schema_file_for(&content) else {
+        return Vec::new();
+    };
+    if !schema_dir.join(schema_file).exists() {
+        return Vec::new();
+    }
+
+    let result = validate_schema(xml_file, schema_dir);
+    if result.valid {
+        return Vec::new();
+    }
+    result
+        .errors
+        .into_iter()
+        .take(20)
+        .map(|e| Note {
+            severity: Severity::Error,
+            code: Code::XmlSchemaViolation,
+            message: format!("Schema violation ({schema_file}): {}", e.message),
+            file: Some(xml_file.to_path_buf()),
+            line: e.line,
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchemaError {
@@ -35,14 +139,8 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
         }
     };
 
-    // Detect schema type from namespace
-    let schema_file = if content.contains("PackingList") {
-        "SMPTE-429-8-2006-PKL.xsd"
-    } else if content.contains("CompositionPlaylist") {
-        "SMPTE-429-7-2006-CPL.xsd"
-    } else if content.contains("AssetMap") {
-        "SMPTE-429-9-2007-AM.xsd"
-    } else {
+    // Detect schema type from root element + standard
+    let Some(schema_file) = schema_file_for(&content) else {
         // Can't determine schema — do well-formedness check only
         return validate_wellformed(&content);
     };
@@ -57,13 +155,18 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
         return validate_wellformed(&content);
     }
 
-    // Use xmllint for full XSD validation
-    let output = std::process::Command::new("xmllint")
+    // Use xmllint for full XSD validation. The schemas import each other via
+    // http URLs; the catalog maps those to the local files so it runs offline.
+    let mut cmd = std::process::Command::new("xmllint");
+    cmd.arg("--nonet")
         .arg("--schema")
         .arg(&schema_path)
-        .arg("--noout")
-        .arg(xml_file)
-        .output();
+        .arg("--noout");
+    let catalog = schema_dir.join("catalog.xml");
+    if catalog.exists() {
+        cmd.arg("--catalogs").env("XML_CATALOG_FILES", &catalog);
+    }
+    let output = cmd.arg(xml_file).output();
 
     match output {
         Ok(o) => {
