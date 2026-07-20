@@ -28,11 +28,44 @@ struct Cli {
     /// HTML report output
     #[arg(long, global = true)]
     html: bool,
+
+    /// Run studio-specific checks (loudness, color, resolution, encryption, subtitles)
+    #[arg(long, global = true)]
+    studio: bool,
+
+    /// Deep per-MXF studio analysis (color space, bit depth, resolution per file)
+    #[arg(long, global = true)]
+    deep: bool,
+
+    /// Netflix IMF delivery spec check
+    #[arg(long, global = true)]
+    netflix: bool,
+
+    /// HDR metadata detection and compliance
+    #[arg(long, global = true)]
+    hdr: bool,
+
+    /// Dolby Atmos IAB deep inspection
+    #[arg(long, global = true)]
+    atmos: bool,
+
+    /// Dolby Vision metadata detection and compliance
+    #[arg(long = "dolby-vision", global = true)]
+    dolby_vision: bool,
+
+    /// ProRes essence detection (non-DCI)
+    #[arg(long, global = true)]
+    prores: bool,
+
+    /// Accessibility track validation (AD/HI/CC)
+    #[arg(long, global = true)]
+    accessibility: bool,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Validate DCP directories
+    /// Validate DCP or IMF (IMP) directories
+    #[command(visible_alias = "validate-imp")]
     Validate {
         /// DCP directories to validate
         dcp_dirs: Vec<PathBuf>,
@@ -60,10 +93,6 @@ enum Commands {
         /// Deep J2K codestream validation
         #[arg(long)]
         deep_j2k: bool,
-
-        /// Run studio-specific checks (naming conventions, asset organisation)
-        #[arg(long)]
-        studio: bool,
 
         /// Generate SVG timeline to file
         #[arg(long)]
@@ -150,12 +179,27 @@ enum Commands {
         /// Stop on first mismatch
         #[arg(long)]
         stop_on_error: bool,
+        /// Skip hash computation (just check asset presence)
+        #[arg(long)]
+        no_hash: bool,
     },
 
-    /// Measure audio loudness (EBU R128 / ATSC A/85)
+    /// Measure or normalize audio loudness (EBU R128 / ATSC A/85)
     Loudness {
         /// Audio file (WAV or MXF)
         audio_file: PathBuf,
+        /// Normalize to target loudness instead of only measuring
+        #[arg(long)]
+        normalize: bool,
+        /// Output file for normalized audio
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Target integrated loudness in LUFS
+        #[arg(long, default_value = "-23")]
+        target: f64,
+        /// True-peak limit in dBTP
+        #[arg(long, default_value = "-1")]
+        true_peak: f64,
     },
 
     /// Analyze J2K codestream frames
@@ -192,6 +236,9 @@ enum Commands {
         /// Clipping threshold in dBFS
         #[arg(long, default_value = "-0.5")]
         clipping_threshold: f64,
+        /// Freeze-frame noise tolerance for freezedetect (ratio 0-1, ~0.001 = -60dB)
+        #[arg(long, default_value = "0.001")]
+        freeze_threshold: f64,
     },
 
     /// Check IMF delivery compliance against platform specs
@@ -323,6 +370,34 @@ enum Commands {
         /// IMP directory
         imp_dir: PathBuf,
     },
+
+    /// Pre-delivery facility check (theater ingest readiness)
+    #[command(name = "facility-check")]
+    FacilityCheck {
+        /// DCP directory
+        dcp_dir: PathBuf,
+        /// Strict SMPTE compliance
+        #[arg(long)]
+        strict: bool,
+        /// Skip hash verification
+        #[arg(long)]
+        no_hashes: bool,
+        /// Skip ISDCF naming checks
+        #[arg(long)]
+        no_naming: bool,
+    },
+
+    /// Run the DCI conformance test suite
+    Conformance {
+        /// DCP directory
+        dcp_dir: PathBuf,
+        /// Skip J2K picture profile tests
+        #[arg(long)]
+        no_picture: bool,
+        /// Skip encryption/security tests
+        #[arg(long)]
+        no_security: bool,
+    },
 }
 
 fn main() {
@@ -384,24 +459,29 @@ fn main() {
             strict,
             bv21,
             deep_j2k,
-            studio,
             timeline,
             manifest,
             output,
         }) => {
-            run_validate(
-                &dcp_dirs,
+            let flags = ValidateFlags {
                 no_hashes,
                 no_signatures,
                 check_mxf,
-                strict || bv21,
+                strict: strict || bv21,
                 deep_j2k,
-                studio,
+                studio: cli.studio,
+                deep: cli.deep,
+                netflix: cli.netflix,
+                hdr: cli.hdr,
+                atmos: cli.atmos,
+                dolby_vision: cli.dolby_vision,
+                prores: cli.prores,
+                accessibility: cli.accessibility,
                 timeline,
                 manifest,
-                format,
                 output,
-            );
+            };
+            run_validate(&dcp_dirs, flags, format);
         }
         Some(Commands::Diff {
             dcp_a,
@@ -618,6 +698,7 @@ fn main() {
         Some(Commands::ChecksumVerify {
             dcp_dir,
             stop_on_error,
+            no_hash,
         }) => {
             if !dcp_dir.exists() {
                 eprintln!("Path not found: {}", dcp_dir.display());
@@ -629,7 +710,7 @@ fn main() {
             }
 
             let opts = dcpdoctor_core::VerifyOptions {
-                check_hashes: true,
+                check_hashes: !no_hash,
                 check_signatures: false,
                 check_picture_details: false,
                 strict_smpte: false,
@@ -661,20 +742,59 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Some(Commands::Loudness { audio_file }) => {
-            match dcpdoctor_core::audio::measure_loudness(&audio_file) {
-                Ok(result) => {
-                    if cli.json {
-                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
-                    } else {
-                        println!("Integrated loudness: {:.1} LUFS", result.integrated_lufs);
-                        println!("True peak:           {:.1} dBTP", result.true_peak_dbtp);
-                        println!("Loudness range:      {:.1} LU", result.loudness_range_lu);
+        Some(Commands::Loudness {
+            audio_file,
+            normalize,
+            output,
+            target,
+            true_peak,
+        }) => {
+            if normalize {
+                let out = match output {
+                    Some(o) => o,
+                    None => {
+                        eprintln!("--output is required with --normalize");
+                        std::process::exit(1);
                     }
-                }
-                Err(e) => {
-                    eprintln!("Loudness measurement failed: {e}");
+                };
+                let opts = dcpdoctor_core::loudness::NormalizeOptions {
+                    input_file: audio_file,
+                    output_file: out,
+                    target_lufs: target,
+                    true_peak_limit: true_peak,
+                };
+                let result = dcpdoctor_core::loudness::normalize_loudness(&opts);
+                if !result.success {
+                    eprintln!("Loudness normalization failed: {}", result.error);
                     std::process::exit(1);
+                }
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                } else {
+                    println!(
+                        "Normalized audio written to {}",
+                        result.output_file.display()
+                    );
+                    println!(
+                        "Measured: {:.1} LUFS, {:.1} dBTP",
+                        result.measured.integrated_lufs, result.measured.true_peak_dbtp
+                    );
+                }
+            } else {
+                match dcpdoctor_core::audio::measure_loudness(&audio_file) {
+                    Ok(result) => {
+                        if cli.json {
+                            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                        } else {
+                            println!("Integrated loudness: {:.1} LUFS", result.integrated_lufs);
+                            println!("True peak:           {:.1} dBTP", result.true_peak_dbtp);
+                            println!("Loudness range:      {:.1} LU", result.loudness_range_lu);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Loudness measurement failed: {e}");
+                        std::process::exit(1);
+                    }
                 }
             }
         }
@@ -780,45 +900,37 @@ fn main() {
             black_threshold,
             silence_threshold,
             clipping_threshold,
+            freeze_threshold,
         }) => {
             let mut findings = Vec::new();
 
             if let Some(ref video_path) = video {
-                let output = std::process::Command::new("ffmpeg")
-                    .arg("-i")
-                    .arg(video_path)
-                    .arg("-vf")
-                    .arg(format!("blackdetect=d=0.04:pix_th={black_threshold}"))
-                    .arg("-f")
-                    .arg("null")
-                    .arg("-")
-                    .output();
-
-                if let Ok(o) = output {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    let black_count = stderr.matches("black_start:").count();
-                    if black_count > 0 {
-                        findings.push(format!("Black frames detected: {black_count} segment(s)"));
+                match run_qc_ffmpeg(
+                    video_path,
+                    &format!("blackdetect=d=0.04:pix_th={black_threshold}"),
+                ) {
+                    Ok(stderr) => {
+                        let black_count = stderr.matches("black_start:").count();
+                        if black_count > 0 {
+                            findings
+                                .push(format!("Black frames detected: {black_count} segment(s)"));
+                        }
                     }
+                    Err(e) => findings.push(format!("Black-frame analysis failed: {e}")),
+                }
 
-                    let freeze_output = std::process::Command::new("ffmpeg")
-                        .arg("-i")
-                        .arg(video_path)
-                        .arg("-vf")
-                        .arg("freezedetect=n=-60dB:d=0.5")
-                        .arg("-f")
-                        .arg("null")
-                        .arg("-")
-                        .output();
-
-                    if let Ok(fo) = freeze_output {
-                        let stderr = String::from_utf8_lossy(&fo.stderr);
+                match run_qc_ffmpeg(
+                    video_path,
+                    &format!("freezedetect=n={freeze_threshold}:d=0.5"),
+                ) {
+                    Ok(stderr) => {
                         let freeze_count = stderr.matches("freeze_start:").count();
                         if freeze_count > 0 {
                             findings
                                 .push(format!("Freeze frames detected: {freeze_count} segment(s)"));
                         }
                     }
+                    Err(e) => findings.push(format!("Freeze-frame analysis failed: {e}")),
                 }
             }
 
@@ -1201,47 +1313,146 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::FacilityCheck {
+            dcp_dir,
+            strict,
+            no_hashes,
+            no_naming,
+        }) => {
+            let opts = dcpdoctor_core::facility_check::FacilityCheckOptions {
+                expected_standard: dcpdoctor_core::dcp::detect_standard(&dcp_dir),
+                dcp_dir,
+                strict,
+                check_naming: !no_naming,
+                check_hashes: !no_hashes,
+            };
+            let result = dcpdoctor_core::facility_check::run_facility_check(&opts);
+            if !result.error.is_empty() {
+                eprintln!("{}", result.error);
+                std::process::exit(1);
+            }
+            if cli.json {
+                println!(
+                    "{}",
+                    dcpdoctor_core::facility_check::facility_check_to_json(&result)
+                );
+            } else {
+                println!("Facility Check: {}", result.summary);
+                println!(
+                    "  {}/{} checks passed ({} errors, {} warnings)",
+                    result.checks_passed, result.checks_total, result.errors, result.warnings
+                );
+                for item in &result.items {
+                    if !item.passed {
+                        println!(
+                            "  [{}] {} / {}: {}",
+                            item.severity, item.category, item.check_name, item.detail
+                        );
+                    }
+                }
+                println!(
+                    "  Ready for delivery: {}",
+                    if result.ready { "YES" } else { "NO" }
+                );
+            }
+            if !result.ready {
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Conformance {
+            dcp_dir,
+            no_picture,
+            no_security,
+        }) => {
+            let opts = dcpdoctor_core::conformance::ConformanceOptions {
+                dcp_dir,
+                check_picture_profile: !no_picture,
+                check_security: !no_security,
+            };
+            let report = dcpdoctor_core::conformance::run_conformance_tests(&opts);
+            if !report.error.is_empty() {
+                eprintln!("{}", report.error);
+                std::process::exit(1);
+            }
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                println!("DCI Conformance: {}", report.content_title);
+                println!(
+                    "  {}/{} tests passed ({} failed)",
+                    report.tests_passed, report.total_tests, report.tests_failed
+                );
+                let all = report
+                    .structure_tests
+                    .iter()
+                    .chain(&report.cpl_tests)
+                    .chain(&report.picture_tests)
+                    .chain(&report.audio_tests)
+                    .chain(&report.security_tests);
+                for t in all {
+                    if !t.passed {
+                        println!(
+                            "  FAIL [{}] {}: {}",
+                            t.spec_reference, t.description, t.detail
+                        );
+                    }
+                }
+                println!(
+                    "  Conformant: {}",
+                    if report.conformant { "YES" } else { "NO" }
+                );
+            }
+            if !report.conformant {
+                std::process::exit(1);
+            }
+        }
         None => {
             if cli.dcp_dirs.is_empty() {
                 eprintln!("No DCP directories specified. Use --help for usage.");
                 std::process::exit(1);
             }
-            run_validate(
-                &cli.dcp_dirs,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-                None,
-                None,
-                format,
-                None,
-            );
+            let flags = ValidateFlags {
+                studio: cli.studio,
+                deep: cli.deep,
+                netflix: cli.netflix,
+                hdr: cli.hdr,
+                atmos: cli.atmos,
+                dolby_vision: cli.dolby_vision,
+                prores: cli.prores,
+                accessibility: cli.accessibility,
+                ..Default::default()
+            };
+            run_validate(&cli.dcp_dirs, flags, format);
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_validate(
-    dcp_dirs: &[PathBuf],
+#[derive(Default)]
+struct ValidateFlags {
     no_hashes: bool,
     no_signatures: bool,
     check_mxf: bool,
     strict: bool,
     deep_j2k: bool,
     studio: bool,
+    deep: bool,
+    netflix: bool,
+    hdr: bool,
+    atmos: bool,
+    dolby_vision: bool,
+    prores: bool,
+    accessibility: bool,
     timeline: Option<PathBuf>,
     manifest: Option<PathBuf>,
-    format: ReportFormat,
     output: Option<PathBuf>,
-) {
+}
+
+fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat) {
     let opts = dcpdoctor_core::VerifyOptions {
-        check_hashes: !no_hashes,
-        check_signatures: !no_signatures,
-        check_picture_details: check_mxf || deep_j2k,
-        strict_smpte: strict,
+        check_hashes: !flags.no_hashes,
+        check_signatures: !flags.no_signatures,
+        check_picture_details: flags.check_mxf || flags.deep_j2k,
+        strict_smpte: flags.strict,
     };
 
     let mut any_failed = false;
@@ -1251,7 +1462,7 @@ fn run_validate(
         let mut result = dcpdoctor_core::verify(dir, &opts);
 
         // Deep J2K validation
-        if deep_j2k {
+        if flags.deep_j2k {
             let j2k_notes = run_deep_j2k(dir);
             for note in j2k_notes {
                 result.add(note);
@@ -1259,7 +1470,7 @@ fn run_validate(
         }
 
         // Manifest comparison
-        if let Some(ref manifest_path) = manifest {
+        if let Some(ref manifest_path) = flags.manifest {
             let manifest_notes = check_manifest(dir, manifest_path);
             for note in manifest_notes {
                 result.add(note);
@@ -1267,11 +1478,16 @@ fn run_validate(
         }
 
         // Studio checks
-        if studio {
-            let studio_notes = dcpdoctor_core::studio::run_studio_checks(dir, deep_j2k);
+        if flags.studio {
+            let studio_notes = dcpdoctor_core::studio::run_studio_checks(dir, flags.deep);
             for note in studio_notes {
                 result.add(note);
             }
+        }
+
+        // Premium checks (Netflix, HDR, Atmos, Dolby Vision, ProRes, accessibility)
+        for note in run_premium_checks(dir, &flags) {
+            result.add(note);
         }
 
         if !result.ok() {
@@ -1279,7 +1495,7 @@ fn run_validate(
         }
 
         // Timeline SVG generation
-        if let Some(ref timeline_path) = timeline
+        if let Some(ref timeline_path) = flags.timeline
             && let Ok(dcp) = dcpdoctor_core::dcp::open_dcp(dir)
         {
             for (_cpl_path, cpl) in &dcp.cpls {
@@ -1301,7 +1517,7 @@ fn run_validate(
             result.ok(),
         ));
 
-        if let Some(ref output_path) = output {
+        if let Some(ref output_path) = flags.output {
             let mut file = std::fs::File::create(output_path).unwrap();
             dcpdoctor_core::report::write_report(&result, dir, &mut file, format).unwrap();
         } else {
@@ -1359,6 +1575,86 @@ fn run_deep_j2k(dcp_dir: &std::path::Path) -> Vec<dcpdoctor_core::Note> {
                 }
                 Err(_) => {
                     // Not a picture MXF or ffprobe unavailable; skip
+                }
+            }
+        }
+    }
+
+    notes
+}
+
+/// Run an ffmpeg detect filter and return its stderr, or an error on failure.
+fn run_qc_ffmpeg(video: &std::path::Path, filter: &str) -> Result<String, String> {
+    let output = std::process::Command::new("ffmpeg")
+        .arg("-i")
+        .arg(video)
+        .arg("-vf")
+        .arg(filter)
+        .arg("-f")
+        .arg("null")
+        .arg("-")
+        .output()
+        .map_err(|e| format!("failed to run ffmpeg: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail = stderr.trim().lines().last().unwrap_or("unknown error");
+        return Err(format!("ffmpeg exited with error: {tail}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stderr).into_owned())
+}
+
+/// List top-level MXF files in a directory.
+fn mxf_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("mxf"))
+        .collect()
+}
+
+/// Run premium delivery checks selected by validate flags.
+fn run_premium_checks(dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdoctor_core::Note> {
+    use dcpdoctor_core::premium;
+    let mut notes = Vec::new();
+
+    if flags.netflix {
+        let r = premium::check_netflix_delivery(dir);
+        notes.extend(premium::netflix_to_notes(&r, dir));
+    }
+    if flags.accessibility {
+        notes.extend(premium::check_accessibility(dir));
+    }
+
+    if flags.hdr || flags.atmos || flags.dolby_vision || flags.prores {
+        for mxf in mxf_files(dir) {
+            if flags.hdr {
+                let h = premium::detect_hdr_metadata(&mxf);
+                notes.extend(premium::check_hdr_compliance(&h, &mxf));
+            }
+            if flags.atmos {
+                let a = premium::parse_atmos_iab(&mxf);
+                notes.extend(premium::check_atmos_compliance(&a, &mxf));
+            }
+            if flags.dolby_vision {
+                let dv = premium::parse_dolby_vision(&mxf);
+                notes.extend(premium::check_dolby_vision_compliance(&dv, &mxf));
+            }
+            if flags.prores {
+                let p = premium::detect_prores(&mxf);
+                if p.detected {
+                    notes.push(dcpdoctor_core::Note {
+                        severity: dcpdoctor_core::Severity::Warning,
+                        code: dcpdoctor_core::Code::MxfInvalidStructure,
+                        message: format!(
+                            "ProRes essence detected ({}, {}x{}); DCI requires JPEG 2000",
+                            p.codec_variant, p.width, p.height
+                        ),
+                        file: Some(mxf.clone()),
+                        line: 0,
+                    });
                 }
             }
         }

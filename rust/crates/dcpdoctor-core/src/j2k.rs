@@ -42,10 +42,6 @@ pub struct J2kCodestreamInfo {
     pub frame_bytes: u64,
 }
 
-/// DCI Cinema profile requirements.
-const DCI_2K_MAX_BITRATE: u64 = 250_000_000; // 250 Mbps
-const DCI_4K_MAX_BITRATE: u64 = 500_000_000; // 500 Mbps
-
 /// Analyze a JPEG 2000 codestream file or extract from MXF.
 ///
 /// For direct .j2c files, reads the codestream header.
@@ -65,6 +61,11 @@ pub fn analyze_j2k(path: &Path) -> Result<J2kCodestreamInfo, String> {
 }
 
 /// Parse J2K codestream directly from a .j2c/.j2k file.
+///
+/// The SIZ-derived fields, profile (RSIZ), decomposition levels, layers and
+/// progression order come from postkit's header parser. Code-block size and the
+/// wavelet transform type aren't in postkit's J2kHeader, so we read those extra
+/// COD fields locally.
 fn parse_j2k_codestream(path: &Path) -> Result<J2kCodestreamInfo, String> {
     let data = std::fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
 
@@ -72,142 +73,79 @@ fn parse_j2k_codestream(path: &Path) -> Result<J2kCodestreamInfo, String> {
         return Err("File too small to be a J2K codestream".into());
     }
 
-    // Check for SOC marker (0xFF4F) — start of codestream
-    if data[0] != 0xFF || data[1] != 0x4F {
-        return Err("Missing SOC marker (not a valid J2K codestream)".into());
-    }
+    let hdr = postkit::j2k::parse_j2k_header(&data)
+        .ok_or("Missing SOC marker (not a valid J2K codestream)")?;
 
     let mut info = J2kCodestreamInfo {
+        rsiz: hdr.profile,
+        profile: rsiz_to_profile(hdr.profile),
+        width: hdr.width,
+        height: hdr.height,
+        components: hdr.num_components,
+        bit_depth: hdr.bit_depth,
+        decomposition_levels: hdr.num_decomp_levels,
+        layers: hdr.num_layers,
+        progression_order: progression_order_name(hdr.progression_order),
         frame_bytes: data.len() as u64,
         ..Default::default()
     };
 
-    let mut pos = 2;
-    while pos + 2 < data.len() {
-        let marker = u16::from_be_bytes([data[pos], data[pos + 1]]);
-        pos += 2;
-
-        match marker {
-            0xFF51 => {
-                // SIZ marker
-                if pos + 2 >= data.len() {
-                    break;
-                }
-                let seg_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
-                if pos + seg_len > data.len() {
-                    break;
-                }
-                parse_siz_marker(&data[pos + 2..pos + seg_len], &mut info);
-                pos += seg_len;
-            }
-            0xFF52 => {
-                // COD marker
-                if pos + 2 >= data.len() {
-                    break;
-                }
-                let seg_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
-                if pos + seg_len > data.len() {
-                    break;
-                }
-                parse_cod_marker(&data[pos + 2..pos + seg_len], &mut info);
-                pos += seg_len;
-            }
-            0xFF93 => {
-                // SOD — start of data, stop parsing headers
-                break;
-            }
-            0xFF90 | 0xFF91 => {
-                // SOT or SOP — stop for simplicity
-                break;
-            }
-            _ => {
-                // Skip unknown marker segment
-                if pos + 2 > data.len() {
-                    break;
-                }
-                if (0xFF30..=0xFF3F).contains(&marker) {
-                    // No length field for these markers
-                    continue;
-                }
-                let seg_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
-                pos += seg_len;
-            }
-        }
-    }
-
-    // Determine profile name from RSIZ
-    info.profile = rsiz_to_profile(info.rsiz);
+    parse_cod_extras(&data, &mut info);
 
     Ok(info)
 }
 
-fn parse_siz_marker(data: &[u8], info: &mut J2kCodestreamInfo) {
-    if data.len() < 36 {
-        return;
-    }
+/// Read the COD fields postkit's header parser doesn't expose: code-block size
+/// exponents and the wavelet transform type. Marker walk mirrors postkit's.
+fn parse_cod_extras(data: &[u8], info: &mut J2kCodestreamInfo) {
+    const SOT: u16 = 0xFF90;
+    const SOD: u16 = 0xFF93;
+    const COD: u16 = 0xFF52;
+    const EOC: u16 = 0xFFD9;
 
-    // RSIZ: bytes 0-1
-    info.rsiz = u16::from_be_bytes([data[0], data[1]]);
+    let mut pos = 2; // skip SOC
+    while pos + 2 < data.len() {
+        let marker = u16::from_be_bytes([data[pos], data[pos + 1]]);
+        pos += 2;
 
-    // Xsiz (width): bytes 2-5
-    info.width = u32::from_be_bytes([data[2], data[3], data[4], data[5]]);
+        if marker == SOD || marker == EOC || marker == SOT {
+            break;
+        }
+        if pos + 2 > data.len() {
+            break;
+        }
+        let seg_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2;
+        if seg_len < 2 || pos + seg_len - 2 > data.len() {
+            break;
+        }
+        let seg = &data[pos..pos + seg_len - 2];
 
-    // Ysiz (height): bytes 6-9
-    info.height = u32::from_be_bytes([data[6], data[7], data[8], data[9]]);
+        if marker == COD {
+            if seg.len() > 6 {
+                info.codeblock_width_exp = seg[6];
+            }
+            if seg.len() > 7 {
+                info.codeblock_height_exp = seg[7];
+            }
+            if seg.len() > 9 {
+                // 0 = 9-7 irreversible, 1 = 5-3 reversible
+                info.irreversible_transform = seg[9] == 0;
+            }
+        }
 
-    // XOsiz, YOsiz: 10-17 (offsets, skip)
-    // XTsiz, YTsiz: 18-25 (tile sizes, skip)
-    // XTOsiz, YTOsiz: 26-33 (tile offsets, skip)
-
-    // Csiz (number of components): bytes 34-35
-    info.components = u16::from_be_bytes([data[34], data[35]]);
-
-    // Component parameters start at byte 36
-    // Each component: Ssiz(1) + XRsiz(1) + YRsiz(1) = 3 bytes
-    if data.len() > 36 {
-        let ssiz = data[36];
-        // Bit depth = (Ssiz & 0x7F) + 1
-        info.bit_depth = (ssiz & 0x7F) + 1;
+        pos += seg_len - 2;
     }
 }
 
-fn parse_cod_marker(data: &[u8], info: &mut J2kCodestreamInfo) {
-    if data.len() < 10 {
-        return;
-    }
-
-    // Scod (coding style): byte 0
-    // SGcod: bytes 1-4
-    //   Progression order: byte 1
-    info.progression_order = match data[1] {
+fn progression_order_name(po: u8) -> String {
+    match po {
         0 => "LRCP".into(),
         1 => "RLCP".into(),
         2 => "RPCL".into(),
         3 => "PCRL".into(),
         4 => "CPRL".into(),
-        _ => format!("Unknown({})", data[1]),
-    };
-
-    //   Number of layers: bytes 2-3
-    info.layers = u16::from_be_bytes([data[2], data[3]]);
-
-    // SPcod starts at byte 5
-    if data.len() > 5 {
-        // Number of decomposition levels: byte 5
-        info.decomposition_levels = data[5];
-    }
-    if data.len() > 6 {
-        // Code-block width exponent: byte 6
-        info.codeblock_width_exp = data[6];
-    }
-    if data.len() > 7 {
-        // Code-block height exponent: byte 7
-        info.codeblock_height_exp = data[7];
-    }
-    if data.len() > 9 {
-        // Wavelet transform type: byte 9
-        // 0 = 9-7 irreversible, 1 = 5-3 reversible
-        info.irreversible_transform = data[9] == 0;
+        n => format!("Unknown({n})"),
     }
 }
 
@@ -352,11 +290,8 @@ pub fn validate_j2k_dci(info: &J2kCodestreamInfo) -> Vec<Note> {
 
     // Bitrate check
     if info.frame_bytes > 0 && info.width > 0 {
-        let max_bitrate_bps = if info.width > 2048 {
-            DCI_4K_MAX_BITRATE
-        } else {
-            DCI_2K_MAX_BITRATE
-        };
+        let max_bitrate_mbps = postkit::j2k::dci_max_bitrate_mbps(info.width);
+        let max_bitrate_bps = (max_bitrate_mbps * 1_000_000.0) as u64;
         // At 24fps, one frame max = max_bitrate / 24 / 8 bytes
         let max_frame_bytes_24 = max_bitrate_bps / 24 / 8;
         if info.frame_bytes > max_frame_bytes_24 {
@@ -365,9 +300,7 @@ pub fn validate_j2k_dci(info: &J2kCodestreamInfo) -> Vec<Note> {
                 Code::J2kBitrateExceeded,
                 format!(
                     "Frame size {} bytes implies {:.1} Mbps at 24fps (max {} Mbps)",
-                    info.frame_bytes,
-                    actual_bitrate_mbps,
-                    max_bitrate_bps / 1_000_000
+                    info.frame_bytes, actual_bitrate_mbps, max_bitrate_mbps as u64
                 ),
             ));
         }

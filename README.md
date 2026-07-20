@@ -496,6 +496,32 @@ dcpdoctor --atmos /path/to/dcp
 
 # Accessibility track validation (AD/HI/CC)
 dcpdoctor --accessibility /path/to/dcp
+
+# Dolby Vision metadata detection and compliance
+dcpdoctor --dolby-vision /path/to/dcp
+
+# ProRes essence detection (non-DCI)
+dcpdoctor --prores /path/to/dcp
+```
+
+### Facility Check
+
+```bash
+# Pre-delivery readiness check for theater ingest
+dcpdoctor facility-check /path/to/dcp
+
+# Strict, skip hashing and naming checks
+dcpdoctor facility-check /path/to/dcp --strict --no-hashes --no-naming
+```
+
+### DCI Conformance
+
+```bash
+# Run the DCI conformance test suite
+dcpdoctor conformance /path/to/dcp
+
+# Skip picture-profile or security tests
+dcpdoctor conformance /path/to/dcp --no-picture --no-security
 ```
 
 ## Desktop GUI (Tauri)

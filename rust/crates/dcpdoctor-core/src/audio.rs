@@ -219,6 +219,11 @@ pub fn measure_loudness(audio_path: &Path) -> Result<LoudnessResult, String> {
         .or_else(|| parse_loudness_value(&stderr, "Loudness range:"))
         .unwrap_or(f64::NAN);
 
+    // nothing parsed means ffmpeg failed to open the file or lacks ebur128; don't report NaN as success
+    if integrated.is_nan() && true_peak.is_nan() && lra.is_nan() {
+        return Err("Failed to measure loudness (ffmpeg produced no ebur128 output)".to_string());
+    }
+
     Ok(LoudnessResult {
         integrated_lufs: integrated,
         true_peak_dbtp: true_peak,

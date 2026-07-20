@@ -1,5 +1,4 @@
-/// XML schema validation.
-/// Requires xerces-c equivalent — placeholder for now.
+/// XML schema validation via the system xmllint tool.
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

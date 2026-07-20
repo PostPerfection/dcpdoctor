@@ -44,7 +44,6 @@ pub mod server;
 pub mod signature;
 pub mod studio;
 pub mod subtitle;
-pub mod theater;
 pub mod timeline;
 pub mod validate;
 pub mod validators;

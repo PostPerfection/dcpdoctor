@@ -235,8 +235,15 @@ pub fn compare_files(file_a: &Path, file_b: &Path, opts: &CompareOptions) -> Com
 
         let vmaf_out = run_cmd("ffmpeg", &vmaf_args.to_vec());
         let vmaf_re = regex_lite::Regex::new(r"VMAF score:\s*([\d.]+)").unwrap();
-        if let Some(cap) = vmaf_re.captures(&vmaf_out) {
-            result.vmaf_score = cap[1].parse().unwrap_or(0.0);
+        match vmaf_re.captures(&vmaf_out) {
+            Some(cap) => result.vmaf_score = cap[1].parse().unwrap_or(0.0),
+            None => {
+                // no score means ffmpeg lacks libvmaf or the run failed; don't pass silently
+                result.error =
+                    "VMAF requested but ffmpeg produced no score (libvmaf missing or ffmpeg run failed)"
+                        .into();
+                return result;
+            }
         }
     }
 

@@ -205,6 +205,28 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         }
     }
 
+    // 4b. Validate subtitle assets referenced by CPL reels
+    for (_cpl_path, cpl) in &dcp.cpls {
+        for reel in &cpl.reels {
+            if reel.subtitle.id.is_empty() {
+                continue;
+            }
+            if let Some(&asset_path) = id_to_path.get(reel.subtitle.id.as_str()) {
+                let full_path = dcp_dir.join(asset_path);
+                // SMPTE subtitles are usually MXF-wrapped; only the plain-XML form is inspectable here
+                let is_xml = full_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("xml"));
+                if is_xml && full_path.exists() {
+                    for note in crate::subtitle::validate_subtitle(&full_path, dcp.standard) {
+                        result.add(note);
+                    }
+                }
+            }
+        }
+    }
+
     // 5. MXF validation (if picture details requested)
     if opts.check_picture_details {
         for asset in &dcp.assetmap.assets {
@@ -361,6 +383,73 @@ mod tests {
         assert!(!result.notes.iter().any(|note| {
             note.message.contains("IMF Composition Playlist") || note.message.contains("[Photon]")
         }));
+    }
+
+    #[test]
+    fn subtitle_asset_referenced_by_cpl_is_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub_id = "11111111-2222-3333-4444-555555555555";
+
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+    <Asset><Id>urn:uuid:{sub_id}</Id>
+      <ChunkList><Chunk><Path>sub.xml</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#
+            ),
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:96558952-39b8-42d3-825e-9ddd31298219</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><Duration>48</Duration></MainPicture>
+      <MainSubtitle><Id>urn:uuid:{sub_id}</Id><Duration>48</Duration></MainSubtitle>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+
+        // TimeIn after TimeOut -> must surface as a SubtitleInvalidTiming error
+        std::fs::write(
+            dir.path().join("sub.xml"),
+            r#"<?xml version="1.0"?>
+<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:Id>urn:uuid:22222222-2222-3333-4444-555555555555</dcst:Id>
+  <dcst:ReelNumber>1</dcst:ReelNumber>
+  <dcst:Language>en</dcst:Language>
+  <dcst:LoadFont ID="f">urn:uuid:aaaa</dcst:LoadFont>
+  <dcst:SubtitleList>
+    <dcst:Subtitle SpotNumber="1" TimeIn="00:00:07:000" TimeOut="00:00:05:000"/>
+  </dcst:SubtitleList>
+</dcst:SubtitleReel>"#,
+        )
+        .unwrap();
+
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleInvalidTiming),
+            "expected subtitle timing note from pipeline, got: {:?}",
+            result.notes
+        );
     }
 
     #[test]

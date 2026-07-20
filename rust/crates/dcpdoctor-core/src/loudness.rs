@@ -1,4 +1,7 @@
-//! EBU R128 loudness measurement and normalization via ffmpeg.
+//! EBU R128 loudness measurement and normalization.
+//!
+//! Measurement delegates to postkit::loudness; normalization stays here since
+//! postkit has no loudnorm-write helper.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,54 +37,33 @@ pub struct NormalizeResult {
     pub measured: LoudnessResult,
 }
 
-/// Measure integrated loudness of an audio file using ffmpeg ebur128.
+/// Measure integrated loudness of an audio file (delegates to postkit).
 pub fn measure_loudness(audio_file: &Path) -> LoudnessResult {
-    let mut result = LoudnessResult::default();
-
     if !audio_file.exists() {
-        result.error = "Audio file not found".into();
-        return result;
+        return LoudnessResult {
+            error: "Audio file not found".into(),
+            ..Default::default()
+        };
     }
 
-    let output = Command::new("ffmpeg")
-        .args([
-            "-i",
-            &audio_file.to_string_lossy(),
-            "-af",
-            "ebur128=peak=true",
-            "-f",
-            "null",
-            "-",
-        ])
-        .output();
-
-    let stderr = match output {
-        Ok(o) => String::from_utf8_lossy(&o.stderr).into_owned(),
-        Err(e) => {
-            result.error = format!("ffmpeg failed: {e}");
-            return result;
-        }
-    };
-
-    let integrated_re = regex_lite::Regex::new(r"I:\s*([-\d.]+)\s*LUFS").unwrap();
-    let range_re = regex_lite::Regex::new(r"LRA:\s*([-\d.]+)\s*LU").unwrap();
-    let peak_re = regex_lite::Regex::new(r"Peak:\s*([-\d.]+)\s*dBFS").unwrap();
-
-    if let Some(cap) = integrated_re.captures(&stderr) {
-        result.integrated_lufs = cap[1].parse().unwrap_or(0.0);
-    }
-    if let Some(cap) = range_re.captures(&stderr) {
-        result.loudness_range_lu = cap[1].parse().unwrap_or(0.0);
-    }
-    if let Some(cap) = peak_re.captures(&stderr) {
-        result.true_peak_dbtp = cap[1].parse().unwrap_or(0.0);
+    let pk = postkit::loudness::measure_loudness(audio_file);
+    if !pk.success {
+        return LoudnessResult {
+            error: pk.error,
+            ..Default::default()
+        };
     }
 
-    result.compliant_r128 = result.integrated_lufs >= -24.0 && result.integrated_lufs <= -22.0;
-    result.compliant_atsc = result.integrated_lufs >= -26.0 && result.integrated_lufs <= -22.0;
-
-    result.success = true;
-    result
+    let integrated_lufs = pk.integrated_lufs;
+    LoudnessResult {
+        success: true,
+        error: String::new(),
+        integrated_lufs,
+        loudness_range_lu: pk.range_lu,
+        true_peak_dbtp: pk.true_peak_dbtp,
+        compliant_r128: (-24.0..=-22.0).contains(&integrated_lufs),
+        compliant_atsc: (-26.0..=-22.0).contains(&integrated_lufs),
+    }
 }
 
 /// Normalize audio loudness to target LUFS using ffmpeg loudnorm.
