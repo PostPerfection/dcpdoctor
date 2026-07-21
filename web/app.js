@@ -20,7 +20,14 @@ const pickBtn = document.getElementById('pick-btn');
 const queueSection = document.getElementById('queue-section');
 const queueBody = document.getElementById('queue-body');
 const addMoreBtn = document.getElementById('add-more-btn');
+const ovBtn = document.getElementById('ov-btn');
+const ovStatus = document.getElementById('ov-status');
 const tooltip = document.getElementById('detail-tooltip');
+
+// OV package asset ids, extracted from the OV ASSETMAP. When set, they let a
+// supplemental (VF) package resolve its cross-package references in the browser
+// (via the wasm validate_imf_supplemental binding, applied in the worker).
+let ovAssetIds = [];
 const detailPanel = document.getElementById('detail-panel');
 const detailTitle = document.getElementById('detail-title');
 const detailContent = document.getElementById('detail-content');
@@ -47,6 +54,87 @@ fileInput.addEventListener('change', async () => {
     await enqueueFromFileList(fileInput.files);
     fileInput.value = '';
 });
+
+// === OV folder picker (optional, for supplemental packages) ===
+const ovInput = document.createElement('input');
+ovInput.type = 'file';
+ovInput.setAttribute('webkitdirectory', '');
+ovInput.setAttribute('directory', '');
+ovInput.style.display = 'none';
+document.body.appendChild(ovInput);
+
+ovInput.addEventListener('change', () => {
+    if (ovInput.files.length === 0) return;
+    const amFile = [...ovInput.files].find(f => {
+        const name = (f.webkitRelativePath || f.name).split('/').pop();
+        return ASSETMAP_NAMES.includes(name);
+    });
+    const label = ovInput.files[0]?.webkitRelativePath?.split('/')[0] || 'OV';
+    if (amFile) {
+        amFile.text().then(t => setOv(label, extractAssetMapIds(t)));
+    } else {
+        setOv(label, []);
+    }
+    ovInput.value = '';
+});
+
+ovBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (ovAssetIds.length > 0) { clearOv(); return; }
+    try {
+        if ('showDirectoryPicker' in window) {
+            const dirHandle = await window.showDirectoryPicker();
+            const ids = await readOvIdsFromHandle(dirHandle);
+            setOv(dirHandle.name, ids);
+        } else {
+            ovInput.click();
+        }
+    } catch (err) {
+        if (err.name !== 'AbortError') console.error(err);
+    }
+});
+
+// Pull every urn:uuid id out of an ASSETMAP so OV asset ids can be resolved.
+function extractAssetMapIds(xml) {
+    const ids = new Set();
+    const re = /urn:uuid:[0-9a-fA-F-]{36}/g;
+    let m;
+    while ((m = re.exec(xml)) !== null) ids.add(m[0]);
+    return [...ids];
+}
+
+// Find the ASSETMAP in an OV directory handle (one level of subdirs) and read ids.
+async function readOvIdsFromHandle(handle) {
+    for await (const [name, entry] of handle.entries()) {
+        if (entry.kind === 'file' && ASSETMAP_NAMES.includes(name)) {
+            const file = await entry.getFile();
+            return extractAssetMapIds(await file.text());
+        }
+    }
+    for await (const [, entry] of handle.entries()) {
+        if (entry.kind === 'directory') {
+            const ids = await readOvIdsFromHandle(entry);
+            if (ids.length) return ids;
+        }
+    }
+    return [];
+}
+
+function setOv(name, ids) {
+    ovAssetIds = ids;
+    ovStatus.textContent = ids.length > 0
+        ? `OV: ${name} (${ids.length} assets)`
+        : `OV: ${name} (no ASSETMAP found)`;
+    ovStatus.classList.remove('hidden');
+    ovBtn.textContent = 'Clear OV';
+}
+
+function clearOv() {
+    ovAssetIds = [];
+    ovStatus.classList.add('hidden');
+    ovStatus.textContent = '';
+    ovBtn.textContent = '+ OV';
+}
 
 // === Event Listeners ===
 
@@ -358,7 +446,7 @@ function startValidation(item) {
         if (f.file) binaryFiles[f.path] = f.file;
     }
 
-    worker.postMessage({ type: 'validate', id: item.id, files: filesForWasm, binaryFiles });
+    worker.postMessage({ type: 'validate', id: item.id, files: filesForWasm, binaryFiles, ovAssetIds });
 }
 
 function cancelItem(id) {

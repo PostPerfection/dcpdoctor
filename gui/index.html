@@ -134,45 +134,13 @@
 
       <section class="preferences-section hidden" id="preferences-section">
         <h2>Preferences</h2>
+        <p class="prefs-note">Applied to every validation run.</p>
         <form id="preferences-form">
           <div class="field">
-            <label for="pref-standard">Default Standard</label>
-            <select id="pref-standard">
-              <option value="SMPTE">SMPTE</option>
-              <option value="Interop">Interop</option>
-            </select>
+            <label><input type="checkbox" id="pref-hashes" checked> Verify asset hashes</label>
           </div>
           <div class="field">
-            <label><input type="checkbox" id="pref-hashes" checked> Verify Hashes</label>
-          </div>
-          <div class="field">
-            <label><input type="checkbox" id="pref-schemas" checked> Verify Schemas</label>
-          </div>
-          <div class="field">
-            <label><input type="checkbox" id="pref-bitrate" checked> Check Bitrate</label>
-          </div>
-          <div class="field">
-            <label><input type="checkbox" id="pref-loudness" checked> Check Loudness</label>
-          </div>
-          <div class="field">
-            <label for="pref-max-bitrate">Max Bitrate (Mbps)</label>
-            <input type="number" id="pref-max-bitrate" value="250" min="50" max="500">
-          </div>
-          <div class="field">
-            <label for="pref-report-format">Report Format</label>
-            <select id="pref-report-format">
-              <option value="html">HTML</option>
-              <option value="json">JSON</option>
-              <option value="text">Plain Text</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="pref-output-dir">Default Output Directory</label>
-            <input type="text" id="pref-output-dir" placeholder="/path/to/reports">
-          </div>
-          <div class="field">
-            <label for="pref-schema-dir">Schema Directory (XSD)</label>
-            <input type="text" id="pref-schema-dir" placeholder="/path/to/schemas">
+            <label><input type="checkbox" id="pref-check-mxf"> Inspect MXF essence (bitrate, sound, resolution)</label>
           </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary">Save</button>

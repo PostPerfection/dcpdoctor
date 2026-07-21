@@ -130,6 +130,17 @@ main {
     background: rgba(255,255,255,0.12);
 }
 
+.queue-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.ov-status {
+    font-size: 0.85rem;
+    color: var(--text-dim, #9aa0aa);
+}
+
 /* Queue table */
 .queue-table {
     width: 100%;

@@ -1,7 +1,6 @@
 pub mod advanced;
 pub mod assetmap;
 pub mod audio;
-pub mod auto_qc;
 pub mod av_sync;
 pub mod bitrate;
 pub mod cert_rules;
@@ -9,7 +8,6 @@ pub mod checksum_verify;
 pub mod compliance;
 pub mod conformance;
 pub mod cpl;
-pub mod dci_ctp;
 pub mod dcp;
 pub mod diff;
 pub mod facility_check;
@@ -25,7 +23,6 @@ pub mod info;
 pub mod isdcf;
 pub mod j2k;
 pub mod kdm;
-pub mod kdm_advanced;
 pub mod loudness;
 pub mod mxf;
 pub mod mxf_advanced;
@@ -35,7 +32,6 @@ pub mod photon;
 pub mod pkl;
 pub mod premium;
 pub mod profiles;
-pub mod qc;
 pub mod qc_report;
 pub mod report;
 pub mod schema;
@@ -89,6 +85,7 @@ pub enum Code {
 
     // PKL
     PklHashMismatch,
+    PklSizeMismatch,
     PklMissingAssetReference,
 
     // CPL
@@ -132,6 +129,8 @@ pub enum Code {
     // Sound
     SoundInvalidSampleRate,
     SoundInvalidChannelCount,
+    SoundInvalidQuantization,
+    SoundInvalidBlockAlign,
     SoundClipping,
     SoundSilent,
 
@@ -166,6 +165,13 @@ pub enum Code {
     // Supplemental DCP
     SupplementalOplMissing,
     SupplementalOvNotProvided,
+
+    // Auxiliary data (ST 429-18, e.g. Dolby Atmos IAB)
+    AuxDataDetected,
+
+    // Package hygiene
+    ForeignFileInPackage,
+    EmptyFileInPackage,
 }
 
 impl Code {
@@ -181,6 +187,7 @@ impl Code {
             Code::InvalidUuid => "invalid_uuid",
             Code::MissingRequiredElement => "missing_required_element",
             Code::PklHashMismatch => "pkl_hash_mismatch",
+            Code::PklSizeMismatch => "pkl_size_mismatch",
             Code::PklMissingAssetReference => "pkl_missing_asset_reference",
             Code::CplInvalidDuration => "cpl_invalid_duration",
             Code::CplMismatchedDurations => "cpl_mismatched_durations",
@@ -210,6 +217,8 @@ impl Code {
             Code::J2kInvalidComponentCount => "j2k_invalid_component_count",
             Code::SoundInvalidSampleRate => "sound_invalid_sample_rate",
             Code::SoundInvalidChannelCount => "sound_invalid_channel_count",
+            Code::SoundInvalidQuantization => "sound_invalid_quantization",
+            Code::SoundInvalidBlockAlign => "sound_invalid_block_align",
             Code::SoundClipping => "sound_clipping",
             Code::SoundSilent => "sound_silent",
             Code::SubtitleParseError => "subtitle_parse_error",
@@ -228,6 +237,9 @@ impl Code {
             Code::CrossRefBroken => "cross_ref_broken",
             Code::SupplementalOplMissing => "supplemental_opl_missing",
             Code::SupplementalOvNotProvided => "supplemental_ov_not_provided",
+            Code::AuxDataDetected => "aux_data_detected",
+            Code::ForeignFileInPackage => "foreign_file_in_package",
+            Code::EmptyFileInPackage => "empty_file_in_package",
         }
     }
 }

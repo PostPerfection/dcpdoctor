@@ -260,3 +260,46 @@ fn find_cpl_id_in_dcp(dcp_dir: &Path, cpl_id: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_kdm(before: &str, after: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"<?xml version="1.0"?>
+<KeyDeliveryMessage>
+  <CompositionPlaylistId>urn:uuid:96558952-39b8-42d3-825e-9ddd31298219</CompositionPlaylistId>
+  <ContentKeysNotValidBefore>{before}</ContentKeysNotValidBefore>
+  <ContentKeysNotValidAfter>{after}</ContentKeysNotValidAfter>
+</KeyDeliveryMessage>"#
+        )
+        .unwrap();
+        f
+    }
+
+    #[test]
+    fn future_window_emits_not_yet_valid() {
+        let f = write_kdm("2099-01-01T00:00:00+00:00", "2100-01-01T00:00:00+00:00");
+        let notes = validate_kdm(f.path(), None);
+        assert!(
+            notes.iter().any(|n| n.code == Code::KdmNotYetValid),
+            "got: {notes:?}"
+        );
+        assert!(!notes.iter().any(|n| n.code == Code::KdmExpired));
+    }
+
+    #[test]
+    fn past_window_emits_expired() {
+        let f = write_kdm("2000-01-01T00:00:00+00:00", "2001-01-01T00:00:00+00:00");
+        let notes = validate_kdm(f.path(), None);
+        assert!(
+            notes.iter().any(|n| n.code == Code::KdmExpired),
+            "got: {notes:?}"
+        );
+        assert!(!notes.iter().any(|n| n.code == Code::KdmNotYetValid));
+    }
+}

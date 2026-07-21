@@ -6,19 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use postkit::loudness::LoudnessResult;
 use serde::Serialize;
-
-/// Result of a loudness measurement.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct LoudnessResult {
-    pub success: bool,
-    pub error: String,
-    pub integrated_lufs: f64,
-    pub loudness_range_lu: f64,
-    pub true_peak_dbtp: f64,
-    pub compliant_r128: bool,
-    pub compliant_atsc: bool,
-}
 
 /// Options for loudness normalization.
 pub struct NormalizeOptions {
@@ -45,25 +34,7 @@ pub fn measure_loudness(audio_file: &Path) -> LoudnessResult {
             ..Default::default()
         };
     }
-
-    let pk = postkit::loudness::measure_loudness(audio_file);
-    if !pk.success {
-        return LoudnessResult {
-            error: pk.error,
-            ..Default::default()
-        };
-    }
-
-    let integrated_lufs = pk.integrated_lufs;
-    LoudnessResult {
-        success: true,
-        error: String::new(),
-        integrated_lufs,
-        loudness_range_lu: pk.range_lu,
-        true_peak_dbtp: pk.true_peak_dbtp,
-        compliant_r128: (-24.0..=-22.0).contains(&integrated_lufs),
-        compliant_atsc: (-26.0..=-22.0).contains(&integrated_lufs),
-    }
+    postkit::loudness::measure_loudness(audio_file)
 }
 
 /// Normalize audio loudness to target LUFS using ffmpeg loudnorm.

@@ -1560,6 +1560,46 @@ struct ValidateFlags {
     output: Option<PathBuf>,
 }
 
+/// The --studio ffprobe checks re-cover a couple of findings the core path
+/// already reports from CPL declarations. When a deep studio note is present,
+/// drop the superseded core note so the finding shows once, then recount.
+fn suppress_core_studio_overlap(
+    result: &mut dcpdoctor_core::VerifyResult,
+    studio: &[dcpdoctor_core::Note],
+) {
+    use dcpdoctor_core::{Code, Severity};
+    let studio_has = |needle: &str| studio.iter().any(|n| n.message.contains(needle));
+
+    // studio "Mixed encryption" reads actual MXF essence state; it supersedes the
+    // core reel-coherence note derived from CPL KeyId presence.
+    let drop_enc = studio_has("Mixed encryption");
+    // studio stereo eye checks (ffprobe frame counts) supersede the core
+    // StereoMismatch structural note.
+    let drop_stereo = studio_has("Stereoscopic eye") || studio_has("missing left eye")
+        || studio_has("missing right eye");
+
+    if !drop_enc && !drop_stereo {
+        return;
+    }
+
+    result.notes.retain(|n| {
+        let enc_dup = drop_enc && n.code == Code::ReelIncoherent && n.message.contains("encryption");
+        let stereo_dup = drop_stereo && n.code == Code::StereoMismatch;
+        !enc_dup && !stereo_dup
+    });
+
+    result.error_count = result
+        .notes
+        .iter()
+        .filter(|n| n.severity == Severity::Error)
+        .count() as u32;
+    result.warning_count = result
+        .notes
+        .iter()
+        .filter(|n| n.severity == Severity::Warning)
+        .count() as u32;
+}
+
 fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat) {
     let opts = dcpdoctor_core::VerifyOptions {
         check_hashes: !flags.no_hashes,
@@ -1626,9 +1666,12 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
             }
         }
 
-        // Studio checks
+        // Studio checks. The ffprobe essence-level checks supersede a couple of
+        // the lighter CPL-declaration notes from the core path, so drop those
+        // superseded core notes before appending to avoid a duplicate per finding.
         if flags.studio {
             let studio_notes = dcpdoctor_core::studio::run_studio_checks(dir, flags.deep);
+            suppress_core_studio_overlap(&mut result, &studio_notes);
             for note in studio_notes {
                 result.add(note);
             }
@@ -1914,4 +1957,43 @@ fn check_manifest(
     }
 
     notes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dcpdoctor_core::{Code, Note, VerifyResult};
+
+    #[test]
+    fn studio_mixed_encryption_suppresses_core_encryption_incoherence() {
+        let mut result = VerifyResult::default();
+        result.add(Note::error(
+            Code::ReelIncoherent,
+            "Reel 2 picture encryption 'clear' is not coherent with earlier reels ('encrypted')",
+        ));
+        result.add(Note::error(Code::CplMissingReel, "unrelated"));
+        let studio = vec![Note::error(
+            Code::MxfInvalidStructure,
+            "Mixed encryption: 2 encrypted + 1 unencrypted assets",
+        )];
+        suppress_core_studio_overlap(&mut result, &studio);
+        assert!(
+            !result.notes.iter().any(|n| n.code == Code::ReelIncoherent),
+            "core encryption-coherence note should be suppressed by the deep studio note"
+        );
+        assert!(result.notes.iter().any(|n| n.code == Code::CplMissingReel));
+        assert_eq!(result.error_count, 1);
+    }
+
+    #[test]
+    fn no_studio_deep_note_keeps_core_notes() {
+        let mut result = VerifyResult::default();
+        result.add(Note::error(
+            Code::ReelIncoherent,
+            "Reel 2 picture encryption 'clear' is not coherent",
+        ));
+        suppress_core_studio_overlap(&mut result, &[]);
+        assert!(result.notes.iter().any(|n| n.code == Code::ReelIncoherent));
+        assert_eq!(result.error_count, 1);
+    }
 }

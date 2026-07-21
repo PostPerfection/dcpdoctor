@@ -4,7 +4,11 @@
 // Phase 2: Streaming hash verification of binary files
 // Phase 3: MXF header inspection (picture/sound descriptor validation)
 
-import init, { validate_dcp, Sha1Hasher, validate_mxf_file } from './pkg/dcpdoctor_wasm.js';
+import init, { validate_dcp, Sha1Hasher, validate_mxf_file, validate_imf_supplemental } from './pkg/dcpdoctor_wasm.js';
+
+// cross-ref notes that OV resolution supersedes for a supplemental CPL
+const OV_REF_CODES = new Set(['cross_ref_broken', 'supplemental_ov_not_provided']);
+const ASSETMAP_NAMES = new Set(['ASSETMAP.xml', 'ASSETMAP']);
 
 let wasmReady = false;
 
@@ -12,7 +16,7 @@ const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB chunks for hashing
 const MXF_HEADER_SIZE = 2 * 1024 * 1024; // Read first 2 MB of MXF for header + first J2K frame
 
 self.onmessage = async (e) => {
-    const { type, id, files, binaryFiles } = e.data;
+    const { type, id, files, binaryFiles, ovAssetIds } = e.data;
 
     if (type === 'validate') {
         try {
@@ -27,6 +31,25 @@ self.onmessage = async (e) => {
             const filesJson = JSON.stringify(files);
             const resultJson = validate_dcp(filesJson);
             const result = JSON.parse(resultJson);
+
+            // Phase 1b: OV-aware supplemental resolution. When an OV package's
+            // asset ids are supplied, re-resolve each IMF CPL's cross-package
+            // references against the OV so a VF no longer false-fails as broken.
+            if (ovAssetIds && ovAssetIds.length > 0) {
+                const amEntry = files.find(f => f.content && ASSETMAP_NAMES.has((f.path.split('/').pop() || f.path)));
+                const assetmapXml = amEntry ? amEntry.content : '';
+                const ovIdsJson = JSON.stringify(ovAssetIds);
+                for (const f of files) {
+                    if (!f.content || !f.content.includes('CompositionPlaylist') || !f.content.includes('2067')) continue;
+                    const ovNotes = JSON.parse(validate_imf_supplemental(f.content, assetmapXml, ovIdsJson, f.path));
+                    // replace the non-OV ref notes for this CPL with the OV-aware ones
+                    result.notes = result.notes.filter(n => !(n.file === f.path && OV_REF_CODES.has(n.code)));
+                    for (const n of ovNotes) {
+                        if (OV_REF_CODES.has(n.code)) result.notes.push(n);
+                    }
+                }
+                result.valid = !result.notes.some(n => n.severity === 'error');
+            }
 
             // Phase 2: Hash verification for binary files
             const assetHashes = result.asset_hashes || {};

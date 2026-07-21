@@ -97,6 +97,29 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 result.add(note);
             }
         }
+        // Verify PKL asset sizes (cheap, so not gated on check_hashes)
+        for pkl_asset in &pkl.assets {
+            if let Some(&asset_path) = id_to_path.get(pkl_asset.id.as_str()) {
+                let full_path = dcp_dir.join(asset_path);
+                if pkl_asset.size > 0
+                    && let Ok(meta) = std::fs::metadata(&full_path)
+                    && meta.len() != pkl_asset.size as u64
+                {
+                    result.add(Note {
+                        severity: Severity::Error,
+                        code: Code::PklSizeMismatch,
+                        message: format!(
+                            "Size mismatch for {} (PKL says {}, file is {})",
+                            asset_path,
+                            pkl_asset.size,
+                            meta.len()
+                        ),
+                        file: Some(full_path),
+                        line: 0,
+                    });
+                }
+            }
+        }
         // Verify PKL asset hashes
         if opts.check_hashes {
             for pkl_asset in &pkl.assets {
@@ -262,6 +285,17 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     let cpl_paths: Vec<std::path::PathBuf> = dcp.cpls.iter().map(|(p, _)| p.clone()).collect();
     let known_asset_ids: Vec<String> = dcp.assetmap.assets.iter().map(|a| a.id.clone()).collect();
 
+    // stripped-id -> on-disk essence path, for validators that probe the MXF
+    let id_to_file: HashMap<String, std::path::PathBuf> = dcp
+        .assetmap
+        .assets
+        .iter()
+        .map(|a| {
+            let id = a.id.strip_prefix("urn:uuid:").unwrap_or(&a.id).to_lowercase();
+            (id, dcp_dir.join(&a.path))
+        })
+        .collect();
+
     // OV-aware cross-ref for supplemental DCPs: resolve refs across this package
     // and the OV DCP when --ov is given.
     let ov_asset_ids: Option<HashSet<String>> = opts.ov.as_deref().map(dcp_asset_ids);
@@ -282,18 +316,27 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     for note in crate::compliance::check_uuids(dcp_dir) {
         result.add(note);
     }
+    // Package hygiene: unreferenced/zero-byte files in the package directory.
+    let referenced_paths: Vec<String> =
+        dcp.assetmap.assets.iter().map(|a| a.path.clone()).collect();
+    for note in crate::validators::check_package_files(dcp_dir, &referenced_paths) {
+        result.add(note);
+    }
     for (cpl_path, cpl) in &dcp.cpls {
         if !cpl.content_title.is_empty() {
             for note in crate::isdcf::check_isdcf_naming(&cpl.content_title, cpl_path) {
                 result.add(note);
             }
         }
+        for note in crate::validators::check_cpl_metadata(cpl_path, dcp.standard) {
+            result.add(note);
+        }
     }
     for cpl_path in &cpl_paths {
         for note in crate::validators::check_markers(cpl_path, opts.strict_smpte) {
             result.add(note);
         }
-        for note in crate::validators::check_audio_channels(cpl_path) {
+        for note in crate::validators::check_audio_channels(cpl_path, &id_to_file) {
             result.add(note);
         }
         for note in crate::validators::check_reel_continuity(cpl_path) {
@@ -302,7 +345,10 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         for note in crate::validators::check_reel_coherence(cpl_path) {
             result.add(note);
         }
-        for note in crate::validators::check_stereo(cpl_path) {
+        for note in crate::validators::check_stereo(cpl_path, &id_to_file) {
+            result.add(note);
+        }
+        for note in crate::validators::check_aux_data(cpl_path, &id_to_file) {
             result.add(note);
         }
         for note in crate::hfr_stereo::check_hfr_compliance(cpl_path) {
@@ -395,18 +441,20 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             }
 
             // Sound validation
-            if let Some(ref snd) = mxf_info.sound
-                && snd.sample_rate > 0
-                && snd.sample_rate != 48000
-                && snd.sample_rate != 96000
-            {
-                result.add(Note {
-                    severity: Severity::Warning,
-                    code: Code::SoundInvalidSampleRate,
-                    message: format!("Non-standard audio sample rate: {} Hz", snd.sample_rate),
-                    file: Some(full_path.clone()),
-                    line: 0,
-                });
+            if let Some(ref snd) = mxf_info.sound {
+                if snd.sample_rate > 0 && snd.sample_rate != 48000 && snd.sample_rate != 96000 {
+                    result.add(Note {
+                        severity: Severity::Warning,
+                        code: Code::SoundInvalidSampleRate,
+                        message: format!("Non-standard audio sample rate: {} Hz", snd.sample_rate),
+                        file: Some(full_path.clone()),
+                        line: 0,
+                    });
+                }
+                // 24-bit PCM / block-align (SMPTE ST 429-2)
+                for note in crate::mxf::check_sound_descriptor(snd, &full_path) {
+                    result.add(note);
+                }
             }
         }
     }
@@ -609,6 +657,50 @@ mod tests {
     #[test]
     fn imf_package_is_detected_from_its_cpl_namespace() {
         assert!(crate::imf::is_imf_package(&fixture("minimal_imf")));
+    }
+
+    // compliance::check_uuids is wired into verify_dcp: a malformed urn:uuid token
+    // anywhere in the package XML must surface as invalid_uuid from `validate`.
+    #[test]
+    fn malformed_uuid_is_flagged_by_validate() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AnnotationText>urn:uuid:not-a-valid-uuid</AnnotationText>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><Duration>48</Duration></MainPicture>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#,
+        )
+        .unwrap();
+
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::InvalidUuid && n.message.contains("not-a-valid-uuid")),
+            "expected InvalidUuid from validate path, got: {:?}",
+            result.notes
+        );
     }
 
     // ─── OV-aware supplemental DCP cross-reference ─────────────────────────

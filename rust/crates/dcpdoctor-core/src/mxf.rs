@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::{Code, Note};
+
 /// Picture descriptor from MXF.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PictureDescriptor {
@@ -18,7 +20,48 @@ pub struct SoundDescriptor {
     pub sample_rate: u32,
     pub channels: u32,
     pub bit_depth: u32,
+    /// WaveAudioDescriptor BlockAlign (bytes per sample frame). 0 when the prober
+    /// did not report it, in which case the block-align check is skipped.
+    pub block_align: u32,
     pub duration: u64,
+}
+
+/// DCI sound-essence checks (SMPTE ST 429-2 / 382M): 24-bit PCM, and a block
+/// alignment of channels * bytes-per-sample. bit_depth/block_align of 0 mean the
+/// prober did not report the field, so that check is skipped rather than firing.
+pub fn check_sound_descriptor(snd: &SoundDescriptor, file: &Path) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    if snd.bit_depth != 0 && snd.bit_depth != 24 {
+        notes.push(
+            Note::error(
+                Code::SoundInvalidQuantization,
+                format!(
+                    "Audio quantization is {}-bit, DCI requires 24-bit PCM",
+                    snd.bit_depth
+                ),
+            )
+            .with_file(file),
+        );
+    }
+
+    if snd.block_align != 0 && snd.bit_depth != 0 && snd.channels != 0 {
+        let expected = snd.channels * (snd.bit_depth / 8);
+        if snd.block_align != expected {
+            notes.push(
+                Note::error(
+                    Code::SoundInvalidBlockAlign,
+                    format!(
+                        "Audio block align is {} bytes, expected {} ({} channels x {}-bit)",
+                        snd.block_align, expected, snd.channels, snd.bit_depth
+                    ),
+                )
+                .with_file(file),
+            );
+        }
+    }
+
+    notes
 }
 
 /// MXF file information.
@@ -112,6 +155,10 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
                                     .as_str()
                                     .and_then(|b| b.parse().ok())
                                     .unwrap_or(s["bits_per_sample"].as_u64().unwrap_or(0) as u32),
+                                block_align: s["block_align"]
+                                    .as_str()
+                                    .and_then(|b| b.parse().ok())
+                                    .unwrap_or(s["block_align"].as_u64().unwrap_or(0) as u32),
                                 duration: s["nb_frames"]
                                     .as_str()
                                     .and_then(|n| n.parse().ok())
@@ -158,5 +205,56 @@ fn parse_fraction(s: &str) -> (u32, u32) {
         (num, den)
     } else {
         (s.parse().unwrap_or(0), 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Code;
+    use std::path::Path;
+
+    #[test]
+    fn twenty_four_bit_pcm_passes() {
+        let snd = SoundDescriptor {
+            sample_rate: 48000,
+            channels: 6,
+            bit_depth: 24,
+            block_align: 18, // 6 channels x 3 bytes
+            duration: 0,
+        };
+        assert!(check_sound_descriptor(&snd, Path::new("a.mxf")).is_empty());
+    }
+
+    #[test]
+    fn sixteen_bit_pcm_flags_quantization() {
+        let snd = SoundDescriptor {
+            sample_rate: 48000,
+            channels: 6,
+            bit_depth: 16,
+            block_align: 0,
+            duration: 0,
+        };
+        let notes = check_sound_descriptor(&snd, Path::new("a.mxf"));
+        assert!(notes.iter().any(|n| n.code == Code::SoundInvalidQuantization));
+    }
+
+    #[test]
+    fn wrong_block_align_flags_when_reported() {
+        let snd = SoundDescriptor {
+            sample_rate: 48000,
+            channels: 6,
+            bit_depth: 24,
+            block_align: 12, // should be 18
+            duration: 0,
+        };
+        let notes = check_sound_descriptor(&snd, Path::new("a.mxf"));
+        assert!(notes.iter().any(|n| n.code == Code::SoundInvalidBlockAlign));
+    }
+
+    #[test]
+    fn unknown_fields_skip_checks() {
+        let snd = SoundDescriptor::default(); // all zero
+        assert!(check_sound_descriptor(&snd, Path::new("a.mxf")).is_empty());
     }
 }

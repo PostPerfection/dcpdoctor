@@ -1,4 +1,4 @@
-//! Advanced MXF analysis: partition validation, Dolby Vision detection, DTS:X detection.
+//! Advanced MXF analysis: partition validation, DTS:X detection.
 
 use std::path::Path;
 
@@ -23,13 +23,6 @@ pub struct MxfPartitionInfo {
     pub body_partition_count: u32,
     pub header_size: u64,
     pub footer_offset: i64,
-}
-
-/// Dolby Vision detection result.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct DolbyVisionInfo {
-    pub detected: bool,
-    pub version: String,
 }
 
 /// DTS:X detection result.
@@ -128,34 +121,6 @@ pub fn check_mxf_partitions(info: &MxfPartitionInfo, mxf_path: &Path) -> Vec<Not
     }
 
     notes
-}
-
-/// Detect Dolby Vision metadata in an MXF file using ffprobe.
-pub fn detect_dolby_vision(mxf_path: &Path) -> DolbyVisionInfo {
-    let mut info = DolbyVisionInfo::default();
-
-    // Check for Dolby Vision side data via ffprobe
-    let output = std::process::Command::new("ffprobe")
-        .args([
-            "-v",
-            "quiet",
-            "-show_entries",
-            "side_data=side_data_type",
-            "-of",
-            "csv=p=0",
-            &mxf_path.to_string_lossy(),
-        ])
-        .output();
-
-    if let Ok(o) = output {
-        let s = String::from_utf8_lossy(&o.stdout);
-        if s.contains("Dolby Vision") {
-            info.detected = true;
-            info.version = "Dolby Vision".into();
-        }
-    }
-
-    info
 }
 
 /// Detect DTS:X immersive audio in an MXF file.

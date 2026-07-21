@@ -1,10 +1,44 @@
 //! Individual DCP validators — encryption, reel continuity, stereo, markers,
-//! cross-references, supplemental detection, audio channels, color space.
+//! cross-references, supplemental detection, audio channels.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::{Code, Note, Severity};
+use crate::{Code, Note, Severity, Standard};
+
+// ─── Native MXF essence probes (asdcplib) ─────────────────────────────────────
+// These read only header metadata and are used to confirm CPL-declared essence
+// against the real MXF. They return None when the file is absent or unreadable,
+// so callers fall back to the CPL-only (XML) check.
+
+/// First `<Id>urn:uuid:...</Id>` in an essence block, resolved to its MXF path.
+fn asset_file(block: &str, id_to_file: &HashMap<String, PathBuf>) -> Option<PathBuf> {
+    let id_re = regex_lite::Regex::new(r"<Id>urn:uuid:([0-9a-fA-F-]+)</Id>").unwrap();
+    let id = id_re.captures(block)?.get(1)?.as_str().to_lowercase();
+    id_to_file.get(&id).cloned()
+}
+
+/// Probe a PCM MXF for ST 429-12 MCA label subdescriptors. `Some(true)` when the
+/// header carries channel/soundfield labels, `Some(false)` when it reads as PCM
+/// with none, `None` when the essence can't be read.
+fn probe_sound_has_mca(path: &Path) -> Option<bool> {
+    let path_str = path.to_str()?;
+    let mut reader = asdcplib::pcm::MxfReader::new();
+    reader.open_read(path_str).ok()?;
+    let mca = reader.mca_labels().ok()?;
+    Some(mca.channel_labels > 0 || mca.soundfield_groups > 0 || mca.has_mca_channel_assignment)
+}
+
+/// Probe a picture MXF essence type. `Some(true)` for stereoscopic J2K,
+/// `Some(false)` for mono J2K, `None` when it can't be identified.
+fn probe_picture_is_stereo(path: &Path) -> Option<bool> {
+    let path_str = path.to_str()?;
+    match asdcplib::essence_type(path_str).ok()? {
+        asdcplib::EssenceType::Jpeg2000Stereo => Some(true),
+        asdcplib::EssenceType::Jpeg2000 | asdcplib::EssenceType::As02Jpeg2000 => Some(false),
+        _ => None,
+    }
+}
 
 // ─── Encryption Detection ─────────────────────────────────────────────────────
 
@@ -224,10 +258,14 @@ pub fn check_reel_coherence(cpl_path: &Path) -> Vec<Note> {
     notes
 }
 
-/// First matching essence block in a reel (handles the stereoscopic alias).
+/// First matching essence block in a reel (handles the stereoscopic alias and
+/// the msp-cpl/axd namespaced forms).
 fn essence_block<'a>(reel: &'a str, tags: &[&str]) -> Option<&'a str> {
     for tag in tags {
-        let re = regex_lite::Regex::new(&format!(r"<{tag}>([\s\S]*?)</{tag}>")).unwrap();
+        let re = regex_lite::Regex::new(&format!(
+            r"<(?:[\w-]+:)?{tag}(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?{tag}>"
+        ))
+        .unwrap();
         if let Some(cap) = re.captures(reel) {
             return Some(cap.get(1).unwrap().as_str());
         }
@@ -246,17 +284,21 @@ fn encrypted_str(block: &str) -> String {
 
 // ─── Stereoscopic 3D ──────────────────────────────────────────────────────────
 
-/// Check stereoscopic reels for left/right eye and duration consistency.
-pub fn check_stereo(cpl_path: &Path) -> Vec<Note> {
+/// Check stereoscopic (ST 429-10) reels: eye consistency, duration, the doubled
+/// FrameRate = 2x EditRate relationship, and that the essence is really a
+/// stereoscopic J2K track where the MXF is available.
+pub fn check_stereo(cpl_path: &Path, id_to_file: &HashMap<String, PathBuf>) -> Vec<Note> {
     let mut notes = Vec::new();
 
     let Ok(content) = std::fs::read_to_string(cpl_path) else {
         return notes;
     };
 
-    let stereo_re =
-        regex_lite::Regex::new(r"<MainStereoscopicPicture>([\s\S]*?)</MainStereoscopicPicture>")
-            .unwrap();
+    // tolerate the msp-cpl namespaced form real 3D DCPs emit
+    let stereo_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?MainStereoscopicPicture(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?MainStereoscopicPicture>",
+    )
+    .unwrap();
     let stereo_reels: Vec<&str> = stereo_re
         .captures_iter(&content)
         .map(|c| c.get(1).unwrap().as_str())
@@ -266,6 +308,14 @@ pub fn check_stereo(cpl_path: &Path) -> Vec<Note> {
         return notes; // Not a 3D DCP
     }
 
+    let stereo_err = |msg: String| Note {
+        severity: Severity::Error,
+        code: Code::StereoMismatch,
+        message: msg,
+        file: Some(cpl_path.to_path_buf()),
+        line: 0,
+    };
+
     for (i, block) in stereo_reels.iter().enumerate() {
         // Interop: check for LeftEye / RightEye sub-elements
         let has_left = block.contains("<LeftEye>");
@@ -273,22 +323,10 @@ pub fn check_stereo(cpl_path: &Path) -> Vec<Note> {
 
         if has_left || has_right {
             if !has_left {
-                notes.push(Note {
-                    severity: Severity::Error,
-                    code: Code::StereoMismatch,
-                    message: format!("Stereoscopic reel {} missing LeftEye", i + 1),
-                    file: Some(cpl_path.to_path_buf()),
-                    line: 0,
-                });
+                notes.push(stereo_err(format!("Stereoscopic reel {} missing LeftEye", i + 1)));
             }
             if !has_right {
-                notes.push(Note {
-                    severity: Severity::Error,
-                    code: Code::StereoMismatch,
-                    message: format!("Stereoscopic reel {} missing RightEye", i + 1),
-                    file: Some(cpl_path.to_path_buf()),
-                    line: 0,
-                });
+                notes.push(stereo_err(format!("Stereoscopic reel {} missing RightEye", i + 1)));
             }
         }
 
@@ -298,16 +336,32 @@ pub fn check_stereo(cpl_path: &Path) -> Vec<Note> {
         if let (Some(d), Some(intr)) = (duration, intrinsic)
             && d > intr
         {
-            notes.push(Note {
-                severity: Severity::Error,
-                code: Code::StereoMismatch,
-                message: format!(
-                    "Stereoscopic reel {} Duration exceeds IntrinsicDuration",
-                    i + 1
-                ),
-                file: Some(cpl_path.to_path_buf()),
-                line: 0,
-            });
+            notes.push(stereo_err(format!(
+                "Stereoscopic reel {} Duration exceeds IntrinsicDuration",
+                i + 1
+            )));
+        }
+
+        // ST 429-10: the interleaved L/R essence carries two frames per edit
+        // unit, so FrameRate must be exactly twice EditRate.
+        if let (Some((er_n, er_d)), Some((fr_n, fr_d))) =
+            (extract_rate(block, "EditRate"), extract_rate(block, "FrameRate"))
+            && !(fr_n == er_n * 2 && fr_d == er_d)
+        {
+            notes.push(stereo_err(format!(
+                "Stereoscopic reel {} FrameRate {fr_n} {fr_d} is not twice EditRate {er_n} {er_d}",
+                i + 1
+            )));
+        }
+
+        // Confirm the referenced essence is a stereoscopic J2K MXF when present.
+        if let Some(path) = asset_file(block, id_to_file)
+            && probe_picture_is_stereo(&path) == Some(false)
+        {
+            notes.push(stereo_err(format!(
+                "Stereoscopic reel {} references a non-stereoscopic J2K essence",
+                i + 1
+            )));
         }
     }
 
@@ -444,9 +498,11 @@ pub fn check_cross_references(
 
         // Only check IDs within blocks that reference external asset files.
         // MainMarkers is an inline marker track (no file in the ASSETMAP), so it
-        // is deliberately excluded to avoid false CrossRefBroken errors.
+        // is deliberately excluded to avoid false CrossRefBroken errors. The
+        // optional prefix/attributes match the msp-cpl (429-10 stereo) and axd
+        // (429-18 aux data) namespaced forms real DCPs emit.
         let asset_block_re = regex_lite::Regex::new(
-            r"<(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|ClosedCaption|MainImage|AuxData)>([\s\S]*?)</(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|ClosedCaption|MainImage|AuxData)>",
+            r"<(?:[\w-]+:)?(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|ClosedCaption|MainImage|AuxData)(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|ClosedCaption|MainImage|AuxData)>",
         ).unwrap();
 
         for block_cap in asset_block_re.captures_iter(&content) {
@@ -523,24 +579,35 @@ pub fn check_supplemental(cpl_paths: &[PathBuf]) -> Vec<Note> {
 
 // ─── Audio Channel Labeling ───────────────────────────────────────────────────
 
-/// Warn if sound reels lack MCA channel labeling metadata.
-pub fn check_audio_channels(cpl_path: &Path) -> Vec<Note> {
+/// Warn if sound reels lack MCA (ST 429-12) channel labeling. The labels live in
+/// the sound MXF header, not the CPL, so when the essence is available its MCA
+/// subdescriptors are read directly; only for XML-only validation (no readable
+/// MXF) does this fall back to grepping the CPL for the label markers.
+pub fn check_audio_channels(cpl_path: &Path, id_to_file: &HashMap<String, PathBuf>) -> Vec<Note> {
     let mut notes = Vec::new();
 
     let Ok(content) = std::fs::read_to_string(cpl_path) else {
         return notes;
     };
 
-    let sound_re =
-        regex_lite::Regex::new(r"<(?:MainSound|MainAudio)>([\s\S]*?)</(?:MainSound|MainAudio)>")
-            .unwrap();
+    let sound_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?(?:MainSound|MainAudio)(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:MainSound|MainAudio)>",
+    )
+    .unwrap();
 
     for (i, cap) in sound_re.captures_iter(&content).enumerate() {
         let block = cap.get(1).unwrap().as_str();
-        let has_mca = block.contains("MCALabelDictionaryId");
-        let has_sfg = block.contains("SoundFieldGroupLinkId");
 
-        if !has_mca && !has_sfg {
+        // prefer the real MXF subdescriptors; fall back to the CPL markers only
+        // when the essence is missing or unreadable
+        let has_labels = match asset_file(block, id_to_file).and_then(|p| probe_sound_has_mca(&p)) {
+            Some(present) => present,
+            None => {
+                block.contains("MCALabelDictionaryId") || block.contains("SoundFieldGroupLinkId")
+            }
+        };
+
+        if !has_labels {
             notes.push(Note {
                 severity: Severity::Info,
                 code: Code::SoundInvalidChannelCount,
@@ -554,31 +621,167 @@ pub fn check_audio_channels(cpl_path: &Path) -> Vec<Note> {
     notes
 }
 
-// ─── Color Space ──────────────────────────────────────────────────────────────
+// ─── Auxiliary Data (ST 429-18) ───────────────────────────────────────────────
 
-/// Check CPL color metadata for DCI XYZ compliance.
-pub fn check_color_space(cpl_path: &Path) -> Vec<Note> {
+/// Surface an INFO for each ST 429-18 auxiliary-data track (e.g. Dolby Atmos
+/// IAB). The AuxData element carries a DataType UL; where the MXF is available
+/// its essence type enriches the note. Also checks the aux duration against the
+/// reel's picture duration (ClairMeta `check_cpl_reel_duration_picture_aux`).
+/// Cross-refs and PKL hashes for the aux asset are covered by the generic
+/// asset checks.
+pub fn check_aux_data(cpl_path: &Path, id_to_file: &HashMap<String, PathBuf>) -> Vec<Note> {
     let mut notes = Vec::new();
 
     let Ok(content) = std::fs::read_to_string(cpl_path) else {
         return notes;
     };
 
-    // Look for TransferCharacteristic elements
-    let tc_re = regex_lite::Regex::new(r"<TransferCharacteristic>([^<]+)</TransferCharacteristic>")
-        .unwrap();
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    let aux_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?AuxData(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?AuxData>",
+    )
+    .unwrap();
+    let pic_re = regex_lite::Regex::new(
+        r"<(?:MainPicture|MainStereoscopicPicture|MainImage)(?:\s[^>]*)?>([\s\S]*?)</(?:MainPicture|MainStereoscopicPicture|MainImage)>",
+    )
+    .unwrap();
 
-    for cap in tc_re.captures_iter(&content) {
-        let val = cap[1].trim();
-        // DCI XYZ uses gamma 2.6
-        if !val.contains("2.6") && !val.to_uppercase().contains("XYZ") {
-            notes.push(Note {
-                severity: Severity::Info,
-                code: Code::PictureInvalidResolution,
-                message: format!("TransferCharacteristic indicates non-DCI color: {val}"),
-                file: Some(cpl_path.to_path_buf()),
-                line: 0,
-            });
+    for (i, reel_cap) in reel_re.captures_iter(&content).enumerate() {
+        let reel = reel_cap.get(1).unwrap().as_str();
+        let Some(cap) = aux_re.captures(reel) else {
+            continue;
+        };
+        let block = cap.get(1).unwrap().as_str();
+        let is_atmos = block.contains("0e090604") // Dolby Atmos IAB data-essence UL
+            || content.contains("dolby.com/schemas/2012/AD");
+        let kind = if is_atmos {
+            "Dolby Atmos / IAB"
+        } else {
+            "data-essence"
+        };
+
+        let mut msg = format!("Reel {} carries a ST 429-18 auxiliary-data track ({kind})", i + 1);
+        if let Some(path) = asset_file(block, id_to_file)
+            && let Some(s) = path.to_str()
+            && let Ok(etype) = asdcplib::essence_type(s)
+        {
+            msg.push_str(&format!("; essence {etype:?}"));
+        }
+
+        notes.push(Note::info(Code::AuxDataDetected, msg).with_file(cpl_path));
+
+        let aux_dur = extract_u64(block, "Duration");
+        let pic_dur = pic_re
+            .captures(reel)
+            .and_then(|c| extract_u64(c.get(1).unwrap().as_str(), "Duration"));
+        if let (Some(a), Some(p)) = (aux_dur, pic_dur)
+            && a != p
+        {
+            notes.push(
+                Note::warning(
+                    Code::CplMismatchedDurations,
+                    format!(
+                        "Reel {} aux-data duration {a} differs from picture duration {p}",
+                        i + 1
+                    ),
+                )
+                .with_file(cpl_path),
+            );
+        }
+    }
+
+    notes
+}
+
+// ─── CPL Label / Metadata ─────────────────────────────────────────────────────
+
+/// Check a CPL for the identifying metadata every DCI CPL carries (ClairMeta
+/// `check_cpl_metadata`). ContentVersion is SMPTE-only (Interop CPLs have none),
+/// so it is scoped to that standard to avoid false positives on Interop.
+pub fn check_cpl_metadata(cpl_path: &Path, standard: Standard) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+    if !content.contains("CompositionPlaylist") {
+        return notes;
+    }
+
+    let has = |tag: &str| extract_tag(&content, tag).is_some_and(|v| !v.trim().is_empty());
+
+    if !has("ContentTitleText") {
+        notes.push(
+            Note::error(Code::MissingRequiredElement, "CPL missing ContentTitleText")
+                .with_file(cpl_path),
+        );
+    }
+    if !has("IssueDate") {
+        notes.push(
+            Note::warning(Code::MissingRequiredElement, "CPL missing IssueDate").with_file(cpl_path),
+        );
+    }
+    if standard == Standard::Smpte && !has("ContentVersion") {
+        notes.push(
+            Note::info(
+                Code::MissingRequiredElement,
+                "SMPTE CPL missing ContentVersion metadata",
+            )
+            .with_file(cpl_path),
+        );
+    }
+
+    notes
+}
+
+// ─── Package File Hygiene ─────────────────────────────────────────────────────
+
+/// Flag package-directory files that are neither referenced by the ASSETMAP nor
+/// a standard package descriptor (ASSETMAP/VOLINDEX), plus any zero-byte file.
+/// Mirrors ClairMeta's foreign-file and empty-file hygiene checks.
+pub fn check_package_files(dcp_dir: &Path, referenced_paths: &[String]) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let referenced: HashSet<&str> = referenced_paths.iter().map(String::as_str).collect();
+
+    let Ok(entries) = std::fs::read_dir(dcp_dir) else {
+        return notes;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // zero-byte files are always a hard error, descriptor or not
+        if entry.metadata().map(|m| m.len()).unwrap_or(1) == 0 {
+            notes.push(
+                Note::error(
+                    Code::EmptyFileInPackage,
+                    format!("Zero-byte file in package: {name}"),
+                )
+                .with_file(&path),
+            );
+            continue;
+        }
+
+        // ASSETMAP/VOLINDEX are legitimate but never listed in the ASSETMAP
+        let is_descriptor = matches!(
+            name.to_ascii_uppercase().as_str(),
+            "ASSETMAP" | "ASSETMAP.XML" | "VOLINDEX" | "VOLINDEX.XML"
+        );
+        if is_descriptor {
+            continue;
+        }
+
+        if !referenced.contains(name.as_str()) {
+            notes.push(
+                Note::warning(
+                    Code::ForeignFileInPackage,
+                    format!("File in package not referenced by the ASSETMAP: {name}"),
+                )
+                .with_file(&path),
+            );
         }
     }
 
@@ -597,6 +800,15 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
 
 fn extract_u64(xml: &str, tag: &str) -> Option<u64> {
     extract_tag(xml, tag)?.parse().ok()
+}
+
+/// Parse a SMPTE rational tag like `<EditRate>24 1</EditRate>` into (num, den).
+fn extract_rate(xml: &str, tag: &str) -> Option<(u64, u64)> {
+    let v = extract_tag(xml, tag)?;
+    let mut it = v.split_whitespace();
+    let n = it.next()?.parse().ok()?;
+    let d = it.next()?.parse().ok()?;
+    Some((n, d))
 }
 
 #[cfg(test)]
@@ -633,6 +845,99 @@ mod tests {
         )
     }
 
+    // stereo (429-10) reel in the msp-cpl prefixed form dcpwizard emits
+    fn stereo_cpl(edit_rate: &str, frame_rate: &str) -> String {
+        format!(
+            r#"<CompositionPlaylist><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <msp-cpl:MainStereoscopicPicture xmlns:msp-cpl="http://www.smpte-ra.org/schemas/429-10/2008/Main-Stereo-Picture-CPL">
+    <Id>urn:uuid:00000000-0000-0000-0000-000000000001</Id>
+    <EditRate>{edit_rate}</EditRate>
+    <IntrinsicDuration>48</IntrinsicDuration>
+    <Duration>48</Duration>
+    <FrameRate>{frame_rate}</FrameRate>
+  </msp-cpl:MainStereoscopicPicture>
+</AssetList></Reel></CompositionPlaylist>"#
+        )
+    }
+
+    #[test]
+    fn stereo_prefixed_form_with_doubled_framerate_passes() {
+        let f = write_cpl(&stereo_cpl("24 1", "48 1"));
+        // no id_to_file entry so essence probing is skipped (xml-only)
+        assert!(check_stereo(f.path(), &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn stereo_framerate_not_doubled_flags_mismatch() {
+        let f = write_cpl(&stereo_cpl("24 1", "24 1"));
+        let notes = check_stereo(f.path(), &HashMap::new());
+        assert!(
+            notes.iter().any(|n| n.code == Code::StereoMismatch
+                && n.message.contains("not twice EditRate")),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn aux_data_axd_form_surfaces_atmos_info() {
+        let cpl = r#"<CompositionPlaylist><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <axd:AuxData xmlns:axd="http://www.dolby.com/schemas/2012/AD">
+    <Id>urn:uuid:00000000-0000-0000-0000-0000000000a1</Id>
+    <EditRate>24 1</EditRate>
+    <Duration>48</Duration>
+    <axd:DataType>urn:smpte:ul:060e2b34.04010105.0e090604.00000000</axd:DataType>
+  </axd:AuxData>
+</AssetList></Reel></CompositionPlaylist>"#;
+        let f = write_cpl(cpl);
+        let notes = check_aux_data(f.path(), &HashMap::new());
+        assert!(
+            notes.iter().any(|n| n.code == Code::AuxDataDetected
+                && n.severity == Severity::Info
+                && n.message.contains("Atmos")),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn aux_data_duration_mismatch_warns() {
+        let cpl = r#"<CompositionPlaylist><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><Duration>48</Duration></MainPicture>
+  <axd:AuxData xmlns:axd="http://www.dolby.com/schemas/2012/AD">
+    <Id>urn:uuid:00000000-0000-0000-0000-0000000000a1</Id>
+    <Duration>1</Duration>
+    <axd:DataType>urn:smpte:ul:060e2b34.04010105.0e090604.00000000</axd:DataType>
+  </axd:AuxData>
+</AssetList></Reel></CompositionPlaylist>"#;
+        let f = write_cpl(cpl);
+        let notes = check_aux_data(f.path(), &HashMap::new());
+        assert!(
+            notes.iter().any(|n| n.code == Code::CplMismatchedDurations
+                && n.severity == Severity::Warning),
+            "got: {notes:?}"
+        );
+        // matching durations stay clean
+        let ok = write_cpl(&cpl.replace("<Duration>1</Duration>", "<Duration>48</Duration>"));
+        assert!(
+            !check_aux_data(ok.path(), &HashMap::new())
+                .iter()
+                .any(|n| n.code == Code::CplMismatchedDurations)
+        );
+    }
+
+    #[test]
+    fn audio_channels_xml_only_falls_back_to_cpl_markers() {
+        // no MXF available, so the CPL markers decide: labeled clears, bare fires
+        let bare = write_cpl(
+            r#"<CompositionPlaylist><MainSound><Id>urn:uuid:00000000-0000-0000-0000-000000000002</Id></MainSound></CompositionPlaylist>"#,
+        );
+        assert_eq!(check_audio_channels(bare.path(), &HashMap::new()).len(), 1);
+
+        let labeled = write_cpl(
+            r#"<CompositionPlaylist><MainSound><Id>urn:uuid:00000000-0000-0000-0000-000000000002</Id><MCALabelDictionaryId>urn:smpte:ul:x</MCALabelDictionaryId></MainSound></CompositionPlaylist>"#,
+        );
+        assert!(check_audio_channels(labeled.path(), &HashMap::new()).is_empty());
+    }
+
     fn write_cpl(xml: &str) -> tempfile::NamedTempFile {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(xml.as_bytes()).unwrap();
@@ -664,5 +969,70 @@ mod tests {
         let notes = check_reel_coherence(f.path());
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].code, Code::ReelIncoherent);
+    }
+
+    #[test]
+    fn cpl_missing_content_title_is_flagged() {
+        let f = write_cpl(
+            r#"<CompositionPlaylist><Id>x</Id><IssueDate>2020</IssueDate><ContentVersion>1</ContentVersion></CompositionPlaylist>"#,
+        );
+        let notes = check_cpl_metadata(f.path(), Standard::Smpte);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::MissingRequiredElement
+                    && n.message.contains("ContentTitleText")),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn full_smpte_cpl_metadata_is_clean() {
+        let f = write_cpl(
+            r#"<CompositionPlaylist><Id>x</Id><ContentTitleText>Movie</ContentTitleText><IssueDate>2020</IssueDate><ContentVersion>1</ContentVersion></CompositionPlaylist>"#,
+        );
+        assert!(check_cpl_metadata(f.path(), Standard::Smpte).is_empty());
+    }
+
+    #[test]
+    fn interop_cpl_without_content_version_is_not_flagged() {
+        // Interop CPLs have no ContentVersion; the SMPTE-only check must not fire.
+        let f = write_cpl(
+            r#"<CompositionPlaylist><Id>x</Id><ContentTitleText>Movie</ContentTitleText><IssueDate>2020</IssueDate></CompositionPlaylist>"#,
+        );
+        let notes = check_cpl_metadata(f.path(), Standard::Interop);
+        assert!(!notes.iter().any(|n| n.message.contains("ContentVersion")));
+    }
+
+    #[test]
+    fn foreign_and_empty_files_are_flagged_referenced_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ASSETMAP.xml"), "x").unwrap();
+        std::fs::write(dir.path().join("good.mxf"), "data").unwrap();
+        std::fs::write(dir.path().join("stray.txt"), "junk").unwrap();
+        std::fs::write(dir.path().join("empty.mxf"), "").unwrap();
+
+        let notes = check_package_files(dir.path(), &["good.mxf".to_string()]);
+
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::ForeignFileInPackage && n.message.contains("stray.txt")),
+            "unreferenced file must be flagged, got: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::EmptyFileInPackage && n.message.contains("empty.mxf")),
+            "zero-byte file must be flagged, got: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.message.contains("good.mxf")),
+            "referenced file must not be flagged"
+        );
+        assert!(
+            !notes.iter().any(|n| n.message.ends_with(": ASSETMAP.xml")),
+            "package descriptor must not be flagged"
+        );
     }
 }

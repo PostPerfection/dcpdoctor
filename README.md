@@ -42,8 +42,10 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Clipping detection**: Flags audio near 0 dBFS
 - **Silence detection**: Warns on channels below -80 dBFS
 - **Channel count**: Validates channel configuration
+- **Quantization / block align**: 24-bit PCM and block-align check (`--check-mxf`)
 - **MCA labeling**: Multi-Channel Audio label presence check
 - **Audio sync drift**: Detects picture/sound duration mismatches per reel
+- **DTS:X**: Immersive-audio detection under `--studio --deep`
 
 ### Subtitle & Caption Validation
 - **SMPTE ST 429-5** timed text support
@@ -67,6 +69,8 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Marker validation**: FFOC, LFOC, FFMC, LFMC presence (strict mode)
 - **Cross-reference integrity**: All PKL/CPL asset references resolve
 - **Supplemental DCP**: Original Package List validation
+- **CPL metadata**: ContentTitleText/IssueDate, and SMPTE ContentVersion
+- **Package hygiene**: Flags unreferenced and zero-byte files in the package dir
 
 ### Advanced Tools
 - **DCP comparison/diff**: Side-by-side structural comparison of two DCPs

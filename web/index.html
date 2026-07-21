@@ -25,7 +25,11 @@
         <section id="queue-section" class="queue-section hidden">
             <div class="queue-header">
                 <h2>Validation Queue</h2>
-                <button id="add-more-btn" class="btn-secondary">+ Add More</button>
+                <div class="queue-header-actions">
+                    <button id="ov-btn" class="btn-secondary" title="Attach an OV package so supplemental (VF) packages resolve their cross-package references">+ OV</button>
+                    <span id="ov-status" class="ov-status hidden"></span>
+                    <button id="add-more-btn" class="btn-secondary">+ Add More</button>
+                </div>
             </div>
             <table class="queue-table">
                 <thead>

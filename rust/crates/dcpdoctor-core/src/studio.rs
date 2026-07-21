@@ -1278,6 +1278,9 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
                 notes.extend(check_channel_compliance(&ch_config, &path));
                 let loudness = measure_loudness(&path, 1000);
                 notes.extend(check_loudness_compliance(&loudness, &path));
+                // immersive-audio (DTS:X) detection has no core equivalent
+                let dtsx = crate::mxf_advanced::detect_dtsx(&path);
+                notes.extend(crate::mxf_advanced::check_dtsx_compliance(&dtsx, &path));
             }
         }
     }

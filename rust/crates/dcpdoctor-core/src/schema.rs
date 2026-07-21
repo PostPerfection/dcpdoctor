@@ -350,4 +350,59 @@ mod tests {
         assert!(!validate_wellformed("<root/></other>").valid);
         assert!(!validate_wellformed("<root/>text").valid);
     }
+
+    // xsd validation shells out to xmllint; a self-contained schema keyed off the
+    // SMPTE AM filename proves check_schema fires on a violation and stays clean
+    // on a conformant doc (non-vacuous). skips where xmllint is not installed.
+    #[test]
+    fn check_schema_fires_on_violation_not_on_valid() {
+        if std::process::Command::new("xmllint")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("SMPTE-429-9-2007-AM.xsd"),
+            r#"<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="http://www.smpte-ra.org/schemas/429-9/2007/AM"
+    xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM"
+    elementFormDefault="qualified">
+  <xs:element name="AssetMap">
+    <xs:complexType><xs:sequence>
+      <xs:element name="Id" type="xs:string"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>"#,
+        )
+        .unwrap();
+
+        let valid = dir.path().join("valid_am.xml");
+        std::fs::write(
+            &valid,
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM"><Id>x</Id></AssetMap>"#,
+        )
+        .unwrap();
+        assert!(
+            check_schema(&valid, dir.path()).is_empty(),
+            "conformant ASSETMAP must not fire xml_schema_violation"
+        );
+
+        let invalid = dir.path().join("invalid_am.xml");
+        std::fs::write(
+            &invalid,
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM"><Bogus/></AssetMap>"#,
+        )
+        .unwrap();
+        let notes = check_schema(&invalid, dir.path());
+        assert!(
+            notes.iter().any(|n| n.code == Code::XmlSchemaViolation),
+            "schema-invalid ASSETMAP must fire xml_schema_violation, got: {notes:?}"
+        );
+    }
 }
