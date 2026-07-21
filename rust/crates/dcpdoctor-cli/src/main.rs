@@ -1575,7 +1575,8 @@ fn suppress_core_studio_overlap(
     let drop_enc = studio_has("Mixed encryption");
     // studio stereo eye checks (ffprobe frame counts) supersede the core
     // StereoMismatch structural note.
-    let drop_stereo = studio_has("Stereoscopic eye") || studio_has("missing left eye")
+    let drop_stereo = studio_has("Stereoscopic eye")
+        || studio_has("missing left eye")
         || studio_has("missing right eye");
 
     if !drop_enc && !drop_stereo {
@@ -1583,7 +1584,8 @@ fn suppress_core_studio_overlap(
     }
 
     result.notes.retain(|n| {
-        let enc_dup = drop_enc && n.code == Code::ReelIncoherent && n.message.contains("encryption");
+        let enc_dup =
+            drop_enc && n.code == Code::ReelIncoherent && n.message.contains("encryption");
         let stereo_dup = drop_stereo && n.code == Code::StereoMismatch;
         !enc_dup && !stereo_dup
     });

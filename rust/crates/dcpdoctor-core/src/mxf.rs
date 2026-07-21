@@ -236,7 +236,11 @@ mod tests {
             duration: 0,
         };
         let notes = check_sound_descriptor(&snd, Path::new("a.mxf"));
-        assert!(notes.iter().any(|n| n.code == Code::SoundInvalidQuantization));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SoundInvalidQuantization)
+        );
     }
 
     #[test]

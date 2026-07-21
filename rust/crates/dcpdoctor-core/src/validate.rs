@@ -291,7 +291,10 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         .assets
         .iter()
         .map(|a| {
-            let id = a.id.strip_prefix("urn:uuid:").unwrap_or(&a.id).to_lowercase();
+            let id =
+                a.id.strip_prefix("urn:uuid:")
+                    .unwrap_or(&a.id)
+                    .to_lowercase();
             (id, dcp_dir.join(&a.path))
         })
         .collect();

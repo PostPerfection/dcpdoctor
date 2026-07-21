@@ -323,10 +323,16 @@ pub fn check_stereo(cpl_path: &Path, id_to_file: &HashMap<String, PathBuf>) -> V
 
         if has_left || has_right {
             if !has_left {
-                notes.push(stereo_err(format!("Stereoscopic reel {} missing LeftEye", i + 1)));
+                notes.push(stereo_err(format!(
+                    "Stereoscopic reel {} missing LeftEye",
+                    i + 1
+                )));
             }
             if !has_right {
-                notes.push(stereo_err(format!("Stereoscopic reel {} missing RightEye", i + 1)));
+                notes.push(stereo_err(format!(
+                    "Stereoscopic reel {} missing RightEye",
+                    i + 1
+                )));
             }
         }
 
@@ -344,9 +350,10 @@ pub fn check_stereo(cpl_path: &Path, id_to_file: &HashMap<String, PathBuf>) -> V
 
         // ST 429-10: the interleaved L/R essence carries two frames per edit
         // unit, so FrameRate must be exactly twice EditRate.
-        if let (Some((er_n, er_d)), Some((fr_n, fr_d))) =
-            (extract_rate(block, "EditRate"), extract_rate(block, "FrameRate"))
-            && !(fr_n == er_n * 2 && fr_d == er_d)
+        if let (Some((er_n, er_d)), Some((fr_n, fr_d))) = (
+            extract_rate(block, "EditRate"),
+            extract_rate(block, "FrameRate"),
+        ) && !(fr_n == er_n * 2 && fr_d == er_d)
         {
             notes.push(stereo_err(format!(
                 "Stereoscopic reel {} FrameRate {fr_n} {fr_d} is not twice EditRate {er_n} {er_d}",
@@ -660,7 +667,10 @@ pub fn check_aux_data(cpl_path: &Path, id_to_file: &HashMap<String, PathBuf>) ->
             "data-essence"
         };
 
-        let mut msg = format!("Reel {} carries a ST 429-18 auxiliary-data track ({kind})", i + 1);
+        let mut msg = format!(
+            "Reel {} carries a ST 429-18 auxiliary-data track ({kind})",
+            i + 1
+        );
         if let Some(path) = asset_file(block, id_to_file)
             && let Some(s) = path.to_str()
             && let Ok(etype) = asdcplib::essence_type(s)
@@ -718,7 +728,8 @@ pub fn check_cpl_metadata(cpl_path: &Path, standard: Standard) -> Vec<Note> {
     }
     if !has("IssueDate") {
         notes.push(
-            Note::warning(Code::MissingRequiredElement, "CPL missing IssueDate").with_file(cpl_path),
+            Note::warning(Code::MissingRequiredElement, "CPL missing IssueDate")
+                .with_file(cpl_path),
         );
     }
     if standard == Standard::Smpte && !has("ContentVersion") {
@@ -911,8 +922,9 @@ mod tests {
         let f = write_cpl(cpl);
         let notes = check_aux_data(f.path(), &HashMap::new());
         assert!(
-            notes.iter().any(|n| n.code == Code::CplMismatchedDurations
-                && n.severity == Severity::Warning),
+            notes
+                .iter()
+                .any(|n| n.code == Code::CplMismatchedDurations && n.severity == Severity::Warning),
             "got: {notes:?}"
         );
         // matching durations stay clean
@@ -978,10 +990,8 @@ mod tests {
         );
         let notes = check_cpl_metadata(f.path(), Standard::Smpte);
         assert!(
-            notes
-                .iter()
-                .any(|n| n.code == Code::MissingRequiredElement
-                    && n.message.contains("ContentTitleText")),
+            notes.iter().any(|n| n.code == Code::MissingRequiredElement
+                && n.message.contains("ContentTitleText")),
             "got: {notes:?}"
         );
     }
