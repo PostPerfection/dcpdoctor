@@ -274,6 +274,31 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     for note in crate::subtitle::validate_subtitle(&full_path, dcp.standard) {
                         result.add(note);
                     }
+                    // glyph coverage: resolve each LoadFont to a font file and
+                    // check every used code point against its cmap.
+                    let sub_dir = full_path.parent().unwrap_or(dcp_dir).to_path_buf();
+                    let resolve = |decl: &crate::subtitle::FontDecl| -> Option<std::path::PathBuf> {
+                        // Interop DCSubtitle: font is a file referenced by URI
+                        if let Some(uri) = &decl.uri {
+                            let rel = sub_dir.join(uri);
+                            if rel.exists() {
+                                return Some(rel);
+                            }
+                            let abs = dcp_dir.join(uri);
+                            return abs.exists().then_some(abs);
+                        }
+                        // SMPTE ST 428-7: font is an asset addressed by urn
+                        if let Some(urn) = &decl.urn
+                            && let Some(&ap) = id_to_path.get(urn.as_str())
+                        {
+                            let p = dcp_dir.join(ap);
+                            return p.exists().then_some(p);
+                        }
+                        None
+                    };
+                    for note in crate::subtitle::check_glyph_coverage(&full_path, resolve) {
+                        result.add(note);
+                    }
                 }
             }
         }
@@ -325,6 +350,10 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     for note in crate::validators::check_package_files(dcp_dir, &referenced_paths) {
         result.add(note);
     }
+    // Non-ASCII characters in folder/file names (portability warning).
+    for note in crate::validators::check_non_ascii_names(dcp_dir) {
+        result.add(note);
+    }
     for (cpl_path, cpl) in &dcp.cpls {
         if !cpl.content_title.is_empty() {
             for note in crate::isdcf::check_isdcf_naming(&cpl.content_title, cpl_path) {
@@ -364,6 +393,19 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             result.add(note);
         }
         for note in crate::validators::check_reel_coherence(cpl_path) {
+            result.add(note);
+        }
+        for note in crate::validators::check_reel_duration(cpl_path) {
+            result.add(note);
+        }
+        for note in crate::validators::check_sound_channel_configuration(
+            cpl_path,
+            dcp.standard,
+            &id_to_file,
+        ) {
+            result.add(note);
+        }
+        for note in crate::validators::check_subtitle_frame_rate(cpl_path, &id_to_file) {
             result.add(note);
         }
         for note in crate::validators::check_stereo(cpl_path, &id_to_file) {
@@ -406,6 +448,19 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     line: 0,
                 });
                 continue;
+            }
+
+            // Codestream checks on picture essence: 0xFFFF legacy constraint
+            // (SMPTE Cat. 862) and ISO 15444-1 cinema profile constraints.
+            if let Some(ref pic) = mxf_info.picture {
+                let fps = if pic.frame_rate_num > 0 && pic.frame_rate_den > 0 {
+                    pic.frame_rate_num as f64 / pic.frame_rate_den as f64
+                } else {
+                    24.0
+                };
+                for note in crate::j2k::check_picture_j2k_mxf(&full_path, fps) {
+                    result.add(note);
+                }
             }
 
             // Picture validation
@@ -671,6 +726,57 @@ mod tests {
                 .iter()
                 .any(|n| n.code == Code::SupplementalOvNotProvided),
             "expected SupplementalOvNotProvided warning, got: {:?}",
+            result.notes
+        );
+    }
+
+    // reel_too_short and non_ascii_filename must surface through the full
+    // verify_dcp pipeline, not just their unit tests.
+    #[test]
+    fn short_reel_and_non_ascii_surface_from_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#,
+        )
+        .unwrap();
+        // 6 frames at 24 fps = 0.25 s
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><EditRate>24 1</EditRate><Duration>6</Duration></MainPicture>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#,
+        )
+        .unwrap();
+        // a non-ASCII file name in the package
+        std::fs::write(dir.path().join("naïve.txt"), b"x").unwrap();
+
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result.notes.iter().any(|n| n.code == Code::ReelTooShort),
+            "expected ReelTooShort, got: {:?}",
+            result.notes
+        );
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::NonAsciiFilename),
+            "expected NonAsciiFilename, got: {:?}",
             result.notes
         );
     }

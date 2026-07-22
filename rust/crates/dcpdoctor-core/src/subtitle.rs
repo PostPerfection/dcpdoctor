@@ -2,7 +2,8 @@
 use crate::{Code, Note, Severity, Standard};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Validate a subtitle/timed text XML file.
 pub fn validate_subtitle(file: &Path, standard: Standard) -> Vec<Note> {
@@ -295,6 +296,205 @@ fn parse_time(s: &str) -> Option<u64> {
     Some((((h * 60) + m) * 60 + sec) * 100_000 + frac)
 }
 
+/// A font declared by a subtitle document via LoadFont.
+///
+/// SMPTE ST 428-7 carries the font asset id as the element text (`<LoadFont
+/// ID="f">urn:uuid:...</LoadFont>`); Interop DCSubtitle carries a file reference
+/// in the URI attribute (`<LoadFont Id="f" URI="arial.ttf"/>`).
+#[derive(Debug, Clone, Default)]
+pub struct FontDecl {
+    pub id: String,
+    pub urn: Option<String>,
+    pub uri: Option<String>,
+}
+
+/// first cue a code point appears in, and how many cues use it.
+#[derive(Default)]
+struct Usage {
+    time: String,
+    spot: String,
+    count: u32,
+}
+
+#[derive(Default)]
+struct GlyphScan {
+    fonts: HashMap<String, FontDecl>,
+    font_stack: Vec<String>,
+    capture_urn_for: Option<String>,
+    cur_time: Option<String>,
+    cur_spot: String,
+    usage: HashMap<(String, char), Usage>,
+}
+
+impl GlyphScan {
+    fn active_font(&self) -> Option<String> {
+        if let Some(f) = self.font_stack.last() {
+            return Some(f.clone());
+        }
+        // a document with a single font needn't wrap text in a Font element
+        if self.fonts.len() == 1 {
+            return self.fonts.keys().next().cloned();
+        }
+        None
+    }
+
+    fn on_start(&mut self, e: &BytesStart, empty: bool) {
+        let qname = e.name();
+        let name = String::from_utf8_lossy(qname.local_name().as_ref()).into_owned();
+        match name.as_str() {
+            "LoadFont" => {
+                let id = attr(e, "ID").or_else(|| attr(e, "Id")).unwrap_or_default();
+                let uri = attr(e, "URI");
+                let decl = FontDecl {
+                    id: id.clone(),
+                    urn: None,
+                    uri,
+                };
+                self.fonts.insert(id.clone(), decl);
+                // SMPTE keeps the asset id as element text, read on the next Text
+                if !empty {
+                    self.capture_urn_for = Some(id);
+                }
+            }
+            "Font" => {
+                let id = attr(e, "ID")
+                    .or_else(|| attr(e, "Id"))
+                    .or_else(|| self.font_stack.last().cloned())
+                    .unwrap_or_default();
+                if !empty {
+                    self.font_stack.push(id);
+                }
+            }
+            "Subtitle" => {
+                self.cur_spot = attr(e, "SpotNumber").unwrap_or_default();
+                self.cur_time = attr(e, "TimeIn");
+            }
+            _ => {}
+        }
+    }
+
+    fn on_end(&mut self, name: &str) {
+        match name {
+            "Font" => {
+                self.font_stack.pop();
+            }
+            "Subtitle" => {
+                self.cur_time = None;
+                self.cur_spot.clear();
+            }
+            _ => {}
+        }
+    }
+
+    fn on_text(&mut self, text: &str) {
+        if let Some(id) = self.capture_urn_for.take() {
+            let t = text.trim();
+            if !t.is_empty()
+                && let Some(f) = self.fonts.get_mut(&id)
+            {
+                f.urn = Some(t.to_string());
+            }
+            return;
+        }
+        let (Some(time), Some(font)) = (self.cur_time.clone(), self.active_font()) else {
+            return;
+        };
+        for c in text.chars() {
+            if c.is_whitespace() || c.is_control() {
+                continue;
+            }
+            let e = self
+                .usage
+                .entry((font.clone(), c))
+                .or_insert_with(|| Usage {
+                    time: time.clone(),
+                    spot: self.cur_spot.clone(),
+                    count: 0,
+                });
+            e.count += 1;
+        }
+    }
+}
+
+/// Check that every code point used in a subtitle document has a glyph in its
+/// referenced font (dom#3080, dom#838). `resolve_font` maps a LoadFont
+/// declaration to an on-disk font file; fonts that don't resolve are skipped
+/// silently (the structural check already warns on a missing LoadFont).
+pub fn check_glyph_coverage(
+    file: &Path,
+    resolve_font: impl Fn(&FontDecl) -> Option<PathBuf>,
+) -> Vec<Note> {
+    use skrifa::{FontRef, MetadataProvider};
+
+    let xml = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut reader = Reader::from_str(&xml);
+    let mut scan = GlyphScan::default();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => scan.on_start(&e, false),
+            Ok(Event::Empty(e)) => scan.on_start(&e, true),
+            Ok(Event::End(e)) => {
+                let n = String::from_utf8_lossy(e.name().local_name().as_ref()).into_owned();
+                scan.on_end(&n);
+            }
+            Ok(Event::Text(e)) => {
+                let t = dcpdoctor_parse::text_of(&e);
+                scan.on_text(&t);
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    // load and cache each resolvable font's byte data once
+    let mut font_bytes: HashMap<String, Option<Vec<u8>>> = HashMap::new();
+    for (id, decl) in &scan.fonts {
+        let bytes = resolve_font(decl).and_then(|p| std::fs::read(p).ok());
+        font_bytes.insert(id.clone(), bytes);
+    }
+
+    // stable output: sort by (font id, spot, code point)
+    let mut used: Vec<(&(String, char), &Usage)> = scan.usage.iter().collect();
+    used.sort_by(|a, b| (&a.0.0, &a.1.spot, a.0.1 as u32).cmp(&(&b.0.0, &b.1.spot, b.0.1 as u32)));
+
+    let mut notes = Vec::new();
+    for ((font_id, ch), usage) in used {
+        let Some(Some(bytes)) = font_bytes.get(font_id) else {
+            continue; // unresolvable font: skip silently
+        };
+        let Ok(face) = FontRef::new(bytes) else {
+            continue;
+        };
+        let cmap = face.charmap();
+        let present = cmap.map(*ch).is_some_and(|g| g.to_u32() != 0);
+        if !present {
+            let more = if usage.count > 1 {
+                format!(" ({} cues)", usage.count)
+            } else {
+                String::new()
+            };
+            let (time, spot) = (&usage.time, &usage.spot);
+            notes.push(Note {
+                severity: Severity::Warning,
+                code: Code::SubtitleGlyphMissing,
+                message: format!(
+                    "Subtitle {} ({time}): character {:?} (U+{:04X}) has no glyph in font '{font_id}'{more}",
+                    spot_label(spot),
+                    ch,
+                    *ch as u32,
+                ),
+                file: Some(file.to_path_buf()),
+                line: 0,
+            });
+        }
+    }
+    notes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +607,95 @@ mod tests {
         let f = write_tmp(r#"<CompositionPlaylist><Id>x</Id></CompositionPlaylist>"#);
         let notes = validate_subtitle(f.path(), Standard::Unknown);
         assert!(notes.iter().any(|n| n.code == Code::SubtitleParseError));
+    }
+
+    // minimal sfnt with a single cmap (format 12) mapping the given chars to
+    // sequential glyph ids; chars not listed have no glyph.
+    fn make_font(chars: &[char]) -> Vec<u8> {
+        let n = chars.len() as u32;
+        let mut sub = Vec::new();
+        sub.extend_from_slice(&12u16.to_be_bytes()); // format 12
+        sub.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        sub.extend_from_slice(&(16 + 12 * n).to_be_bytes()); // length
+        sub.extend_from_slice(&0u32.to_be_bytes()); // language
+        sub.extend_from_slice(&n.to_be_bytes()); // numGroups
+        for (i, c) in chars.iter().enumerate() {
+            let code = *c as u32;
+            sub.extend_from_slice(&code.to_be_bytes()); // startCharCode
+            sub.extend_from_slice(&code.to_be_bytes()); // endCharCode
+            sub.extend_from_slice(&(i as u32 + 1).to_be_bytes()); // startGlyphID
+        }
+
+        let mut cmap = Vec::new();
+        cmap.extend_from_slice(&0u16.to_be_bytes()); // version
+        cmap.extend_from_slice(&1u16.to_be_bytes()); // numTables
+        cmap.extend_from_slice(&3u16.to_be_bytes()); // platform: Windows
+        cmap.extend_from_slice(&10u16.to_be_bytes()); // encoding: Unicode full
+        cmap.extend_from_slice(&12u32.to_be_bytes()); // subtable offset
+        cmap.extend_from_slice(&sub);
+
+        let mut font = Vec::new();
+        font.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // sfnt version
+        font.extend_from_slice(&1u16.to_be_bytes()); // numTables
+        font.extend_from_slice(&16u16.to_be_bytes()); // searchRange
+        font.extend_from_slice(&0u16.to_be_bytes()); // entrySelector
+        font.extend_from_slice(&0u16.to_be_bytes()); // rangeShift
+        font.extend_from_slice(b"cmap");
+        font.extend_from_slice(&0u32.to_be_bytes()); // checksum
+        font.extend_from_slice(&28u32.to_be_bytes()); // offset
+        font.extend_from_slice(&(cmap.len() as u32).to_be_bytes()); // length
+        font.extend_from_slice(&cmap);
+        font
+    }
+
+    fn sub_with_text(text: &str) -> tempfile::NamedTempFile {
+        let doc = format!(
+            r#"<?xml version="1.0"?>
+<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:LoadFont ID="f1">urn:uuid:font</dcst:LoadFont>
+  <dcst:SubtitleList>
+    <dcst:Font ID="f1">
+      <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
+        <dcst:Text>{text}</dcst:Text>
+      </dcst:Subtitle>
+    </dcst:Font>
+  </dcst:SubtitleList>
+</dcst:SubtitleReel>"#
+        );
+        write_tmp(&doc)
+    }
+
+    #[test]
+    fn missing_glyph_fires() {
+        let font = tempfile::Builder::new().suffix(".ttf").tempfile().unwrap();
+        std::fs::write(font.path(), make_font(&['H', 'i'])).unwrap();
+        let f = sub_with_text("Hé"); // 'é' has no glyph
+        let path = font.path().to_path_buf();
+        let notes = check_glyph_coverage(f.path(), |_decl| Some(path.clone()));
+        assert_eq!(notes.len(), 1, "got: {notes:?}");
+        assert_eq!(notes[0].code, Code::SubtitleGlyphMissing);
+        assert!(
+            notes[0].message.contains("U+00E9"),
+            "got: {}",
+            notes[0].message
+        );
+        assert!(notes[0].message.contains("00:00:05:000"));
+    }
+
+    #[test]
+    fn full_coverage_is_silent() {
+        let font = tempfile::Builder::new().suffix(".ttf").tempfile().unwrap();
+        std::fs::write(font.path(), make_font(&['H', 'i'])).unwrap();
+        let f = sub_with_text("Hi");
+        let path = font.path().to_path_buf();
+        let notes = check_glyph_coverage(f.path(), |_decl| Some(path.clone()));
+        assert!(notes.is_empty(), "expected clean, got: {notes:?}");
+    }
+
+    #[test]
+    fn unresolvable_font_is_skipped() {
+        let f = sub_with_text("Hé");
+        let notes = check_glyph_coverage(f.path(), |_decl| None);
+        assert!(notes.is_empty(), "expected silent skip, got: {notes:?}");
     }
 }

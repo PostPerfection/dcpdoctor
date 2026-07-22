@@ -114,6 +114,10 @@ enum Commands {
         /// Write report to file
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Also write the report into each DCP's own folder
+        #[arg(long)]
+        report_to_folder: bool,
     },
 
     /// Compare two DCPs
@@ -465,6 +469,7 @@ fn main() {
             timeline,
             manifest,
             output,
+            report_to_folder,
         }) => {
             let flags = ValidateFlags {
                 no_hashes,
@@ -486,6 +491,7 @@ fn main() {
                 timeline,
                 manifest,
                 output,
+                report_to_folder,
             };
             run_validate(&dcp_dirs, flags, format);
         }
@@ -828,12 +834,28 @@ fn main() {
             } else {
                 match dcpdoctor_core::audio::measure_loudness(&audio_file) {
                     Ok(result) => {
+                        // Leq(m) (ISO 21727) reported alongside the EBU R128 result
+                        let leq = dcpdoctor_core::loudness::measure_leq_m(&audio_file);
                         if cli.json {
-                            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                            let mut val = serde_json::to_value(&result).unwrap();
+                            if let Some(obj) = val.as_object_mut() {
+                                obj.insert(
+                                    "leq_m_db".into(),
+                                    serde_json::json!(if leq.success {
+                                        Some(leq.leq_m_db)
+                                    } else {
+                                        None
+                                    }),
+                                );
+                            }
+                            println!("{}", serde_json::to_string_pretty(&val).unwrap());
                         } else {
                             println!("Integrated loudness: {:.1} LUFS", result.integrated_lufs);
                             println!("True peak:           {:.1} dBTP", result.true_peak_dbtp);
                             println!("Loudness range:      {:.1} LU", result.loudness_range_lu);
+                            if leq.success {
+                                println!("Leq(m) (ISO 21727):  {:.1} dB", leq.leq_m_db);
+                            }
                         }
                     }
                     Err(e) => {
@@ -1558,6 +1580,7 @@ struct ValidateFlags {
     timeline: Option<PathBuf>,
     manifest: Option<PathBuf>,
     output: Option<PathBuf>,
+    report_to_folder: bool,
 }
 
 /// The --studio ffprobe checks re-cover a couple of findings the core path
@@ -1711,6 +1734,23 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
             result.ok(),
         ));
 
+        // Write the report into the DCP's own folder, reusing the report writers.
+        if flags.report_to_folder && dir.is_dir() {
+            let name = match format {
+                ReportFormat::Json => "dcpdoctor-report.json",
+                ReportFormat::Html => "dcpdoctor-report.html",
+                ReportFormat::Text => "dcpdoctor-report.txt",
+            };
+            let report_path = dir.join(name);
+            match std::fs::File::create(&report_path) {
+                Ok(mut file) => {
+                    dcpdoctor_core::report::write_report(&result, dir, &mut file, format).unwrap();
+                    eprintln!("Report written to {}", report_path.display());
+                }
+                Err(e) => eprintln!("Failed to write report to {}: {e}", report_path.display()),
+            }
+        }
+
         if let Some(ref output_path) = flags.output {
             let mut file = std::fs::File::create(output_path).unwrap();
             dcpdoctor_core::report::write_report(&result, dir, &mut file, format).unwrap();
@@ -1771,6 +1811,9 @@ fn run_deep_j2k(dcp_dir: &std::path::Path) -> Vec<dcpdoctor_core::Note> {
                     // Not a picture MXF or ffprobe unavailable; skip
                 }
             }
+            // per-frame guard-bit constraint (RDD 52); reports the offending
+            // frame + timecode. Non-picture MXFs yield no notes.
+            notes.extend(dcpdoctor_core::j2k::check_guard_bits_mxf(&path));
         }
     }
 

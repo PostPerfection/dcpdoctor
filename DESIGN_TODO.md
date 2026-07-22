@@ -2,6 +2,112 @@
 
 Advertised (README/docs/CHANGELOG) but missing, stubbed, or partial. Wire or de-advertise each.
 
+## DoM tracker gaps (2026-07-22)
+
+Feature requests from the DCP-o-matic Mantis tracker (dom#N =
+https://dcpomatic.com/bugs/view.php?id=N) that dcpdoctor lacks. Priority order.
+Done items are in the dated done notes below.
+
+1. Verify encrypted DCPs with a KDM (dom#2971, dom#1957): accept KDM + recipient
+   key, unwrap content keys, decrypt and verify frames (hashes, bitrate, J2K), and
+   check HMAC/MIC integrity. postkit already plans the reusable KDM-unwrap API
+   (postkit DESIGN_TODO "Imported KDM decryption"); build on that.
+
+## DoM tracker gaps 1-2: done (2026-07-22)
+
+Leq(m) loudness (dom#3092) and the six smaller verifier checks. All wired into
+the core verify path except the report-folder flag (a CLI option) and Leq(m)
+(reported, not a note).
+
+- Leq(m) (ISO 21727, CCIR 468-weighted, SMPTE B-chain 85 dB reference): computed
+  locally in `loudness.rs` from decoded PCM (ffmpeg -> mono f32 -> CCIR 468
+  weighting via rustfft -> equivalent level). Reported alongside EBU R128 in the
+  `loudness` CLI command (text + JSON `leq_m_db`) and the qc-report HTML table.
+  Verified against the derivable reference: a full-scale 1 kHz sine is
+  -3.01 dBFS RMS, weighting is 0 dB at 1 kHz, +105 dB offset -> 101.99 dB (unit
+  test). Migrate to postkit::loudness later (see dedup section).
+- `reel_too_short` (dom#2723, ST 429-7): warns when a reel's picture
+  duration/edit-rate is under 1 s. Fires on 0.5 s, silent at exactly 1 s.
+- `sound_channel_config_invalid` (dom#1960, Bv2.1 §10.3.1 / RDD 52): the request
+  said "SMPTE forbids config 4", but RDD 52 §10.3.1 is the opposite: SMPTE Bv2.1
+  *requires* Static Container Channel Configuration 4 (the "open" ChannelAssignment
+  UL) with ST 377-4 MCA labels. Implemented the spec-correct check: a SMPTE sound
+  essence declaring a legacy static config (1/2/3/5) is warned; config 4 and MCA
+  are clean. Read from the WAV descriptor's ChannelAssignment via asdcplib. Test
+  writes a Cfg1 MXF (fires) and a Cfg4 MXF (silent).
+- `subtitle_frame_rate_mismatch` (dom#2994, ST 428-7 §5.9): warns when a subtitle
+  document's TimeCodeRate differs from the composition edit rate rounded to the
+  nearest integer. Test: 25 vs 24 fires, 24 vs 24 silent.
+- `non_ascii_filename` (dom#3016): warns on non-ASCII characters in the DCP folder
+  name and any file/sub-folder name.
+- `j2k_legacy_ffff` (dom#2740, SMPTE Cat. 862 / Legacy Compatibility Note 1):
+  detects two consecutive 0xFF bytes at a byte position 254 mod 256 (realigned by
+  each tile-part length), which crashes legacy Dolby decoders (DSS200 Cat. 862,
+  DSP100). Codestream scanner in `j2k.rs`, wired into the `--check-mxf` picture
+  path (reads frame 0 via asdcplib jp2k). The codestream header parse could later
+  move to the grok library, which already parses J2K headers.
+- `--report-to-folder` (dom#2990): writes the report (reusing the existing
+  text/JSON/HTML writers) as `dcpdoctor-report.{txt,json,html}` into each DCP's
+  own folder.
+
+## ISO/IEC 15444-1 cinema J2K constraints: done (2026-07-22)
+
+dom#2451/#1664, beyond what `validate_j2k_dci` already covered (wavelet,
+decomposition, code-block, components, bit depth, RSIZ-vs-resolution). New
+`j2k::validate_cinema_j2k` parses the picture frame's codestream and checks
+against SMPTE ST 429-4 / ISO 15444-1 digital-cinema profiles:
+
+- single tile (error), required SIZ/COD/QCD markers (error).
+- tile-part organisation: 3 for 2K (one per colour component), 6 for 4K (warning).
+- frame size vs profile: 2048x1080 (2K) / 4096x2160 (4K) (error).
+- per-colour-component byte limit: each of the first three tile-parts (one 2K
+  colour component) within the DCI 200 Mbps-equivalent budget, scaling with the
+  picture edit rate (1,041,666 bytes at 24 fps) (error).
+
+Wired into the `--check-mxf` picture path alongside the 0xFFFF check, sharing one
+frame read (`j2k::check_picture_j2k_mxf`). Tests build synthetic codestreams that
+fire each rule and a conformant one that stays clean; verified silent on the real
+ClairMeta `dcp_ov` picture MXF. Skipped, to avoid guessing: the progression-order
+(CPRL) rule was not confirmed from a primary source this pass, and the total-frame
+byte limit is already covered by the existing bitrate check, so neither was added.
+The guard-bit count check moved out of `validate_cinema_j2k` into the per-frame
+`check_guard_bits_mxf` so it can report a timecode (dom#2984, done note below);
+`validate_cinema_j2k` keeps only the QCD-present marker check.
+
+## Subtitle glyph coverage + guard-bit timecode: done (2026-07-22)
+
+- Subtitle glyph coverage (dom#3080, dom#838): `subtitle::check_glyph_coverage`
+  parses each plain-XML subtitle asset, collects every code point used in each cue
+  (tracking the active `<Font>` via a stack, or the sole LoadFont when a document
+  has one), resolves each `LoadFont` to a font file, and warns per missing glyph
+  with the cue's TimeIn and code point (`subtitle_glyph_missing`). Font resolution:
+  Interop DCSubtitle uses the `LoadFont URI` file (relative to the subtitle, then
+  the DCP root); SMPTE ST 428-7 uses the `LoadFont` element text as an asset urn
+  resolved through the ASSETMAP. A font that doesn't resolve is skipped silently
+  (the structural check already warns on a missing LoadFont). Wired into the core
+  verify path (`validate.rs` §4b) next to `validate_subtitle`; only plain-XML
+  subtitles are inspected, matching the existing validator (MXF-wrapped ST 429-5
+  timed text is still skipped, so the encrypted ISDCF fixture stays clean). Uses
+  `skrifa` (googlefonts/fontations) for cmap lookup rather than the suggested
+  `ttf-parser`: ttf-parser 0.25.1 is flagged unmaintained (RUSTSEC-2026-0192),
+  while skrifa/read-fonts is the actively-maintained equivalent and its `Charmap`
+  picks the broadest Unicode subtable. Tests build a synthetic sfnt (cmap format 12)
+  and prove a missing glyph fires, full coverage is silent, and an unresolvable
+  font is skipped.
+- Guard-bit error locations with timecode (dom#2984): `j2k::check_guard_bits_mxf`
+  iterates the picture MXF's frames via asdcplib jp2k, reads each frame's QCD guard
+  bits (reusing `qcd_guard_bits`), and on the first frame that violates the RDD 52
+  rule (1 guard bit for 2K, 2 for 4K) emits `j2k_guard_bits` with the frame index,
+  its derived SMPTE timecode (from the picture edit rate), and how many frames are
+  affected. Essence that isn't a readable codestream (encrypted without a KDM, or
+  non-picture) has no SOC on frame 0 and is skipped, same as `j2k_legacy_ffff`.
+  Wired into `--deep-j2k` (`run_deep_j2k`). This replaces the package-level guard
+  warning that had been in `validate_cinema_j2k`. Spec note: the request said "1
+  guard bit for 2K/4K", but RDD 52 (referencing ISO 15444-1) requires 1 for 2K and
+  2 for 4K; implemented the spec-correct rule (confirmed via RDD 52 / SMPTE
+  Bv2.1). Tested on synthetic codestreams: correct counts stay silent, wrong ones
+  fire, and the timecode derivation is unit-tested.
+
 ## MCA / 3D / Atmos essence awareness: done
 
 Native asdcplib probing (pin bumped to `5fe4d61` for `pcm::mca_labels`, aligned in
@@ -126,6 +232,10 @@ the core `verify_dcp` path and covered by tests.
 - hash.rs now adapts `sha1_base64`/`sha1_hex` onto `postkit::hash::hash_file`. Done.
 - loudness.rs now uses `postkit::loudness::LoudnessResult` (the local copy's unused
   `compliant_*` flags were dropped). Done.
+- loudness.rs Leq(m) (ISO 21727 / CCIR 468) is implemented locally (dom#3092);
+  the weighting + level math should migrate to `postkit::loudness` alongside the
+  R128 helper once a pin bump is worthwhile. Added a `rustfft` dep to dcpdoctor-core
+  for the CCIR 468 weighting FFT; if it moves to postkit the dep moves with it.
 - Still open (needs postkit API work, left as-is): j2k.rs in dcpdoctor-core and
   dcpdoctor-wasm re-implement postkit::j2k; bitrate.rs redoes postkit's analyse_bitrate;
   frame_compare.rs duplicated with imfwizard-core.

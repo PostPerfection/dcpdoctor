@@ -125,6 +125,8 @@ pub enum Code {
     J2kBitrateExceeded,
     J2kInvalidProfile,
     J2kInvalidComponentCount,
+    J2kLegacyFfff,
+    J2kGuardBits,
 
     // Sound
     SoundInvalidSampleRate,
@@ -134,11 +136,14 @@ pub enum Code {
     SoundClipping,
     SoundSilent,
     MainSoundConfigInvalid,
+    SoundChannelConfigInvalid,
 
     // Subtitle
     SubtitleParseError,
     SubtitleInvalidTiming,
+    SubtitleFrameRateMismatch,
     SubtitleFontMissing,
+    SubtitleGlyphMissing,
     SubtitleFirstEventEarly,
     SubtitleLineCount,
     SubtitleLineLength,
@@ -160,6 +165,7 @@ pub enum Code {
     // Reel continuity
     ReelDiscontinuity,
     ReelIncoherent,
+    ReelTooShort,
 
     // 3D
     StereoMismatch,
@@ -181,6 +187,7 @@ pub enum Code {
     // Package hygiene
     ForeignFileInPackage,
     EmptyFileInPackage,
+    NonAsciiFilename,
 }
 
 impl Code {
@@ -224,6 +231,8 @@ impl Code {
             Code::J2kBitrateExceeded => "j2k_bitrate_exceeded",
             Code::J2kInvalidProfile => "j2k_invalid_profile",
             Code::J2kInvalidComponentCount => "j2k_invalid_component_count",
+            Code::J2kLegacyFfff => "j2k_legacy_ffff",
+            Code::J2kGuardBits => "j2k_guard_bits",
             Code::SoundInvalidSampleRate => "sound_invalid_sample_rate",
             Code::SoundInvalidChannelCount => "sound_invalid_channel_count",
             Code::SoundInvalidQuantization => "sound_invalid_quantization",
@@ -231,9 +240,12 @@ impl Code {
             Code::SoundClipping => "sound_clipping",
             Code::SoundSilent => "sound_silent",
             Code::MainSoundConfigInvalid => "main_sound_config_invalid",
+            Code::SoundChannelConfigInvalid => "sound_channel_config_invalid",
             Code::SubtitleParseError => "subtitle_parse_error",
             Code::SubtitleInvalidTiming => "subtitle_invalid_timing",
+            Code::SubtitleFrameRateMismatch => "subtitle_frame_rate_mismatch",
             Code::SubtitleFontMissing => "subtitle_font_missing",
+            Code::SubtitleGlyphMissing => "subtitle_glyph_missing",
             Code::SubtitleFirstEventEarly => "subtitle_first_event_early",
             Code::SubtitleLineCount => "subtitle_line_count",
             Code::SubtitleLineLength => "subtitle_line_length",
@@ -249,6 +261,7 @@ impl Code {
             Code::KdmNotYetValid => "kdm_not_yet_valid",
             Code::ReelDiscontinuity => "reel_discontinuity",
             Code::ReelIncoherent => "reel_incoherent",
+            Code::ReelTooShort => "reel_too_short",
             Code::StereoMismatch => "stereo_mismatch",
             Code::MarkerMissing => "marker_missing",
             Code::MarkerInvalid => "marker_invalid",
@@ -258,6 +271,7 @@ impl Code {
             Code::AuxDataDetected => "aux_data_detected",
             Code::ForeignFileInPackage => "foreign_file_in_package",
             Code::EmptyFileInPackage => "empty_file_in_package",
+            Code::NonAsciiFilename => "non_ascii_filename",
         }
     }
 }

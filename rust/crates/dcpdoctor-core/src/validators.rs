@@ -1477,6 +1477,223 @@ fn isdcf_doc9_char(c: char) -> bool {
     matches!(u, 0x20..=0x7E | 0xA0..=0xFF | 0x266A) || c == '\n' || c == '\t'
 }
 
+// ─── Reel Duration (ST 429-7) ─────────────────────────────────────────────────
+
+/// SMPTE ST 429-7: every reel shall be at least one second long. Uses the
+/// picture track's Duration and EditRate; reels with no readable rate are
+/// skipped (DoM #2723).
+pub fn check_reel_duration(cpl_path: &Path) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    for (i, cap) in reel_re.captures_iter(&content).enumerate() {
+        let reel = cap.get(1).unwrap().as_str();
+        let (Some(dur), Some((n, d))) = (reel_picture_duration(reel), reel_picture_edit_rate(reel))
+        else {
+            continue;
+        };
+        if n == 0 {
+            continue;
+        }
+        let seconds = dur as f64 * d as f64 / n as f64;
+        if seconds + 1e-6 < 1.0 {
+            notes.push(
+                Note::warning(
+                    Code::ReelTooShort,
+                    format!(
+                        "Reel {} is {seconds:.2}s long, shorter than the SMPTE ST 429-7 minimum of 1s",
+                        i + 1
+                    ),
+                )
+                .with_file(cpl_path),
+            );
+        }
+    }
+    notes
+}
+
+// ─── Sound Channel Configuration (Bv2.1 §10.3.1) ──────────────────────────────
+
+/// Channel configuration of a reel's MainSound essence, read from the WAV
+/// descriptor's ChannelAssignment UL. `None` when no readable sound essence is
+/// available (XML-only validation).
+fn sound_channel_format(
+    block: &str,
+    id_to_file: &HashMap<String, PathBuf>,
+) -> Option<asdcplib::pcm::ChannelFormat> {
+    let path = asset_file(block, id_to_file)?;
+    let s = path.to_str()?;
+    let mut reader = asdcplib::pcm::MxfReader::new();
+    reader.open_read(s).ok()?;
+    Some(reader.audio_descriptor().ok()?.channel_format)
+}
+
+/// SMPTE Bv2.1 (RDD 52) §10.3.1: sound track files shall use Static Container
+/// Channel Configuration 4 (the "open" ChannelAssignment UL) together with
+/// ST 377-4 MCA labels. A SMPTE sound asset declaring a legacy static
+/// configuration (1/2/3/5) is flagged (DoM #1960). Read from the essence, so
+/// XML-only validation is skipped; Interop is out of scope.
+pub fn check_sound_channel_configuration(
+    cpl_path: &Path,
+    standard: Standard,
+    id_to_file: &HashMap<String, PathBuf>,
+) -> Vec<Note> {
+    use asdcplib::pcm::ChannelFormat;
+    let mut notes = Vec::new();
+    if standard != Standard::Smpte {
+        return notes;
+    }
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+    let sound_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?MainSound(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?MainSound>",
+    )
+    .unwrap();
+    for (i, cap) in sound_re.captures_iter(&content).enumerate() {
+        let block = cap.get(1).unwrap().as_str();
+        let Some(fmt) = sound_channel_format(block, id_to_file) else {
+            continue;
+        };
+        // Configuration 4 (open) and the MCA form are compliant; None means the
+        // descriptor carries no ChannelAssignment, handled by the MCA check.
+        let legacy = match fmt {
+            ChannelFormat::Cfg1 => Some(1),
+            ChannelFormat::Cfg2 => Some(2),
+            ChannelFormat::Cfg3 => Some(3),
+            ChannelFormat::Cfg5 => Some(5),
+            _ => None,
+        };
+        if let Some(cfg) = legacy {
+            notes.push(
+                Note::warning(
+                    Code::SoundChannelConfigInvalid,
+                    format!(
+                        "Reel {} sound uses legacy Channel Configuration {cfg}; Bv2.1 §10.3.1 requires Configuration 4 with MCA labels",
+                        i + 1
+                    ),
+                )
+                .with_file(cpl_path),
+            );
+        }
+    }
+    notes
+}
+
+// ─── Subtitle Frame Rate (ST 428-7 §5.9) ──────────────────────────────────────
+
+/// Integer frame rate declared by a subtitle document: the SMPTE `<TimeCodeRate>`
+/// element or the Interop `TimeCodeRate` attribute.
+fn subtitle_time_code_rate(xml: &str) -> Option<u64> {
+    if let Some(v) = extract_ns_tag(xml, "TimeCodeRate")
+        && let Ok(n) = v.trim().parse::<u64>()
+    {
+        return Some(n);
+    }
+    let attr = regex_lite::Regex::new(r#"TimeCodeRate\s*=\s*"(\d+)""#).unwrap();
+    attr.captures(xml)?.get(1)?.as_str().parse().ok()
+}
+
+/// SMPTE ST 428-7 §5.9: a subtitle document's frame rate (TimeCodeRate, the
+/// EditRate rounded to the nearest integer) should match the composition edit
+/// rate; a mismatch makes players mistime the cues (DoM #2994). Assets whose
+/// essence is missing/encrypted/unreadable, or that declare no rate, are skipped.
+pub fn check_subtitle_frame_rate(
+    cpl_path: &Path,
+    id_to_file: &HashMap<String, PathBuf>,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    let sub_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?MainSubtitle(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?MainSubtitle>",
+    )
+    .unwrap();
+    for (i, reel_cap) in reel_re.captures_iter(&content).enumerate() {
+        let reel = reel_cap.get(1).unwrap().as_str();
+        let Some((n, d)) = reel_picture_edit_rate(reel) else {
+            continue;
+        };
+        if d == 0 {
+            continue;
+        }
+        // ST 428-7 §5.9: round to nearest, ties to the higher integer
+        let expected = (n as f64 / d as f64).round() as u64;
+        for cap in sub_re.captures_iter(reel) {
+            let block = cap.get(1).unwrap().as_str();
+            let Some(xml) = subtitle_xml(block, id_to_file) else {
+                continue;
+            };
+            let Some(rate) = subtitle_time_code_rate(&xml) else {
+                continue;
+            };
+            if rate != expected {
+                notes.push(
+                    Note::warning(
+                        Code::SubtitleFrameRateMismatch,
+                        format!(
+                            "Reel {} subtitle frame rate {rate} does not match the composition edit rate {expected}",
+                            i + 1
+                        ),
+                    )
+                    .with_file(cpl_path),
+                );
+            }
+        }
+    }
+    notes
+}
+
+// ─── Non-ASCII File Names ──────────────────────────────────────────────────────
+
+/// Flag DCP folder, file, and sub-folder names that contain non-ASCII characters
+/// (DoM #3016). Some ingest systems mishandle them, so this is a portability
+/// warning, not a spec violation.
+pub fn check_non_ascii_names(dcp_dir: &Path) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    if let Some(name) = dcp_dir.file_name().and_then(|n| n.to_str())
+        && !name.is_ascii()
+    {
+        notes.push(
+            Note::warning(
+                Code::NonAsciiFilename,
+                format!("DCP folder name contains non-ASCII characters: {name}"),
+            )
+            .with_file(dcp_dir),
+        );
+    }
+
+    let mut stack = vec![dcp_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.is_ascii() {
+                notes.push(
+                    Note::warning(
+                        Code::NonAsciiFilename,
+                        format!("File or folder name contains non-ASCII characters: {name}"),
+                    )
+                    .with_file(&path),
+                );
+            }
+            if path.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+
+    notes
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Extract the first `<Tag>` or `<ns:Tag>` element's trimmed text.
@@ -2171,5 +2388,161 @@ mod tests {
             !notes.iter().any(|n| n.message.ends_with(": ASSETMAP.xml")),
             "package descriptor must not be flagged"
         );
+    }
+
+    // ─── Reel duration (ST 429-7) ──────────────────────────────────────────
+
+    fn reel_dur_cpl(frames: u64, edit_rate: &str) -> String {
+        format!(
+            r#"<CompositionPlaylist><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><EditRate>{edit_rate}</EditRate><Duration>{frames}</Duration></MainPicture>
+</AssetList></Reel></CompositionPlaylist>"#
+        )
+    }
+
+    #[test]
+    fn short_reel_flagged_long_reel_clean() {
+        // 12 frames at 24 fps = 0.5 s -> too short
+        let short = write_cpl(&reel_dur_cpl(12, "24 1"));
+        assert!(
+            check_reel_duration(short.path())
+                .iter()
+                .any(|n| n.code == Code::ReelTooShort),
+            "half-second reel must be flagged"
+        );
+        // 48 frames at 24 fps = 2 s -> fine
+        let ok = write_cpl(&reel_dur_cpl(48, "24 1"));
+        assert!(
+            check_reel_duration(ok.path()).is_empty(),
+            "two-second reel must be clean"
+        );
+        // exactly one second is the boundary and passes
+        let boundary = write_cpl(&reel_dur_cpl(24, "24 1"));
+        assert!(check_reel_duration(boundary.path()).is_empty());
+    }
+
+    // ─── Subtitle frame rate (ST 428-7 §5.9) ───────────────────────────────
+
+    #[test]
+    fn subtitle_frame_rate_mismatch_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let subid = "cccccccc-0000-0000-0000-000000000001";
+        let sub_path = dir.path().join("sub.xml");
+        let cpl = write_cpl(&format!(
+            r#"<CompositionPlaylist><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><EditRate>24 1</EditRate><Duration>48</Duration></MainPicture>
+  <MainSubtitle><Id>urn:uuid:{subid}</Id></MainSubtitle>
+</AssetList></Reel></CompositionPlaylist>"#
+        ));
+        let map: HashMap<String, PathBuf> = HashMap::from([(subid.to_string(), sub_path.clone())]);
+
+        // 25 fps subtitle against a 24 fps composition -> mismatch
+        std::fs::write(
+            &sub_path,
+            r#"<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST"><dcst:TimeCodeRate>25</dcst:TimeCodeRate></dcst:SubtitleReel>"#,
+        )
+        .unwrap();
+        assert!(
+            check_subtitle_frame_rate(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::SubtitleFrameRateMismatch),
+            "25 vs 24 must be flagged"
+        );
+
+        // matching rate is clean
+        std::fs::write(
+            &sub_path,
+            r#"<dcst:SubtitleReel xmlns:dcst="x"><dcst:TimeCodeRate>24</dcst:TimeCodeRate></dcst:SubtitleReel>"#,
+        )
+        .unwrap();
+        assert!(
+            check_subtitle_frame_rate(cpl.path(), &map).is_empty(),
+            "24 vs 24 must be clean"
+        );
+    }
+
+    // ─── Non-ASCII names ────────────────────────────────────────────────────
+
+    #[test]
+    fn non_ascii_filename_flagged_ascii_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("café.xml"), b"x").unwrap();
+        std::fs::write(dir.path().join("plain.xml"), b"x").unwrap();
+        let notes = check_non_ascii_names(dir.path());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::NonAsciiFilename && n.message.contains("café")),
+            "non-ASCII file name must be flagged, got: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.message.contains("plain.xml")),
+            "ASCII file name must not be flagged"
+        );
+    }
+
+    // ─── Sound channel configuration (Bv2.1 §10.3.1) ───────────────────────
+
+    #[test]
+    fn legacy_channel_config_flagged_config4_clean() {
+        use asdcplib::pcm::{AudioDescriptor, ChannelFormat, MxfWriter};
+        use asdcplib::{Rational, WriterInfo};
+
+        let dir = tempfile::tempdir().unwrap();
+        let id = "aaaaaaaa-0000-0000-0000-000000000001";
+        let write_mxf = |path: &Path, fmt: ChannelFormat| {
+            let desc = AudioDescriptor {
+                edit_rate: Rational::new(24, 1),
+                audio_sampling_rate: Rational::new(48_000, 1),
+                locked: true,
+                channel_count: 6,
+                quantization_bits: 24,
+                block_align: 18,
+                avg_bps: 864_000,
+                linked_track_id: 0,
+                container_duration: 1,
+                channel_format: fmt,
+            };
+            let info = WriterInfo {
+                asset_uuid: [2; 16],
+                ..Default::default()
+            };
+            let frame = vec![0u8; 36_000];
+            let mut w = MxfWriter::new();
+            w.open_write(path.to_str().unwrap(), &info, &desc, 16_384)
+                .unwrap();
+            w.write_frame(&frame, None, None).unwrap();
+            w.finalize().unwrap();
+        };
+
+        let cpl = write_cpl(&format!(
+            r#"<CompositionPlaylist><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <MainSound><Id>urn:uuid:{id}</Id></MainSound>
+</AssetList></Reel></CompositionPlaylist>"#
+        ));
+
+        // legacy static configuration 1 (5.1) -> flagged
+        let legacy = dir.path().join("legacy.mxf");
+        write_mxf(&legacy, ChannelFormat::Cfg1);
+        let map: HashMap<String, PathBuf> = HashMap::from([(id.to_string(), legacy)]);
+        let notes = check_sound_channel_configuration(cpl.path(), Standard::Smpte, &map);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SoundChannelConfigInvalid),
+            "legacy Configuration 1 must be flagged, got: {notes:?}"
+        );
+
+        // configuration 4 (open) -> clean
+        let ok = dir.path().join("ok.mxf");
+        write_mxf(&ok, ChannelFormat::Cfg4);
+        let map2: HashMap<String, PathBuf> = HashMap::from([(id.to_string(), ok)]);
+        assert!(
+            check_sound_channel_configuration(cpl.path(), Standard::Smpte, &map2).is_empty(),
+            "Configuration 4 must be clean"
+        );
+
+        // Interop is out of scope
+        assert!(check_sound_channel_configuration(cpl.path(), Standard::Interop, &map2).is_empty());
     }
 }

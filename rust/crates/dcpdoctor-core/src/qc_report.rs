@@ -122,17 +122,24 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
             }
             let path = opts.imp_dir.join(&t.filename);
             if let Ok(m) = crate::audio::measure_loudness(&path) {
+                // Leq(m) (ISO 21727) reported alongside the EBU R128 result
+                let leq = crate::loudness::measure_leq_m(&path);
+                let leq_cell = if leq.success {
+                    format!("{:.1} dB", leq.leq_m_db)
+                } else {
+                    "n/a".to_string()
+                };
                 let _ = writeln!(
                     rows,
-                    "<tr><td>{}</td><td>{:.1} LUFS</td><td>{:.1} dBTP</td><td>{:.1} LU</td></tr>",
+                    "<tr><td>{}</td><td>{:.1} LUFS</td><td>{:.1} dBTP</td><td>{:.1} LU</td><td>{leq_cell}</td></tr>",
                     t.filename, m.integrated_lufs, m.true_peak_dbtp, m.loudness_range_lu
                 );
             }
         }
         if !rows.is_empty() {
-            html.push_str("<h2>Loudness (EBU R128)</h2>\n<table>\n");
+            html.push_str("<h2>Loudness (EBU R128 and Leq(m))</h2>\n<table>\n");
             html.push_str(
-                "<tr><th>File</th><th>Integrated</th><th>True Peak</th><th>Range</th></tr>\n",
+                "<tr><th>File</th><th>Integrated</th><th>True Peak</th><th>Range</th><th>Leq(m)</th></tr>\n",
             );
             html.push_str(&rows);
             html.push_str("</table>\n");
