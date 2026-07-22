@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- MainSoundConfiguration (ST 429-16): SMPTE CPLs are checked for the tag in CompositionMetadataAsset, its `<soundfield>/<channels>` value is parsed against the MCA/ISDCF label set (garbage like `None` errors as `main_sound_config_invalid`), and the declared channel count is cross-checked against the sound MXF's ChannelCount (`sound_invalid_channel_count`).
+- FFOC/LFOC marker offsets: FFOC in the first reel must be 1 and LFOC in the last reel must be one less than that reel's duration, warned per libdcp wording (`marker_invalid`).
+- First-subtitle timing (Bv2.1): warns (`subtitle_first_event_early`) when the first reel's first displayable timed-text event starts under 4s in. Only the first reel counts and empty placeholder subtitle assets are ignored, avoiding DCP-o-matic bug #2757. Reads MXF-wrapped ST 428-7 XML and handles both SMPTE tick and Interop editable-unit TimeIn forms.
 - Stereoscopic 3D (ST 429-10): the msp-cpl `MainStereoscopicPicture` form is now validated as a picture track (cross-refs, duration), the FrameRate = 2x EditRate relationship is checked, and the essence type is confirmed as stereoscopic J2K where the MXF is present.
 - Auxiliary data (ST 429-18): an `aux_data_detected` INFO identifies each AuxData track (Dolby Atmos / IAB), enriched with the probed essence type, and a duration mismatch against the reel's picture warns as `cpl_mismatched_durations`. The aux asset's cross-refs and PKL hashes are covered by the generic asset checks.
 - PKL `Size` is checked against the actual file size (`pkl_size_mismatch`), independent of `--no-hashes`.

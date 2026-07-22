@@ -342,6 +342,20 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         for note in crate::validators::check_audio_channels(cpl_path, &id_to_file) {
             result.add(note);
         }
+        let sound_channels =
+            crate::validators::first_sound_channel_count_of_cpl(cpl_path, &id_to_file);
+        for note in crate::validators::check_main_sound_configuration(
+            cpl_path,
+            dcp.standard,
+            sound_channels,
+        ) {
+            result.add(note);
+        }
+        for note in
+            crate::validators::check_first_subtitle_timing(cpl_path, dcp.standard, &id_to_file)
+        {
+            result.add(note);
+        }
         for note in crate::validators::check_reel_continuity(cpl_path) {
             result.add(note);
         }

@@ -424,10 +424,12 @@ pub fn check_markers(cpl_path: &Path, strict: bool) -> Vec<Note> {
     }
 
     if strict {
-        // Required markers (SMPTE 429-7)
+        // Required markers (SMPTE 429-7; FFOC/LFOC required by Bv2.1)
         let required = [
             ("FFMC", "First Frame of Moving Content"),
             ("LFMC", "Last Frame of Moving Content"),
+            ("FFOC", "First Frame of Composition"),
+            ("LFOC", "Last Frame of Composition"),
         ];
         for (label, desc) in required {
             if !found_markers.contains(label) {
@@ -463,7 +465,76 @@ pub fn check_markers(cpl_path: &Path, strict: bool) -> Vec<Note> {
         }
     }
 
+    // FFOC/LFOC offset checks (SMPTE Bv2.1, matching libdcp/DCP-o-matic): FFOC in
+    // the first reel must be at offset 1, LFOC in the last reel one less than that
+    // reel's duration. The markers above are collected globally, so the per-reel
+    // offset rule needs a separate reel scan.
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    let reels: Vec<&str> = reel_re
+        .captures_iter(&content)
+        .map(|c| c.get(1).unwrap().as_str())
+        .collect();
+    if let Some(first) = reels.first()
+        && let Some(off) = marker_offset(first, "FFOC")
+        && off != 1
+    {
+        notes.push(
+            Note::warning(
+                Code::MarkerInvalid,
+                format!("The FFOC marker is {off} instead of 1"),
+            )
+            .with_file(cpl_path),
+        );
+    }
+    if let Some(last) = reels.last()
+        && let Some(off) = marker_offset(last, "LFOC")
+        && let Some(dur) = reel_picture_duration(last)
+        && off != dur.saturating_sub(1)
+    {
+        notes.push(
+            Note::warning(
+                Code::MarkerInvalid,
+                format!(
+                    "The LFOC marker is {off} instead of 1 less than the duration of the last reel"
+                ),
+            )
+            .with_file(cpl_path),
+        );
+    }
+
     notes
+}
+
+/// Offset of the first Marker carrying `label` in a reel, if present.
+fn marker_offset(reel: &str, label: &str) -> Option<u64> {
+    let marker_re = regex_lite::Regex::new(r"<Marker>([\s\S]*?)</Marker>").unwrap();
+    for cap in marker_re.captures_iter(reel) {
+        let m = cap.get(1).unwrap().as_str();
+        if extract_tag(m, "Label").as_deref() == Some(label) {
+            return extract_u64(m, "Offset");
+        }
+    }
+    None
+}
+
+/// Play duration of a reel's picture track.
+fn reel_picture_duration(reel: &str) -> Option<u64> {
+    let pic_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)>",
+    )
+    .unwrap();
+    let block = pic_re.captures(reel)?.get(1)?.as_str();
+    extract_u64(block, "Duration")
+}
+
+/// Picture-track edit rate of a reel, as (num, den).
+fn reel_picture_edit_rate(reel: &str) -> Option<(u64, u64)> {
+    let pic_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)>",
+    )
+    .unwrap();
+    let block = pic_re.captures(reel)?.get(1)?.as_str();
+    extract_rate(block, "EditRate")
 }
 
 // ─── Cross-Reference Integrity ────────────────────────────────────────────────
@@ -799,7 +870,275 @@ pub fn check_package_files(dcp_dir: &Path, referenced_paths: &[String]) -> Vec<N
     notes
 }
 
+// ─── MainSoundConfiguration (ST 429-16) ───────────────────────────────────────
+
+/// MCA/ISDCF channel labels valid in a MainSoundConfiguration channel slot.
+/// '-' marks an unused slot (ST 429-16).
+const SOUND_CHANNEL_LABELS: &[&str] = &[
+    "L", "R", "C", "LFE", "Ls", "Rs", "Lss", "Rss", "Lrs", "Rrs", "Lc", "Rc", "Cs", "Ts", "Lw",
+    "Rw", "Lsd", "Rsd", "Lts", "Rts", "HI", "VI", "VIN", "DBOX", "FSK", "SLVS", "Sign", "-",
+];
+
+/// Validate the SMPTE ST 429-16 MainSoundConfiguration in a CPL's
+/// CompositionMetadataAsset: presence, a well-formed `<soundfield>/<channels>`
+/// value with recognized MCA/ISDCF labels, and a channel count matching the
+/// referenced MainSound MXF (`actual_channels`). Interop CPLs carry no
+/// CompositionMetadataAsset, so this is SMPTE-only. Mirrors DCP-o-matic's checks;
+/// garbage like "None" (a real easyDCP output) is an error.
+pub fn check_main_sound_configuration(
+    cpl_path: &Path,
+    standard: Standard,
+    actual_channels: Option<u32>,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+    if standard != Standard::Smpte {
+        return notes;
+    }
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    // act only where CompositionMetadataAsset is present; its absence is a
+    // separate Bv2.1 concern handled elsewhere
+    let meta_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?CompositionMetadataAsset(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?CompositionMetadataAsset>",
+    )
+    .unwrap();
+    let Some(meta) = meta_re
+        .captures(&content)
+        .map(|c| c.get(1).unwrap().as_str())
+    else {
+        return notes;
+    };
+
+    let Some(cfg) = extract_ns_tag(meta, "MainSoundConfiguration").filter(|v| !v.is_empty()) else {
+        notes.push(
+            Note::warning(
+                Code::MainSoundConfigInvalid,
+                "SMPTE CPL has CompositionMetadataAsset but no MainSoundConfiguration",
+            )
+            .with_file(cpl_path),
+        );
+        return notes;
+    };
+
+    let msc_err = |msg: String| Note::error(Code::MainSoundConfigInvalid, msg).with_file(cpl_path);
+
+    // format: "<soundfield>/<ch>,<ch>,..." e.g. "51/L,R,C,LFE,Ls,Rs"
+    let Some((soundfield, channels)) = cfg.split_once('/') else {
+        notes.push(msc_err(format!(
+            "MainSoundConfiguration '{cfg}' is not in <soundfield>/<channels> form"
+        )));
+        return notes;
+    };
+    let channel_list: Vec<&str> = channels.split(',').map(str::trim).collect();
+    if soundfield.trim().is_empty() || channel_list.iter().any(|c| c.is_empty()) {
+        notes.push(msc_err(format!(
+            "MainSoundConfiguration '{cfg}' has an empty soundfield or channel"
+        )));
+        return notes;
+    }
+    for ch in &channel_list {
+        if !SOUND_CHANNEL_LABELS.contains(ch) {
+            notes.push(msc_err(format!(
+                "MainSoundConfiguration '{cfg}' has unrecognized channel label '{ch}'"
+            )));
+            return notes;
+        }
+    }
+
+    let declared = channel_list.len();
+    if let Some(actual) = actual_channels
+        && actual as usize != declared
+    {
+        notes.push(
+            Note::error(
+                Code::SoundInvalidChannelCount,
+                format!(
+                    "MainSoundConfiguration has {declared} channels but sound assets have {actual}"
+                ),
+            )
+            .with_file(cpl_path),
+        );
+    }
+
+    notes
+}
+
+/// Channel count of a CPL's first MainSound MXF, read from the essence. Used to
+/// feed [`check_main_sound_configuration`]'s cross-check. `None` when no readable
+/// sound essence is available (XML-only validation).
+pub fn first_sound_channel_count_of_cpl(
+    cpl_path: &Path,
+    id_to_file: &HashMap<String, PathBuf>,
+) -> Option<u32> {
+    let content = std::fs::read_to_string(cpl_path).ok()?;
+    let sound_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?MainSound(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?MainSound>",
+    )
+    .unwrap();
+    let block = sound_re.captures(&content)?.get(1)?.as_str();
+    let path = asset_file(block, id_to_file)?;
+    let s = path.to_str()?;
+    let mut reader = asdcplib::pcm::MxfReader::new();
+    reader.open_read(s).ok()?;
+    Some(reader.audio_descriptor().ok()?.channel_count)
+}
+
+// ─── First Subtitle Timing (Bv2.1) ────────────────────────────────────────────
+
+/// Bv2.1: the first displayable timed-text event should start at least 4s after
+/// the composition start. Only the first reel matters, and subtitle assets with
+/// zero Subtitle instances (empty placeholders, common in encrypted SMPTE DCPs)
+/// are ignored, avoiding DCP-o-matic bug #2757's false positive.
+pub fn check_first_subtitle_timing(
+    cpl_path: &Path,
+    standard: Standard,
+    id_to_file: &HashMap<String, PathBuf>,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    let Some(first_reel) = reel_re
+        .captures(&content)
+        .map(|c| c.get(1).unwrap().as_str())
+    else {
+        return notes;
+    };
+
+    let sub_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?MainSubtitle(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?MainSubtitle>",
+    )
+    .unwrap();
+    let Some(sub) = sub_re
+        .captures(first_reel)
+        .map(|c| c.get(1).unwrap().as_str())
+    else {
+        return notes; // no subtitle in the first reel
+    };
+
+    let Some(xml) = subtitle_xml(sub, id_to_file) else {
+        return notes; // essence missing/encrypted/unreadable, so can't tell
+    };
+
+    // reel edit rate converts frame-based times / the entry point to seconds
+    let fps = extract_rate(sub, "EditRate")
+        .or_else(|| reel_picture_edit_rate(first_reel))
+        .map(|(n, d)| n as f64 / d.max(1) as f64)
+        .unwrap_or(24.0);
+    let entry = extract_u64(sub, "EntryPoint").unwrap_or(0) as f64 / fps;
+
+    let time_re = regex_lite::Regex::new(r#"TimeIn\s*=\s*"([^"]*)""#).unwrap();
+    let mut earliest: Option<f64> = None;
+    for cap in time_re.captures_iter(&xml) {
+        let Some(t) = subtitle_time_seconds(&cap[1], standard, fps) else {
+            continue;
+        };
+        let shown = t - entry;
+        if shown < 0.0 {
+            continue; // before the reel entry point, not displayed here
+        }
+        earliest = Some(earliest.map_or(shown, |e| e.min(shown)));
+    }
+
+    // no parseable Subtitle events means an empty placeholder, nothing to flag
+    let Some(first) = earliest else {
+        return notes;
+    };
+    if first < 4.0 {
+        notes.push(
+            Note::warning(
+                Code::SubtitleFirstEventEarly,
+                format!(
+                    "First subtitle appears {first:.1}s after composition start, less than the Bv2.1 minimum of 4s"
+                ),
+            )
+            .with_file(cpl_path),
+        );
+    }
+
+    notes
+}
+
+/// Subtitle XML for a reel's MainSubtitle: the plain-XML asset, or the MXF-wrapped
+/// ST 428-7 resource. `None` when the essence is missing, encrypted, or unreadable.
+fn subtitle_xml(sub_block: &str, id_to_file: &HashMap<String, PathBuf>) -> Option<String> {
+    let path = asset_file(sub_block, id_to_file)?;
+    let is_xml = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("xml"));
+    if is_xml {
+        return std::fs::read_to_string(&path).ok();
+    }
+    let s = path.to_str()?;
+    let mut reader = asdcplib::timed_text::MxfReader::new();
+    reader.open_read(s).ok()?;
+    let mut buf: Vec<u8> = Vec::new();
+    match reader.read_timed_text_resource(&mut buf, None, None) {
+        Ok(n) => Some(String::from_utf8_lossy(&buf[..n]).into_owned()),
+        Err(asdcplib::Error::BufferTooSmall { needed, .. }) => {
+            buf = vec![0u8; needed];
+            let n = reader.read_timed_text_resource(&mut buf, None, None).ok()?;
+            Some(String::from_utf8_lossy(&buf[..n]).into_owned())
+        }
+        Err(_) => None,
+    }
+}
+
+/// Convert a subtitle TimeIn to seconds. SMPTE ST 428-7 uses HH:MM:SS:TTT ticks
+/// (250/s); Interop uses HH:MM:SS:FF editable units; decimal HH:MM:SS.mmm is
+/// taken as-is.
+fn subtitle_time_seconds(s: &str, standard: Standard, fps: f64) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (hms, tail) = if s.matches(':').count() == 3 {
+        let idx = s.rfind(':').unwrap();
+        (&s[..idx], Some(&s[idx + 1..]))
+    } else {
+        (s, None)
+    };
+    let parts: Vec<&str> = hms.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let h: f64 = parts[0].parse().ok()?;
+    let m: f64 = parts[1].parse().ok()?;
+    let (sec, milli) = match parts[2].split_once('.') {
+        Some((a, b)) => (a.parse::<f64>().ok()?, b),
+        None => (parts[2].parse::<f64>().ok()?, ""),
+    };
+    let frac = if let Some(t) = tail {
+        let v: f64 = t.parse().ok()?;
+        match standard {
+            Standard::Interop => v / fps,
+            _ => v / 250.0, // SMPTE ticks are 1/250s
+        }
+    } else if !milli.is_empty() {
+        let take = &milli[..milli.len().min(3)];
+        format!("{take:0<3}").parse::<f64>().unwrap_or(0.0) / 1000.0
+    } else {
+        0.0
+    };
+    Some(h * 3600.0 + m * 60.0 + sec + frac)
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Extract the first `<Tag>` or `<ns:Tag>` element's trimmed text.
+fn extract_ns_tag(xml: &str, tag: &str) -> Option<String> {
+    let re = regex_lite::Regex::new(&format!(
+        r"<(?:[\w-]+:)?{tag}(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?{tag}>"
+    ))
+    .ok()?;
+    re.captures(xml)
+        .map(|c| c.get(1).unwrap().as_str().trim().to_string())
+}
 
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
@@ -954,6 +1293,244 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(xml.as_bytes()).unwrap();
         f
+    }
+
+    // ─── MainSoundConfiguration (ST 429-16) ────────────────────────────────
+
+    fn msc_cpl(value: &str) -> String {
+        format!(
+            r#"<CompositionPlaylist><meta:CompositionMetadataAsset xmlns:meta="http://www.smpte-ra.org/schemas/429-16/2014/CPL-Metadata">
+  <meta:MainSoundConfiguration>{value}</meta:MainSoundConfiguration>
+</meta:CompositionMetadataAsset></CompositionPlaylist>"#
+        )
+    }
+
+    #[test]
+    fn valid_main_sound_configuration_passes() {
+        let f = write_cpl(&msc_cpl("51/L,R,C,LFE,Ls,Rs"));
+        assert!(
+            check_main_sound_configuration(f.path(), Standard::Smpte, Some(6)).is_empty(),
+            "valid 5.1 config with matching channel count must be clean"
+        );
+    }
+
+    #[test]
+    fn garbage_main_sound_configuration_is_error() {
+        let f = write_cpl(&msc_cpl("None"));
+        let notes = check_main_sound_configuration(f.path(), Standard::Smpte, None);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::MainSoundConfigInvalid && n.severity == Severity::Error),
+            "\"None\" must be flagged as an error, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn main_sound_configuration_channel_count_mismatch_is_error() {
+        let f = write_cpl(&msc_cpl("51/L,R,C,LFE,Ls,Rs"));
+        // 6 channels declared, MXF reports 2
+        let notes = check_main_sound_configuration(f.path(), Standard::Smpte, Some(2));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SoundInvalidChannelCount
+                    && n.severity == Severity::Error
+                    && n.message.contains("6 channels but sound assets have 2")),
+            "channel-count mismatch must be flagged, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn missing_main_sound_configuration_warns_when_metadata_present() {
+        let f = write_cpl(
+            r#"<CompositionPlaylist><meta:CompositionMetadataAsset xmlns:meta="x"><meta:Other>1</meta:Other></meta:CompositionMetadataAsset></CompositionPlaylist>"#,
+        );
+        let notes = check_main_sound_configuration(f.path(), Standard::Smpte, None);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::MainSoundConfigInvalid && n.severity == Severity::Warning),
+            "missing MainSoundConfiguration must warn, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn interop_cpl_skips_main_sound_configuration() {
+        let f = write_cpl(&msc_cpl("None"));
+        assert!(
+            check_main_sound_configuration(f.path(), Standard::Interop, None).is_empty(),
+            "Interop CPLs carry no CompositionMetadataAsset"
+        );
+    }
+
+    // ─── FFOC / LFOC marker offsets ────────────────────────────────────────
+
+    fn marker_cpl(ffoc: u64, lfoc: u64, last_duration: u64) -> String {
+        format!(
+            r#"<CompositionPlaylist><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <MainMarkers><Id>urn:uuid:00000000-0000-0000-0000-0000000000m0</Id>
+    <MarkerList>
+      <Marker><Label>FFOC</Label><Offset>{ffoc}</Offset></Marker>
+      <Marker><Label>LFOC</Label><Offset>{lfoc}</Offset></Marker>
+    </MarkerList>
+  </MainMarkers>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><Duration>{last_duration}</Duration></MainPicture>
+</AssetList></Reel></CompositionPlaylist>"#
+        )
+    }
+
+    #[test]
+    fn correct_ffoc_lfoc_offsets_pass() {
+        // FFOC = 1, LFOC = duration - 1 = 99
+        let f = write_cpl(&marker_cpl(1, 99, 100));
+        let notes = check_markers(f.path(), false);
+        assert!(
+            !notes.iter().any(|n| n.code == Code::MarkerInvalid),
+            "correct FFOC/LFOC offsets must not be flagged, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn wrong_ffoc_offset_is_flagged() {
+        let f = write_cpl(&marker_cpl(5, 99, 100));
+        let notes = check_markers(f.path(), false);
+        assert!(
+            notes.iter().any(|n| n.code == Code::MarkerInvalid
+                && n.message == "The FFOC marker is 5 instead of 1"),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn wrong_lfoc_offset_is_flagged() {
+        // LFOC should be 99 (duration 100 - 1), but is 50
+        let f = write_cpl(&marker_cpl(1, 50, 100));
+        let notes = check_markers(f.path(), false);
+        assert!(
+            notes.iter().any(|n| n.code == Code::MarkerInvalid
+                && n.message.contains("The LFOC marker is 50 instead of")),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn strict_mode_flags_missing_ffoc_lfoc() {
+        // a reel with only FFMC/LFMC markers: strict must warn FFOC and LFOC missing
+        let cpl = r#"<CompositionPlaylist><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <MainMarkers><Id>urn:uuid:00000000-0000-0000-0000-0000000000d0</Id>
+    <MarkerList>
+      <Marker><Label>FFMC</Label><Offset>0</Offset></Marker>
+      <Marker><Label>LFMC</Label><Offset>99</Offset></Marker>
+    </MarkerList>
+  </MainMarkers>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><Duration>100</Duration></MainPicture>
+</AssetList></Reel></CompositionPlaylist>"#;
+        let f = write_cpl(cpl);
+        let notes = check_markers(f.path(), true);
+        for label in ["FFOC", "LFOC"] {
+            assert!(
+                notes.iter().any(|n| n.code == Code::MarkerMissing
+                    && n.severity == Severity::Warning
+                    && n.message.contains(label)),
+                "strict must warn {label} missing, got: {notes:?}"
+            );
+        }
+        // non-strict must not require presence
+        assert!(
+            !check_markers(f.path(), false)
+                .iter()
+                .any(|n| n.code == Code::MarkerMissing),
+            "presence is strict-only"
+        );
+    }
+
+    // ─── First subtitle timing (Bv2.1, DCP-o-matic bug #2757) ──────────────
+
+    const SUB_ID: &str = "aaaaaaaa-0000-0000-0000-000000005500";
+
+    /// Write a subtitle XML file and build the CPL + id_to_file map that point a
+    /// single first reel's MainSubtitle at it. `second_reel_sub` optionally adds a
+    /// second reel with a subtitle starting at time 0.
+    fn subtitle_case(
+        sub_xml: &str,
+        second_reel_sub: Option<&str>,
+    ) -> (
+        tempfile::NamedTempFile,
+        tempfile::TempDir,
+        HashMap<String, PathBuf>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let sub_path = dir.path().join("sub.xml");
+        std::fs::write(&sub_path, sub_xml).unwrap();
+
+        let mut id_to_file = HashMap::new();
+        id_to_file.insert(SUB_ID.to_string(), sub_path);
+
+        let reel = |sub_id: &str| {
+            format!(
+                r#"<Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><EditRate>24 1</EditRate><Duration>240</Duration></MainPicture>
+  <MainSubtitle><Id>urn:uuid:{sub_id}</Id><EditRate>24 1</EditRate><Duration>240</Duration></MainSubtitle>
+</AssetList></Reel>"#
+            )
+        };
+        let mut reels = reel(SUB_ID);
+        if let Some(second) = second_reel_sub {
+            let second_path = dir.path().join("sub2.xml");
+            std::fs::write(&second_path, second).unwrap();
+            let second_id = "bbbbbbbb-0000-0000-0000-000000005502";
+            id_to_file.insert(second_id.to_string(), second_path);
+            reels.push_str(&reel(second_id));
+        }
+        let cpl = write_cpl(&format!(
+            "<CompositionPlaylist>{reels}</CompositionPlaylist>"
+        ));
+        (cpl, dir, id_to_file)
+    }
+
+    fn smpte_sub(time_in: &str) -> String {
+        format!(
+            r#"<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:SubtitleList><dcst:Subtitle SpotNumber="1" TimeIn="{time_in}" TimeOut="00:00:20:000"/></dcst:SubtitleList>
+</dcst:SubtitleReel>"#
+        )
+    }
+
+    const EMPTY_SUB: &str = r#"<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:SubtitleList/>
+</dcst:SubtitleReel>"#;
+
+    #[test]
+    fn first_subtitle_too_early_warns() {
+        let (cpl, _dir, id_to_file) = subtitle_case(&smpte_sub("00:00:01:000"), None);
+        let notes = check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleFirstEventEarly && n.severity == Severity::Warning),
+            "1s subtitle must warn, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn first_subtitle_after_four_seconds_passes() {
+        let (cpl, _dir, id_to_file) = subtitle_case(&smpte_sub("00:00:05:000"), None);
+        assert!(
+            check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file).is_empty(),
+            "5s subtitle must be clean"
+        );
+    }
+
+    #[test]
+    fn empty_first_reel_subtitle_never_warns_even_with_later_subtitles() {
+        // first reel has an empty placeholder; a second reel starts a subtitle at 0.
+        // bug #2757: only the first reel matters, empty placeholders are ignored.
+        let (cpl, _dir, id_to_file) = subtitle_case(EMPTY_SUB, Some(&smpte_sub("00:00:00:000")));
+        assert!(
+            check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file).is_empty(),
+            "empty first-reel subtitle must not warn regardless of later reels"
+        );
     }
 
     #[test]

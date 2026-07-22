@@ -42,6 +42,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Clipping detection**: Flags audio near 0 dBFS
 - **Silence detection**: Warns on channels below -80 dBFS
 - **Channel count**: Validates channel configuration
+- **MainSoundConfiguration (ST 429-16)**: Presence, `<soundfield>/<channels>` syntax with MCA/ISDCF labels, and channel count matched against the sound MXF (flags garbage like `None`)
 - **Quantization / block align**: 24-bit PCM and block-align check (`--check-mxf`)
 - **MCA labeling**: Multi-Channel Audio label presence check
 - **Audio sync drift**: Detects picture/sound duration mismatches per reel
@@ -50,6 +51,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 ### Subtitle & Caption Validation
 - **SMPTE ST 429-5** timed text support
 - **Timing validation**: TimeIn/TimeOut ordering and overlap detection
+- **First-event timing (Bv2.1)**: Warns when the first reel's first subtitle starts under 4s in; ignores empty placeholder assets (avoids DCP-o-matic bug #2757)
 - **Required element checks**: ReelNumber, Language, LoadFont
 - **SubtitleID presence**: Unique identifier validation
 
@@ -66,7 +68,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 ### Reel & Structure Analysis
 - **Reel continuity**: Validates sequential entry points across reels
 - **Stereo 3D**: Checks left/right eye consistency
-- **Marker validation**: FFOC, LFOC, FFMC, LFMC presence (strict mode)
+- **Marker validation**: FFOC, LFOC, FFMC, LFMC presence (strict mode), plus FFOC=1 / LFOC=(reel duration - 1) offset checks per reel
 - **Cross-reference integrity**: All PKL/CPL asset references resolve
 - **Supplemental DCP**: Original Package List validation
 - **CPL metadata**: ContentTitleText/IssueDate, and SMPTE ContentVersion

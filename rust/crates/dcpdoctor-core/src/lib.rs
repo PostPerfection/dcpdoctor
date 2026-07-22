@@ -133,11 +133,13 @@ pub enum Code {
     SoundInvalidBlockAlign,
     SoundClipping,
     SoundSilent,
+    MainSoundConfigInvalid,
 
     // Subtitle
     SubtitleParseError,
     SubtitleInvalidTiming,
     SubtitleFontMissing,
+    SubtitleFirstEventEarly,
 
     // ISDCF naming
     IsdcfNamingViolation,
@@ -221,9 +223,11 @@ impl Code {
             Code::SoundInvalidBlockAlign => "sound_invalid_block_align",
             Code::SoundClipping => "sound_clipping",
             Code::SoundSilent => "sound_silent",
+            Code::MainSoundConfigInvalid => "main_sound_config_invalid",
             Code::SubtitleParseError => "subtitle_parse_error",
             Code::SubtitleInvalidTiming => "subtitle_invalid_timing",
             Code::SubtitleFontMissing => "subtitle_font_missing",
+            Code::SubtitleFirstEventEarly => "subtitle_first_event_early",
             Code::IsdcfNamingViolation => "isdcf_naming_violation",
             Code::EncryptionDetected => "encryption_detected",
             Code::KdmRequired => "kdm_required",
