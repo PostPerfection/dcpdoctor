@@ -659,7 +659,9 @@ pub fn validate_cinema_j2k(data: &[u8], fps: f64) -> Vec<Note> {
 /// 0xFFFF legacy constraint (DoM #2740) and the ISO 15444-1 cinema profile
 /// constraints (DoM #2451/#1664). Non-picture or unreadable MXFs yield no notes.
 /// `fps` is the picture edit rate, used for the per-component byte limit.
-pub fn check_picture_j2k_mxf(path: &Path, fps: f64) -> Vec<Note> {
+/// Encrypted essence is decrypted with `keys`; without a covering key it skips
+/// (with a note when a KDM was supplied but lacks the KeyId).
+pub fn check_picture_j2k_mxf(path: &Path, fps: f64, keys: &crate::kdm::ContentKeys) -> Vec<Note> {
     let mut notes = Vec::new();
     let Some(s) = path.to_str() else {
         return notes;
@@ -668,10 +670,42 @@ pub fn check_picture_j2k_mxf(path: &Path, fps: f64) -> Vec<Note> {
     if reader.open_read(s).is_err() {
         return notes;
     }
+    let Ok(info) = reader.writer_info() else {
+        return notes;
+    };
+    let essence = keys.resolve(&info);
+    if essence.is_missing() {
+        notes.extend(essence.skip_note(path));
+        return notes;
+    }
+    let mut ctx = match essence.contexts() {
+        Ok(c) => c,
+        Err(e) => {
+            notes.push(Note::error(Code::MxfUnreadable, e).with_file(path));
+            return notes;
+        }
+    };
+    let (dec, hmac) = match ctx.as_mut() {
+        Some(c) => (Some(&mut c.dec), Some(&mut c.hmac)),
+        None => (None, None),
+    };
     // DCI caps a frame near 1.3 MB (2K) / 2.6 MB (4K); 8 MiB is safe headroom.
     let mut buf = vec![0u8; 8 * 1024 * 1024];
-    let Ok(n) = reader.read_frame(0, &mut buf, None, None) else {
-        return notes;
+    let n = match reader.read_frame(0, &mut buf, dec, hmac) {
+        Ok(n) => n,
+        Err(e) => {
+            // with a key set, a read failure is a decrypt/MIC integrity failure
+            if info.encrypted_essence {
+                notes.push(
+                    Note::error(
+                        Code::MxfHashMismatch,
+                        format!("frame 0 integrity check (HMAC/MIC) failed: {e}"),
+                    )
+                    .with_file(path),
+                );
+            }
+            return notes;
+        }
     };
     let frame = &buf[..n];
 
@@ -733,8 +767,10 @@ fn frame_to_timecode(frame: u32, fps: u32) -> String {
 
 /// Scan a picture MXF for the RDD 52 guard-bit constraint (1 guard bit for 2K,
 /// 2 for 4K). Reports the first offending frame with its timecode and how many
-/// frames are affected. Non-picture or unreadable MXFs yield no notes.
-pub fn check_guard_bits_mxf(path: &Path) -> Vec<Note> {
+/// frames are affected. Non-picture or unreadable MXFs yield no notes. Encrypted
+/// essence is decrypted with `keys`; without a covering key it skips (with a note
+/// when a KDM was supplied but lacks the KeyId).
+pub fn check_guard_bits_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> Vec<Note> {
     let mut notes = Vec::new();
     let Some(s) = path.to_str() else {
         return notes;
@@ -746,6 +782,21 @@ pub fn check_guard_bits_mxf(path: &Path) -> Vec<Note> {
     let Ok(desc) = reader.picture_descriptor() else {
         return notes;
     };
+    let Ok(info) = reader.writer_info() else {
+        return notes;
+    };
+    let essence = keys.resolve(&info);
+    if essence.is_missing() {
+        notes.extend(essence.skip_note(path));
+        return notes;
+    }
+    let mut ctx = match essence.contexts() {
+        Ok(c) => c,
+        Err(e) => {
+            notes.push(Note::error(Code::MxfUnreadable, e).with_file(path));
+            return notes;
+        }
+    };
     let width = desc.stored_width;
     let fps =
         (desc.edit_rate.numerator as f64 / desc.edit_rate.denominator.max(1) as f64).round() as u32;
@@ -753,8 +804,26 @@ pub fn check_guard_bits_mxf(path: &Path) -> Vec<Note> {
     let mut first_bad: Option<(u32, u8, u8)> = None;
     let mut bad_count = 0u32;
     for i in 0..desc.container_duration {
-        let Ok(n) = reader.read_frame(i, &mut buf, None, None) else {
-            break;
+        let (dec, hmac) = match ctx.as_mut() {
+            Some(c) => (Some(&mut c.dec), Some(&mut c.hmac)),
+            None => (None, None),
+        };
+        let n = match reader.read_frame(i, &mut buf, dec, hmac) {
+            Ok(n) => n,
+            Err(e) => {
+                // with a key set, a read failure on frame 0 is a decrypt/MIC
+                // integrity failure; report it. Later frames just end the scan.
+                if i == 0 && info.encrypted_essence {
+                    notes.push(
+                        Note::error(
+                            Code::MxfHashMismatch,
+                            format!("frame 0 integrity check (HMAC/MIC) failed: {e}"),
+                        )
+                        .with_file(path),
+                    );
+                }
+                break;
+            }
         };
         // essence that isn't a readable codestream (encrypted without a KDM, or
         // not picture) can't be checked; bail on the first frame.

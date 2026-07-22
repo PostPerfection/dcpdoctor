@@ -25,6 +25,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
 
     result.standard = dcp.standard;
 
+    // KDM: when supplied, run the window/CPL-match checks and unwrap the content
+    // keys so the encrypted-essence checks below can decrypt. A wrong recipient
+    // key or malformed KDM fails loud here as a clear error rather than garbage.
+    let content_keys = build_content_keys(dcp_dir, opts, &mut result);
+
     // 0. XSD schema validation, when a schema dir is available (schema-path
     // driven, see schema::locate_schema_dir). Validates every CPL/PKL/ASSETMAP
     // against the SMPTE/Interop XSDs, emitting xml_schema_violation.
@@ -302,8 +307,10 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     }
                 } else if full_path.exists() {
                     // SMPTE ST 429-5 MXF-wrapped timed text: fonts are embedded
-                    // as ancillary resources, read them straight from the MXF.
-                    for note in crate::subtitle::check_glyph_coverage_mxf(&full_path) {
+                    // as ancillary resources, read them straight from the MXF
+                    // (decrypting with the KDM when the essence is encrypted).
+                    for note in crate::subtitle::check_glyph_coverage_mxf(&full_path, &content_keys)
+                    {
                         result.add(note);
                     }
                 }
@@ -465,9 +472,16 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 } else {
                     24.0
                 };
-                for note in crate::j2k::check_picture_j2k_mxf(&full_path, fps) {
+                for note in crate::j2k::check_picture_j2k_mxf(&full_path, fps, &content_keys) {
                     result.add(note);
                 }
+            }
+
+            // Encrypted sound essence: ffprobe can't read it, so read the
+            // descriptor + verify frame integrity via asdcplib with the KDM.
+            // Cleartext sound is handled by the ffprobe path below.
+            for note in crate::mxf::check_sound_essence_mxf(&full_path, &content_keys) {
+                result.add(note);
             }
 
             // Picture validation
@@ -543,6 +557,47 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     }
 
     result
+}
+
+/// Build the content keys from `opts.kdm` + `opts.recipient_key`, adding any
+/// KDM window / CPL-match / unwrap-failure notes to `result`. Returns
+/// `ContentKeys::none()` when no KDM is supplied (or unwrap fails), so encrypted
+/// essence keeps skipping instead of producing garbage findings.
+fn build_content_keys(
+    dcp_dir: &Path,
+    opts: &VerifyOptions,
+    result: &mut VerifyResult,
+) -> crate::kdm::ContentKeys {
+    let Some(kdm_path) = opts.kdm.as_deref() else {
+        return crate::kdm::ContentKeys::none();
+    };
+
+    // window (expired / not-yet-valid) + CPL-match checks (extends the validator)
+    for note in crate::kdm::validate_kdm(kdm_path, Some(dcp_dir)) {
+        result.add(note);
+    }
+
+    let Some(key_path) = opts.recipient_key.as_deref() else {
+        result.add(
+            Note::warning(
+                Code::KdmRequired,
+                "--kdm supplied without --recipient-key; cannot decrypt essence",
+            )
+            .with_file(kdm_path),
+        );
+        return crate::kdm::ContentKeys::none();
+    };
+
+    match crate::kdm::ContentKeys::from_kdm(kdm_path, key_path) {
+        Ok(keys) => keys,
+        Err(e) => {
+            result.add(
+                Note::error(Code::KdmRequired, format!("failed to unwrap KDM: {e}"))
+                    .with_file(kdm_path),
+            );
+            crate::kdm::ContentKeys::none()
+        }
+    }
 }
 
 /// Collect a DCP's ASSETMAP asset ids (urn:uuid: prefix stripped) for OV

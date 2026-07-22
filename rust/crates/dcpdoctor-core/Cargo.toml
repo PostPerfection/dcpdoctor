@@ -21,6 +21,7 @@ skrifa = "0.45"
 thiserror.workspace = true
 time = "0.3"
 tracing.workspace = true
+uuid = "1"
 x509-parser = { version = "0.16", features = ["verify"] }
 
 [dev-dependencies]

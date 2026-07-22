@@ -47,7 +47,7 @@ pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
         check_signatures: false,
         check_picture_details: false,
         strict_smpte: true,
-        ov: None,
+        ..Default::default()
     };
     let verify_result = crate::validate::verify_dcp(dcp_dir, &opts);
 

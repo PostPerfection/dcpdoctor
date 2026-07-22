@@ -339,6 +339,13 @@ pub struct VerifyOptions {
     /// supplemental IMF package. Ignored for plain DCPs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ov: Option<PathBuf>,
+    /// KDM XML for an encrypted DCP. With `recipient_key`, content keys are
+    /// unwrapped and used to decrypt essence so the frame-level checks run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kdm: Option<PathBuf>,
+    /// Recipient RSA private key (PEM) matching the KDM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_key: Option<PathBuf>,
 }
 
 impl VerifyOptions {
@@ -349,6 +356,8 @@ impl VerifyOptions {
             check_picture_details: false,
             strict_smpte: false,
             ov: None,
+            kdm: None,
+            recipient_key: None,
         }
     }
 
@@ -359,6 +368,8 @@ impl VerifyOptions {
             check_picture_details: true,
             strict_smpte: true,
             ov: None,
+            kdm: None,
+            recipient_key: None,
         }
     }
 }

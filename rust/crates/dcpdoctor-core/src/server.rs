@@ -14,15 +14,24 @@ fn request_ov(parsed: &serde_json::Value) -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
+/// Extract an optional path field from a parsed request body; empty ignored.
+fn request_path(parsed: &serde_json::Value, key: &str) -> Option<std::path::PathBuf> {
+    parsed[key]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 /// Start the REST API server.
 ///
 /// Endpoints:
 /// - `GET /health` returns `{"status":"ok"}`.
 /// - `POST /validate` with `{"path": "/path/to/dcp"}` returns the `VerifyResult`.
 ///   An optional `"ov": "/path/to/ov"` resolves a supplemental package's
-///   cross-package references against the OV.
+///   cross-package references against the OV. Optional `"kdm"` +
+///   `"recipient_key"` decrypt an encrypted DCP so the essence checks run.
 /// - `POST /verify` with `{"dcp_dir": "/path/to/dcp"}` (legacy alias) does the
-///   same, also honoring an optional `"ov"`.
+///   same, also honoring `"ov"`, `"kdm"`, and `"recipient_key"`.
 pub fn start_server(bind: &str, port: u16) {
     let addr = format!("{bind}:{port}");
     let listener = match TcpListener::bind(&addr) {
@@ -92,9 +101,12 @@ pub fn start_server(bind: &str, port: u16) {
                 continue;
             }
 
-            // Optional OV package for supplemental cross-package validation.
+            // Optional OV package for supplemental cross-package validation, and
+            // an optional KDM + recipient key to decrypt an encrypted DCP.
             let opts = crate::VerifyOptions {
                 ov: request_ov(&parsed),
+                kdm: request_path(&parsed, "kdm"),
+                recipient_key: request_path(&parsed, "recipient_key"),
                 ..crate::VerifyOptions::standard()
             };
             let result = crate::verify(Path::new(dcp_dir), &opts);
@@ -172,6 +184,20 @@ mod tests {
             ..crate::VerifyOptions::standard()
         };
         assert_eq!(opts.ov, Some(std::path::PathBuf::from("/ov")));
+    }
+
+    #[test]
+    fn kdm_and_recipient_key_reach_verify_options() {
+        let body: serde_json::Value =
+            serde_json::from_str(r#"{"path":"/dcp","kdm":"/k.xml","recipient_key":"/r.pem"}"#)
+                .unwrap();
+        let opts = crate::VerifyOptions {
+            kdm: request_path(&body, "kdm"),
+            recipient_key: request_path(&body, "recipient_key"),
+            ..crate::VerifyOptions::standard()
+        };
+        assert_eq!(opts.kdm, Some(std::path::PathBuf::from("/k.xml")));
+        assert_eq!(opts.recipient_key, Some(std::path::PathBuf::from("/r.pem")));
     }
 
     #[test]

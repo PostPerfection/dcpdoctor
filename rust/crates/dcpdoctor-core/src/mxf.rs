@@ -64,6 +64,69 @@ pub fn check_sound_descriptor(snd: &SoundDescriptor, file: &Path) -> Vec<Note> {
     notes
 }
 
+/// Sound-descriptor + integrity checks for an encrypted sound MXF, read straight
+/// from asdcplib (ffprobe can't see encrypted essence). Runs only on encrypted
+/// PCM essence; cleartext sound is already covered by the ffprobe path in
+/// `verify_dcp`, and non-PCM MXFs open-fail and yield nothing. With a covering
+/// key the descriptor check runs and frame 0's HMAC/MIC is verified; without one
+/// it skips (a note only when a KDM was supplied).
+pub fn check_sound_essence_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let Some(s) = path.to_str() else {
+        return notes;
+    };
+    let mut reader = asdcplib::pcm::MxfReader::new();
+    if reader.open_read(s).is_err() {
+        return notes; // not a PCM MXF
+    }
+    let Ok(info) = reader.writer_info() else {
+        return notes;
+    };
+    if !info.encrypted_essence {
+        return notes; // cleartext sound handled by the ffprobe path
+    }
+    let essence = keys.resolve(&info);
+    if essence.is_missing() {
+        notes.extend(essence.skip_note(path));
+        return notes;
+    }
+    let Ok(desc) = reader.audio_descriptor() else {
+        return notes;
+    };
+    let snd = SoundDescriptor {
+        sample_rate: (desc.audio_sampling_rate.quotient()).round() as u32,
+        channels: desc.channel_count,
+        bit_depth: desc.quantization_bits,
+        block_align: desc.block_align,
+        duration: desc.container_duration as u64,
+    };
+    notes.extend(check_sound_descriptor(&snd, path));
+
+    // integrity: decrypt frame 0 and let asdcplib verify the MIC.
+    let mut ctx = match essence.contexts() {
+        Ok(c) => c,
+        Err(e) => {
+            notes.push(Note::error(Code::MxfUnreadable, e).with_file(path));
+            return notes;
+        }
+    };
+    let (dec, hmac) = match ctx.as_mut() {
+        Some(c) => (Some(&mut c.dec), Some(&mut c.hmac)),
+        None => (None, None),
+    };
+    let mut buf = vec![0u8; desc.block_align.max(1) as usize * 2048 + 8192];
+    if let Err(e) = reader.read_frame(0, &mut buf, dec, hmac) {
+        notes.push(
+            Note::error(
+                Code::MxfHashMismatch,
+                format!("frame 0 integrity check (HMAC/MIC) failed: {e}"),
+            )
+            .with_file(path),
+        );
+    }
+    notes
+}
+
 /// MXF file information.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MxfInfo {

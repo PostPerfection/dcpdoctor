@@ -8,10 +8,44 @@ Feature requests from the DCP-o-matic Mantis tracker (dom#N =
 https://dcpomatic.com/bugs/view.php?id=N) that dcpdoctor lacks. Priority order.
 Done items are in the dated done notes below.
 
-1. Verify encrypted DCPs with a KDM (dom#2971, dom#1957): accept KDM + recipient
-   key, unwrap content keys, decrypt and verify frames (hashes, bitrate, J2K), and
-   check HMAC/MIC integrity. postkit already plans the reusable KDM-unwrap API
-   (postkit DESIGN_TODO "Imported KDM decryption"); build on that.
+The list is now empty: every DoM tracker gap is done (notes below).
+
+## Verify encrypted DCPs with a KDM: done (2026-07-22)
+
+dom#2971 (decrypt + verify encrypted essence) and dom#1957 (HMAC/MIC integrity),
+built on postkit's KDM-unwrap API (`certificate::unwrap_kdm`, keys zeroed on drop,
+Debug redacted).
+
+- CLI: `validate --kdm <kdm.xml> --recipient-key <private.pem>`. Threaded through
+  `VerifyOptions.{kdm,recipient_key}` and the REST body (`"kdm"` +
+  `"recipient_key"`, same shape as `"ov"`).
+- `kdm::ContentKeys` unwraps the KDM once and resolves each essence by the MXF's
+  own `cryptographic_key_id` (the CPL KeyId): `EssenceKey::{Cleartext, Available,
+  Missing}`. `Available` builds an `AesDecContext` + `HmacContext` (HMAC key is the
+  content key derived per the label set); the readers verify the MIC per frame.
+- Checks that used to skip encrypted essence now run on decrypted frames: the
+  0xFFFF legacy scan + ISO 15444-1 cinema constraints (`check_picture_j2k_mxf`),
+  the RDD 52 guard-bit scan (`check_guard_bits_mxf`, `--deep-j2k`), MXF-wrapped
+  glyph coverage (`check_glyph_coverage_mxf`), and the sound descriptor
+  (`check_sound_essence_mxf`, read via asdcplib since ffprobe can't see encrypted
+  essence). A KDM that doesn't cover a KeyId keeps the skip and emits a clear note;
+  no KDM keeps the silent skip as before.
+- HMAC/MIC (dom#1957) is a real check, not a binding gap: the readers take the
+  `HmacContext`, and a mismatched content key surfaces `mxf_hash_mismatch` on the
+  offending frame (frame 0 for picture/sound) rather than a bogus finding.
+- Wrong/expired/mismatched KDM produce clear errors: a wrong recipient key fails
+  loud at unwrap (`kdm_required` error), expiry/not-yet-valid/CPL-mismatch reuse
+  the existing `kdm::validate_kdm` window + CPL-match checks, and a mismatched
+  content key fails the MIC.
+- Tests (`kdm::decrypt_tests`): build an AES+HMAC-encrypted 2K picture MXF and a
+  KDM for it via postkit `build_kdm` + a generated cert chain, then prove (a) no
+  KDM skips, (b) the right KDM decrypts and a planted guard-bit violation fires,
+  (c) a wrong recipient key fails loud, (d) a mismatched content key fails the
+  MIC. Real E2E confirmed against the ClairMeta ECL29 encrypted IOP package with
+  its `leaf.key`: without the KDM the picture check skips, with it every picture
+  MXF decrypts to a real J2K codestream (SOC) and the MIC verifies clean; a wrong
+  key fails loud. (The tests/dcps/isdcf fixture ships no KDM/key, so that package
+  can't be an E2E; the ECL29 KDM+key live in the ClairMeta data set.)
 
 ## DoM tracker gaps 1-2: done (2026-07-22)
 

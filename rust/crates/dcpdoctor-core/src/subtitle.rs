@@ -436,45 +436,58 @@ pub fn check_glyph_coverage(
 /// Same glyph-coverage check for a SMPTE MXF-wrapped ST 429-5 subtitle asset:
 /// read the timed-text document from the MXF, pull its embedded OpenType fonts
 /// (ancillary resources), and check every used code point against the font a
-/// LoadFont urn resolves to. Encrypted essence with no KDM, or any unreadable
-/// MXF, is skipped silently (same convention as the other essence checks).
-pub fn check_glyph_coverage_mxf(mxf_path: &Path) -> Vec<Note> {
-    let Some((xml, fonts)) = read_mxf_timed_text(mxf_path) else {
-        return Vec::new();
+/// LoadFont urn resolves to. Encrypted essence is decrypted with `keys`; without
+/// a covering key it skips (with a note when a KDM was supplied but lacks the
+/// KeyId). Any unreadable MXF is skipped silently.
+pub fn check_glyph_coverage_mxf(mxf_path: &Path, keys: &crate::kdm::ContentKeys) -> Vec<Note> {
+    let (xml, fonts, mut notes) = match read_mxf_timed_text(mxf_path, keys) {
+        Some(v) => v,
+        None => return Vec::new(),
     };
-    glyph_notes(&xml, mxf_path, |decl| {
+    notes.extend(glyph_notes(&xml, mxf_path, |decl| {
         decl.urn
             .as_deref()
             .and_then(parse_urn_uuid)
             .and_then(|u| fonts.get(&u).cloned())
-    })
+    }));
+    notes
 }
 
-/// A timed-text document plus its embedded OpenType fonts keyed by resource uuid.
-type MxfTimedText = (String, HashMap<[u8; 16], Vec<u8>>);
+/// A timed-text document, its embedded OpenType fonts keyed by resource uuid, and
+/// any decryption/skip notes produced while reading.
+type MxfTimedText = (String, HashMap<[u8; 16], Vec<u8>>, Vec<Note>);
 
 /// Read the timed-text document and every embedded OpenType font from a
-/// timed-text MXF. Returns `None` if the MXF can't be opened or its document
-/// can't be read (missing, encrypted without a KDM, corrupt). Non-font
-/// resources (Png bitmap subs, Binary) are ignored.
-fn read_mxf_timed_text(mxf_path: &Path) -> Option<MxfTimedText> {
+/// timed-text MXF, decrypting with `keys` when the essence is encrypted. Returns
+/// `None` if the MXF can't be opened, its document can't be read, or it is
+/// encrypted with no covering key (a skip note is emitted in the returned Vec
+/// only when a KDM was supplied). Non-font resources (Png, Binary) are ignored.
+fn read_mxf_timed_text(mxf_path: &Path, keys: &crate::kdm::ContentKeys) -> Option<MxfTimedText> {
     let s = mxf_path.to_str()?;
     let mut reader = asdcplib::timed_text::MxfReader::new();
     reader.open_read(s).ok()?;
 
-    // encrypted essence needs a KDM to decrypt; without one the document and its
-    // fonts come back as ciphertext, so skip silently (same as other essence checks)
-    match reader.writer_info() {
-        Ok(wi) if !wi.encrypted_essence => {}
-        _ => return None,
+    let info = reader.writer_info().ok()?;
+    let essence = keys.resolve(&info);
+    if essence.is_missing() {
+        // encrypted with no key: skip (with a note only when a KDM was supplied).
+        // caller drops the whole asset when None comes back, so surface the note
+        // through a one-off Vec here.
+        if let Some(note) = essence.skip_note(mxf_path) {
+            return Some((String::new(), HashMap::new(), vec![note]));
+        }
+        return None;
     }
+    let mut ctx = essence.contexts().ok()?;
 
     let mut buf: Vec<u8> = Vec::new();
-    let xml = match reader.read_timed_text_resource(&mut buf, None, None) {
+    let (dec, hmac) = split_ctx(ctx.as_mut());
+    let xml = match reader.read_timed_text_resource(&mut buf, dec, hmac) {
         Ok(n) => String::from_utf8_lossy(&buf[..n]).into_owned(),
         Err(asdcplib::Error::BufferTooSmall { needed, .. }) => {
             buf = vec![0u8; needed];
-            let n = reader.read_timed_text_resource(&mut buf, None, None).ok()?;
+            let (dec, hmac) = split_ctx(ctx.as_mut());
+            let n = reader.read_timed_text_resource(&mut buf, dec, hmac).ok()?;
             String::from_utf8_lossy(&buf[..n]).into_owned()
         }
         Err(_) => return None,
@@ -490,20 +503,35 @@ fn read_mxf_timed_text(mxf_path: &Path) -> Option<MxfTimedText> {
             continue; // Png bitmap subs / Binary are not fonts
         }
         let mut fbuf: Vec<u8> = Vec::new();
-        let bytes = match reader.read_ancillary_resource(&info.uuid, &mut fbuf, None, None) {
+        let (dec, hmac) = split_ctx(ctx.as_mut());
+        let bytes = match reader.read_ancillary_resource(&info.uuid, &mut fbuf, dec, hmac) {
             Ok(n) => fbuf[..n].to_vec(),
             Err(asdcplib::Error::BufferTooSmall { needed, .. }) => {
                 fbuf = vec![0u8; needed];
-                match reader.read_ancillary_resource(&info.uuid, &mut fbuf, None, None) {
+                let (dec, hmac) = split_ctx(ctx.as_mut());
+                match reader.read_ancillary_resource(&info.uuid, &mut fbuf, dec, hmac) {
                     Ok(n) => fbuf[..n].to_vec(),
-                    Err(_) => continue, // encrypted-without-KDM or unreadable font: skip
+                    Err(_) => continue, // unreadable font: skip
                 }
             }
             Err(_) => continue,
         };
         fonts.insert(info.uuid, bytes);
     }
-    Some((xml, fonts))
+    Some((xml, fonts, Vec::new()))
+}
+
+/// Split optional decrypt contexts into the (dec, hmac) pair the readers take.
+fn split_ctx(
+    ctx: Option<&mut crate::kdm::DecryptContexts>,
+) -> (
+    Option<&mut asdcplib::crypto::AesDecContext>,
+    Option<&mut asdcplib::crypto::HmacContext>,
+) {
+    match ctx {
+        Some(c) => (Some(&mut c.dec), Some(&mut c.hmac)),
+        None => (None, None),
+    }
 }
 
 /// Parse `urn:uuid:xxxxxxxx-xxxx-...` into its 16 raw bytes. Returns `None` on a
@@ -887,7 +915,7 @@ mod tests {
         let uuid = [0xAB; 16];
         let doc = mxf_doc("Hé", &uuid_urn(&uuid)); // 'é' absent from the embedded font
         let path = write_mxf(dir.path(), &doc, Some((&make_font(&['H', 'i']), uuid)));
-        let notes = check_glyph_coverage_mxf(&path);
+        let notes = check_glyph_coverage_mxf(&path, &crate::kdm::ContentKeys::none());
         assert_eq!(notes.len(), 1, "got: {notes:?}");
         assert_eq!(notes[0].code, Code::SubtitleGlyphMissing);
         assert!(
@@ -904,7 +932,7 @@ mod tests {
         let uuid = [0xCD; 16];
         let doc = mxf_doc("Hi", &uuid_urn(&uuid));
         let path = write_mxf(dir.path(), &doc, Some((&make_font(&['H', 'i']), uuid)));
-        let notes = check_glyph_coverage_mxf(&path);
+        let notes = check_glyph_coverage_mxf(&path, &crate::kdm::ContentKeys::none());
         assert!(notes.is_empty(), "expected clean, got: {notes:?}");
     }
 
@@ -914,7 +942,7 @@ mod tests {
         // urn points at a font that isn't embedded: no OpenType resource to check
         let doc = mxf_doc("Hé", &uuid_urn(&[0xEF; 16]));
         let path = write_mxf(dir.path(), &doc, None);
-        let notes = check_glyph_coverage_mxf(&path);
+        let notes = check_glyph_coverage_mxf(&path, &crate::kdm::ContentKeys::none());
         assert!(notes.is_empty(), "expected silent skip, got: {notes:?}");
     }
 }

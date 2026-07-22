@@ -118,6 +118,14 @@ enum Commands {
         /// Also write the report into each DCP's own folder
         #[arg(long)]
         report_to_folder: bool,
+
+        /// KDM XML to decrypt an encrypted DCP (with --recipient-key)
+        #[arg(long)]
+        kdm: Option<PathBuf>,
+
+        /// Recipient RSA private key (PEM) matching the KDM
+        #[arg(long)]
+        recipient_key: Option<PathBuf>,
     },
 
     /// Compare two DCPs
@@ -470,6 +478,8 @@ fn main() {
             manifest,
             output,
             report_to_folder,
+            kdm,
+            recipient_key,
         }) => {
             let flags = ValidateFlags {
                 no_hashes,
@@ -492,6 +502,8 @@ fn main() {
                 manifest,
                 output,
                 report_to_folder,
+                kdm,
+                recipient_key,
             };
             run_validate(&dcp_dirs, flags, format);
         }
@@ -590,7 +602,7 @@ fn main() {
                     check_signatures: false,
                     check_picture_details: false,
                     strict_smpte: true,
-                    ov: None,
+                    ..Default::default()
                 };
                 let verify_result = dcpdoctor_core::verify(&dcp_dir, &opts);
                 let suggestions = dcpdoctor_core::fixes::suggest_fixes(&verify_result.notes);
@@ -1081,6 +1093,7 @@ fn main() {
                 check_picture_details: true,
                 strict_smpte: !no_strict,
                 ov: cli.ov.clone(),
+                ..Default::default()
             };
             let result = dcpdoctor_core::verify(&imp_dir, &opts);
 
@@ -1416,7 +1429,7 @@ fn main() {
                 check_signatures: false,
                 check_picture_details: false,
                 strict_smpte: false,
-                ov: None,
+                ..Default::default()
             };
             let result = dcpdoctor_core::verify(&imp_dir, &opts);
             if cli.json {
@@ -1581,6 +1594,8 @@ struct ValidateFlags {
     manifest: Option<PathBuf>,
     output: Option<PathBuf>,
     report_to_folder: bool,
+    kdm: Option<PathBuf>,
+    recipient_key: Option<PathBuf>,
 }
 
 /// The --studio ffprobe checks re-cover a couple of findings the core path
@@ -1632,6 +1647,8 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
         check_picture_details: flags.check_mxf || flags.deep_j2k,
         strict_smpte: flags.strict,
         ov: flags.ov.clone(),
+        kdm: flags.kdm.clone(),
+        recipient_key: flags.recipient_key.clone(),
     };
 
     let mut any_failed = false;
@@ -1677,7 +1694,7 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
 
         // Deep J2K validation
         if flags.deep_j2k {
-            let j2k_notes = run_deep_j2k(dir);
+            let j2k_notes = run_deep_j2k(dir, &flags);
             for note in j2k_notes {
                 result.add(note);
             }
@@ -1788,8 +1805,16 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
 }
 
 /// Run deep J2K validation on MXF files in a DCP.
-fn run_deep_j2k(dcp_dir: &std::path::Path) -> Vec<dcpdoctor_core::Note> {
+fn run_deep_j2k(dcp_dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdoctor_core::Note> {
     let mut notes = Vec::new();
+
+    // KDM keys for decrypting encrypted picture essence, if supplied. verify_dcp
+    // already surfaced any unwrap error, so build silently here.
+    let keys = match (&flags.kdm, &flags.recipient_key) {
+        (Some(kdm), Some(key)) => dcpdoctor_core::kdm::ContentKeys::from_kdm(kdm, key)
+            .unwrap_or_else(|_| dcpdoctor_core::kdm::ContentKeys::none()),
+        _ => dcpdoctor_core::kdm::ContentKeys::none(),
+    };
 
     let entries = match std::fs::read_dir(dcp_dir) {
         Ok(e) => e,
@@ -1813,7 +1838,7 @@ fn run_deep_j2k(dcp_dir: &std::path::Path) -> Vec<dcpdoctor_core::Note> {
             }
             // per-frame guard-bit constraint (RDD 52); reports the offending
             // frame + timecode. Non-picture MXFs yield no notes.
-            notes.extend(dcpdoctor_core::j2k::check_guard_bits_mxf(&path));
+            notes.extend(dcpdoctor_core::j2k::check_guard_bits_mxf(&path, &keys));
         }
     }
 
