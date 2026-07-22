@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DCP Doctor - Professional DCP &amp; IMF Validation</title>
-    <meta name="description" content="Open-source DCP and IMF validator. SMPTE Bv2.1 compliance, Dolby Atmos, HDR, Netflix delivery specs, audio loudness, color gamut, stereoscopic 3D, and more. Free alternative to EasyDCP.">
+    <title>DCP Doctor - Check your DCP or IMF before it ships</title>
+    <meta name="description" content="Free, open-source tool to check a DCP or IMF package before delivery. Structure, hashes, signatures, loudness, subtitles, HDR, KDMs, theater and streamer profiles, and automated QC. Desktop app for Windows, macOS and Linux, plus an in-browser checker.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -631,15 +631,13 @@
             DCP Doctor
         </a>
         <ul class="nav-links">
-            <li><a href="#features">Features</a></li>
-            <li><a href="#validator">Try Online</a></li>
-            <li><a href="#desktop">Desktop App</a></li>
+            <li><a href="#download">Download</a></li>
+            <li><a href="#online">Check online</a></li>
+            <li><a href="#features">What it checks</a></li>
             <li><a href="#comparison">vs EasyDCP</a></li>
-            <li><a href="#examples">Examples</a></li>
-            <li><a href="#install">Install</a></li>
-            <li><a href="#platforms">Platforms</a></li>
+            <li><a href="#automation">Automation</a></li>
             <li><a href="https://github.com/PostPerfection/dcpdoctor" class="nav-btn-ghost">GitHub</a></li>
-            <li><a href="#install" class="nav-btn-accent">Get Started</a></li>
+            <li><a href="#download" class="nav-btn-accent">Download</a></li>
         </ul>
         <button class="nav-hamburger" onclick="document.querySelector('.nav-links').classList.toggle('show')" aria-label="Toggle menu">&#9776;</button>
     </div>
@@ -650,37 +648,35 @@
     <div class="hero-content">
         <div class="hero-badge">
             <div class="badge-dot"></div>
-            Open Source &middot; <span>v0.1.1</span>
+            Free &amp; <span>open source</span>
         </div>
-        <h1>Professional <em>DCP Validation</em><br>Without the Price Tag</h1>
+        <h1>Catch problems in your <em>DCP or IMF</em><br>before it ships</h1>
         <p class="hero-sub">
-            A complete DCP &amp; IMF validator with SMPTE Bv2.1 compliance, Dolby Atmos, HDR, Netflix delivery specs, audio loudness metering, and more - all from the command line. Free and open source.
+            DCP Doctor checks a cinema or streaming package for the mistakes that get a delivery rejected: broken structure, bad hashes, expired keys, subtitle timing, audio levels, HDR metadata and more. Run it on your desktop or right in the browser.
         </p>
         <div class="hero-actions">
-            <a href="#validator" class="btn btn-accent">
-                Try Online Validator
+            <a href="#download" class="btn btn-accent">
+                Download the app
             </a>
-            <a href="https://github.com/PostPerfection/dcpdoctor" class="btn btn-outline">
-                View on GitHub &rarr;
+            <a href="#online" class="btn btn-outline">
+                Check one online &rarr;
             </a>
         </div>
 
         <div class="hero-demo">
             <div class="demo-header">
                 <div class="demo-dots"><span></span><span></span><span></span></div>
-                <div class="demo-title">dcpdoctor - validate DCP package</div>
+                <div class="demo-title">DCP Doctor - validation report</div>
                 <div style="width: 38px;"></div>
             </div>
             <div class="demo-body">
-<span class="c"># Full validation with deep J2K and MXF analysis</span>
-<span class="p">$</span> <span class="w">dcpdoctor</span> <span class="v">validate --check-mxf --deep-j2k</span> <span class="f">/mnt/dcp/MyFeature_FTR-1_S_EN_XX_2K_20241201/</span>
-
-<span class="o">Validating: MyFeature_FTR-1_S_EN_XX_2K_20241201</span>
+<span class="c"># Checking a feature before delivery</span>
+<span class="o">Package:    MyFeature_FTR-1_S_EN_XX_2K_20241201</span>
 <span class="o">Standard:   SMPTE (Bv2.1)</span>
 <span class="o">Reels:      4 | Duration: 01:58:32 | Resolution: 2048x858 (Scope 2K)</span>
 <span class="o">Audio:      5.1 (L R C LFE Ls Rs) | 48kHz/24bit</span>
 <span class="o">Loudness:   -28.3 LUFS | True Peak: -2.1 dBTP</span>
-<span class="o">Color:      CIE XYZ 12-bit | DCI-P3 compliant</span>
+<span class="o">Color:      CIE XYZ 12-bit | DCI-P3</span>
 <span class="o">Encryption: All assets encrypted (KDM required)</span>
 
 <span class="s">&#10003; PASS</span> <span class="o">0 errors, 2 warnings</span>
@@ -691,182 +687,245 @@
 
         <div class="stats-row">
             <div class="stat-cell">
-                <h3>22</h3>
-                <p>CLI Commands</p>
-            </div>
-            <div class="stat-cell">
-                <h3>3</h3>
-                <p>Standards (SMPTE, Interop, IMF)</p>
-            </div>
-            <div class="stat-cell">
-                <h3>3</h3>
-                <p>Platforms</p>
-            </div>
-            <div class="stat-cell">
                 <h3>$0</h3>
-                <p>Forever Free</p>
+                <p>Free, open source (GPL)</p>
+            </div>
+            <div class="stat-cell">
+                <h3>3</h3>
+                <p>Windows, macOS, Linux</p>
+            </div>
+            <div class="stat-cell">
+                <h3>DCP &amp; IMF</h3>
+                <p>SMPTE, Interop, IMF</p>
+            </div>
+            <div class="stat-cell">
+                <h3>Browser</h3>
+                <p>Nothing uploaded</p>
             </div>
         </div>
+    </div>
+</section>
+
+<!-- ═══ DOWNLOAD ═══ -->
+<section id="download" style="border-bottom: 1px solid var(--border);">
+    <div class="section-inner">
+        <span class="section-label">Download</span>
+        <h2 class="section-title">Get the desktop app</h2>
+        <p class="section-desc">Install it, drop in a DCP or IMF folder, and read a plain pass/fail report with every warning called out. Free and open source, all platforms.</p>
+
+        <div class="deploy-grid fade-in">
+            <div class="deploy-card">
+                <div class="d-icon">&#128187;</div>
+                <h3>Windows</h3>
+                <p>Installer (.msi / .exe) for Windows 10 and 11.</p>
+                <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" class="btn btn-accent" style="margin-top:16px;">Download latest</a>
+            </div>
+            <div class="deploy-card">
+                <div class="d-icon">&#127822;</div>
+                <h3>macOS</h3>
+                <p>Disk image (.dmg) for Apple Silicon Macs.</p>
+                <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" class="btn btn-accent" style="margin-top:16px;">Download latest</a>
+            </div>
+            <div class="deploy-card">
+                <div class="d-icon">&#128421;</div>
+                <h3>Linux</h3>
+                <p>AppImage, .deb or .rpm for common distributions.</p>
+                <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" class="btn btn-accent" style="margin-top:16px;">Download latest</a>
+            </div>
+        </div>
+
+        <p style="margin-top:28px; color: var(--text-tertiary); font-size:0.9rem;">
+            Prefer the command line? The same <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" style="color: var(--accent); text-decoration:none;">releases page</a> has a standalone command-line build for Windows, macOS and Linux, handy for scripting and watch folders. See <a href="#automation" style="color: var(--accent); text-decoration:none;">Automation</a>.
+        </p>
+    </div>
+</section>
+
+<!-- ═══ ONLINE CHECKER ═══ -->
+<section id="online" style="padding: 100px 0; background: var(--bg-secondary);">
+    <div style="max-width: 1200px; margin: 0 auto; padding: 0 24px;">
+        <div style="text-align: center; margin-bottom: 48px;">
+            <span class="section-label" style="justify-content:center;">Online checker</span>
+            <h2 style="color: var(--text-primary); font-size: 2.2rem; font-weight: 800; margin-bottom: 16px;">Check a DCP in your browser</h2>
+            <p style="color: var(--text-secondary); font-size: 1.1rem; max-width: 640px; margin: 0 auto;">Point it at a DCP folder and get a report without installing anything. Nothing is uploaded, the whole check runs on your own machine.</p>
+        </div>
+        <div style="border: 1px solid var(--border); border-radius: 16px; overflow: hidden; height: 700px; background: var(--bg-primary);">
+            <iframe src="validate/" style="width: 100%; height: 100%; border: none;" title="DCP Doctor online checker"></iframe>
+        </div>
+        <p style="text-align: center; margin-top: 16px; color: var(--text-tertiary); font-size: 0.85rem;">Or open the <a href="validate/" style="color: var(--accent);">full-page checker</a> for more room.</p>
     </div>
 </section>
 
 <!-- ═══ FEATURES ═══ -->
 <section id="features" style="border-bottom: 1px solid var(--border);">
     <div class="section-inner">
-        <span class="section-label">Features</span>
-        <h2 class="section-title">Enterprise-Grade Validation</h2>
-        <p class="section-desc">Every check a post-production studio needs - from basic structure to deep Atmos analysis. No annual license fees.</p>
+        <span class="section-label">What it checks</span>
+        <h2 class="section-title">Every check your delivery needs</h2>
+        <p class="section-desc">Grouped by the job in front of you, from a quick structure check to a full QC pass. Plain reports you can hand to a client or an operator.</p>
 
+        <h3 style="color:var(--text-primary); font-size:1.15rem; font-weight:700; margin:8px 0 20px;">Package integrity</h3>
         <div class="features-grid fade-in">
             <div class="feat-card">
                 <div class="feat-icon">&#128196;</div>
-                <h3>SMPTE Bv2.1 Compliance</h3>
-                <p>Full SMPTE ST 429 and Bv2.1 validation. Every package XML file gets parsed, with XSD checks when schemas are supplied.</p>
-                <span class="feat-tag tag-core">Core</span>
+                <h3>Structure and references</h3>
+                <p>Checks that ASSETMAP, PKL and CPL line up and that every asset they point to is actually present. Catches duplicate asset IDs across packages.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#9989;</div>
+                <h3>Hashes and file sizes</h3>
+                <p>Verifies the SHA-1 hash and size of every file, so a corrupt or half-copied asset gets caught before it reaches a theater or a facility.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128274;</div>
-                <h3>Hash &amp; Signature</h3>
-                <p>SHA-1 hash verification for all assets. XML digital signature validation with X.509 certificate chain trust checking.</p>
-                <span class="feat-tag tag-core">Core</span>
+                <h3>Signatures and certificates</h3>
+                <p>Validates the XML signatures and the certificate chain, and flags expired certs and malformed package XML.</p>
+            </div>
+        </div>
+
+        <h3 style="color:var(--text-primary); font-size:1.15rem; font-weight:700; margin:48px 0 20px;">Picture, color and HDR</h3>
+        <div class="features-grid fade-in">
+            <div class="feat-card">
+                <div class="feat-icon">&#128208;</div>
+                <h3>Resolution and format</h3>
+                <p>Confirms the 2K or 4K container, Flat / Scope / Full and aspect ratio, and flags non-standard sizes.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127916;</div>
-                <h3>J2K Bitrate Analysis</h3>
-                <p>Per-frame bitrate analysis with max/min/avg. Deep J2K codestream validation: profile, tile structure, code-block sizes, quality layers.</p>
-                <span class="feat-tag tag-core">Core</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#127897;</div>
-                <h3>Audio Loudness (EBU R128)</h3>
-                <p>Integrated loudness (LUFS), loudness range (LRA), true peak (dBTP). DCI cinema level compliance checking.</p>
-                <span class="feat-tag tag-studio">Studio</span>
+                <h3>Bitrate limits</h3>
+                <p>Per-frame picture bitrate with min, max and average, checked against the DCI limits (250 Mbps at 2K, 500 at 4K).</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127752;</div>
-                <h3>Color Space &amp; Gamut</h3>
-                <p>XYZ/DCI-P3/Rec.709 color space detection. 12-bit depth verification. Out-of-gamut pixel sampling.</p>
-                <span class="feat-tag tag-studio">Studio</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#128266;</div>
-                <h3>Channel Configuration</h3>
-                <p>Audio layout detection (2.0/5.1/7.1/Atmos). MCA label validation per SMPTE ST 377-4. DCI channel minimum enforcement.</p>
-                <span class="feat-tag tag-studio">Studio</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#127760;</div>
-                <h3>Dolby Atmos / IAB</h3>
-                <p>IAB essence detection via ffprobe, with an estimated object count and basic Atmos compliance checks.</p>
-                <span class="feat-tag tag-premium">Premium</span>
+                <h3>Color space</h3>
+                <p>Detects XYZ / DCI-P3 / Rec.709 and confirms 12-bit depth, with out-of-gamut sampling.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127774;</div>
-                <h3>HDR Metadata</h3>
-                <p>PQ (ST 2084), HLG, and Dolby Vision detection. SMPTE ST 2098 metadata compliance. MaxCLL/MaxFALL validation.</p>
-                <span class="feat-tag tag-premium">Premium</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#128250;</div>
-                <h3>Dolby Vision</h3>
-                <p>Dolby Vision detection from ffprobe side-data flags, with RPU packet counting and basic compliance checks.</p>
-                <span class="feat-tag tag-premium">Premium</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#128220;</div>
-                <h3>TTML / IMSC Subtitles</h3>
-                <p>TTML/IMSC compliance checking. Timing validation, font embedding, subtitle duration minimums, and CineCanvas SMPTE 428-7.</p>
-                <span class="feat-tag tag-premium">Premium</span>
+                <h3>HDR metadata</h3>
+                <p>HDR10, HLG and Dolby Vision metadata, with MaxCLL and MaxFALL checks.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127909;</div>
                 <h3>Stereoscopic 3D</h3>
-                <p>Left/right eye frame count matching. Bitrate balance. MXF stereoscopic structure validation.</p>
-                <span class="feat-tag tag-studio">Studio</span>
+                <p>Left- and right-eye frame counts matched, for 3D packages.</p>
+            </div>
+        </div>
+
+        <h3 style="color:var(--text-primary); font-size:1.15rem; font-weight:700; margin:48px 0 20px;">Sound and loudness</h3>
+        <div class="features-grid fade-in">
+            <div class="feat-card">
+                <div class="feat-icon">&#128266;</div>
+                <h3>Levels</h3>
+                <p>Per-channel peak and RMS in dBFS, with warnings on clipping near 0 dBFS and silent channels.</p>
             </div>
             <div class="feat-card">
-                <div class="feat-icon">&#128208;</div>
-                <h3>Resolution &amp; Aspect Ratio</h3>
-                <p>DCI container detection: 2K Flat/Scope/Full, 4K variants. Non-standard resolution flagging.</p>
-                <span class="feat-tag tag-studio">Studio</span>
+                <div class="feat-icon">&#127897;</div>
+                <h3>Loudness</h3>
+                <p>EBU R128 / ATSC A/85 loudness measurement, and normalization to a target such as -23 LUFS when you need it.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#127925;</div>
+                <h3>Channels and labels</h3>
+                <p>Checks the channel layout (2.0, 5.1, 7.1, immersive) and MCA labels against the actual sound file.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#127760;</div>
+                <h3>Dolby Atmos</h3>
+                <p>Detects immersive audio (IAB) essence with an estimated object count.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128279;</div>
-                <h3>Cross-Reel Continuity</h3>
-                <p>Multi-reel timing gap detection. Audio/video sync verification. Reel duration compliance (40-min recommendation).</p>
-                <span class="feat-tag tag-studio">Studio</span>
+                <h3>A/V sync</h3>
+                <p>Flags picture and sound drift, per reel.</p>
+            </div>
+        </div>
+
+        <h3 style="color:var(--text-primary); font-size:1.15rem; font-weight:700; margin:48px 0 20px;">Subtitles and accessibility</h3>
+        <div class="features-grid fade-in">
+            <div class="feat-card">
+                <div class="feat-icon">&#128220;</div>
+                <h3>Timing</h3>
+                <p>Subtitle timing rules: in/out order, overlaps, minimum event duration, gap spacing, and a too-early first subtitle.</p>
             </div>
             <div class="feat-card">
-                <div class="feat-icon">&#128274;</div>
-                <h3>Encryption Consistency</h3>
-                <p>Mixed encryption detection. KDM requirement flagging. Per-asset encryption status reporting.</p>
-                <span class="feat-tag tag-studio">Studio</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#128203;</div>
-                <h3>Supplemental Packages</h3>
-                <p>Version File (VF) validation. Original Version reference checking. Missing asset detection across OV/VF split.</p>
-                <span class="feat-tag tag-studio">Studio</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#127380;</div>
-                <h3>Netflix Delivery Specs</h3>
-                <p>Full Netflix IMF delivery specification checking. Metadata requirements, file structure, naming conventions.</p>
-                <span class="feat-tag tag-premium">Premium</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#9851;</div>
-                <h3>IMF via Netflix Photon</h3>
-                <p>Native and Netflix Photon checks run for ST 2067 IMF packages. SMPTE and Interop DCPs skip IMF tooling.</p>
-                <span class="feat-tag tag-imf">IMF</span>
+                <div class="feat-icon">&#128196;</div>
+                <h3>Readability</h3>
+                <p>Line count and length limits, plus closed-caption character-set checks and required elements like language and font.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#9855;</div>
-                <h3>Accessibility</h3>
-                <p>Audio Description (AD), Hearing Impaired (HI), and Closed Caption (CC) track detection and validation.</p>
-                <span class="feat-tag tag-premium">Premium</span>
+                <h3>Accessibility tracks</h3>
+                <p>Detects and checks audio description, hearing-impaired and closed-caption tracks.</p>
             </div>
+        </div>
+
+        <h3 style="color:var(--text-primary); font-size:1.15rem; font-weight:700; margin:48px 0 20px;">Encryption and keys</h3>
+        <div class="features-grid fade-in">
             <div class="feat-card">
-                <div class="feat-icon">&#128256;</div>
-                <h3>120fps / Extended HFR</h3>
-                <p>High Bit Rate and extended High Frame Rate validation. 48/60/96/120fps compliance checking.</p>
-                <span class="feat-tag tag-premium">Premium</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#128477;</div>
-                <h3>ISDCF Naming</h3>
-                <p>Full ISDCF naming convention validation. Content type, resolution, audio config, language codes.</p>
-                <span class="feat-tag tag-core">Core</span>
+                <div class="feat-icon">&#128274;</div>
+                <h3>Encryption status</h3>
+                <p>Spots encrypted assets and mixed-encryption packages, and tells you when a KDM will be required.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128273;</div>
-                <h3>KDM Validation</h3>
-                <p>KDM XML parsing and validation. Key period checking. CPL reference cross-validation.</p>
-                <span class="feat-tag tag-core">Core</span>
+                <h3>KDM checks</h3>
+                <p>Validates KDMs: the validity window (expired or not-yet-valid) and that the key matches the right CPL in the package.</p>
             </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#9989;</div>
-                <h3>Checksum Verification</h3>
-                <p>Verify all PKL asset hashes and file sizes for DCP or IMF packages. Detects corruption, missing files, and size mismatches.</p>
-                <span class="feat-tag tag-core">Core</span>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon">&#128230;</div>
-                <h3>MXF Essence Extraction</h3>
-                <p>Extract video and audio tracks from MXF containers. Frame range selection, per-track extraction, lossless unwrap.</p>
-                <span class="feat-tag tag-studio">Studio</span>
-            </div>
+        </div>
+
+        <h3 style="color:var(--text-primary); font-size:1.15rem; font-weight:700; margin:48px 0 20px;">Automated QC</h3>
+        <div class="features-grid fade-in">
             <div class="feat-card">
                 <div class="feat-icon">&#128269;</div>
-                <h3>Automated QC</h3>
-                <p>Detect black frames, freeze frames, audio silence, and audio clipping. Configurable thresholds. JSON output for integration.</p>
-                <span class="feat-tag tag-studio">Studio</span>
+                <h3>Automatic QC scan</h3>
+                <p>Finds black frames, freeze frames, audio silence and clipping automatically, with thresholds you can set.</p>
             </div>
             <div class="feat-card">
+                <div class="feat-icon">&#128203;</div>
+                <h3>QC reports</h3>
+                <p>Clean HTML or PDF reports with package, track and per-track loudness summaries, ready for a client name and title.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#128200;</div>
+                <h3>Compare two packages</h3>
+                <p>Diff two DCPs to see exactly what changed, down to a perceptual picture fingerprint.</p>
+            </div>
+        </div>
+
+        <h3 style="color:var(--text-primary); font-size:1.15rem; font-weight:700; margin:48px 0 20px;">Delivery targets</h3>
+        <div class="features-grid fade-in">
+            <div class="feat-card">
+                <div class="feat-icon">&#127909;</div>
+                <h3>Theater server profiles</h3>
+                <p>Check a package against pre-built profiles for Dolby, Barco, Christie, GDC and IMAX servers before it goes on-screen.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#127981;</div>
+                <h3>Facility ingest check</h3>
+                <p>A pre-delivery readiness pass for theater ingest, so a package clears the door on the first try.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#127380;</div>
+                <h3>Streamer IMF delivery</h3>
+                <p>Netflix IMF delivery checks, with deep IMF conformance run through Netflix Photon for IMF packages.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#128477;</div>
+                <h3>ISDCF naming</h3>
+                <p>Validates the content title against the ISDCF naming convention: content type, resolution, audio and language.</p>
+            </div>
+        </div>
+
+        <h3 style="color:var(--text-primary); font-size:1.15rem; font-weight:700; margin:48px 0 20px;">Fix and automate</h3>
+        <div class="features-grid fade-in">
+            <div class="feat-card">
                 <div class="feat-icon">&#128295;</div>
-                <h3>Auto-Fix</h3>
-                <p>Automatically repair PKL hash mismatches, wrong SMPTE/Interop namespaces, and invalid ContentKind values. Dry-run mode available.</p>
-                <span class="feat-tag tag-core">Core</span>
+                <h3>Auto-fix common problems</h3>
+                <p>Repairs the usual suspects: hash mismatches, wrong SMPTE/Interop namespaces and invalid ContentKind, with a dry-run to preview first.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#128193;</div>
+                <h3>Watch folders</h3>
+                <p>Point it at an ingest folder and it checks new packages as they land.</p>
             </div>
         </div>
     </div>
@@ -923,263 +982,69 @@
     </div>
 </section>
 
-<!-- ═══ EXAMPLES ═══ -->
-<section id="examples" style="border-bottom: 1px solid var(--border);">
+<!-- ═══ AUTOMATION ═══ -->
+<section id="automation" style="border-bottom: 1px solid var(--border);">
     <div class="section-inner">
-        <span class="section-label">Usage Examples</span>
-        <h2 class="section-title">Copy, Paste, Validate</h2>
-        <p class="section-desc">Real commands for real workflows. Every example works out of the box.</p>
+        <span class="section-label">Automation</span>
+        <h2 class="section-title">Fit it into your pipeline</h2>
+        <p class="section-desc">The command-line build does everything the app does, so you can batch a whole day of deliveries, watch an ingest folder, or wire checks into your own tools.</p>
 
         <div class="pipeline-grid fade-in">
             <div class="pipeline-card">
-                <span class="pipe-tag">Basic</span>
-                <h3>Standard Validation</h3>
-                <p>Validate a DCP with all core checks.</p>
-<pre>dcpdoctor /path/to/DCP/</pre>
+                <span class="pipe-tag">Command line</span>
+                <h3>Check a package</h3>
+                <p>Run a full check and get a pass/fail exit code you can act on.</p>
+<pre>dcpdoctor /path/to/DCP</pre>
             </div>
             <div class="pipeline-card">
-                <span class="pipe-tag">Studio</span>
-                <h3>Studio-Level Checks</h3>
-                <p>MXF essence inspection with deep J2K codestream analysis.</p>
-<pre>dcpdoctor validate --check-mxf --deep-j2k \
-  /path/to/DCP/</pre>
+                <span class="pipe-tag">Watch folder</span>
+                <h3>Auto-check on arrival</h3>
+                <p>Watch an ingest folder and check each new package as it lands.</p>
+<pre>dcpdoctor watch /ingest/incoming</pre>
             </div>
             <div class="pipeline-card">
-                <span class="pipe-tag">Premium</span>
-                <h3>Netflix IMF Compliance</h3>
-                <p>Full platform compliance checking for streaming delivery.</p>
-<pre>dcpdoctor imf-compliance --target netflix \
-  /path/to/IMF/</pre>
-            </div>
-            <div class="pipeline-card">
-                <span class="pipe-tag">IMF</span>
-                <h3>IMF Validation (Photon)</h3>
-                <p>Deep IMF App 2/2E conformance via Netflix Photon. It runs only for packages with an ST 2067-3 CPL.</p>
-<pre># Auto-downloads and builds Photon on first run
-dcpdoctor validate /path/to/IMP/
-
-# Or point to existing installation
-PHOTON_DIR=/opt/photon dcpdoctor validate /path/to/IMP/</pre>
-            </div>
-            <div class="pipeline-card">
-                <span class="pipe-tag">Fix</span>
-                <h3>Auto-Fix Issues</h3>
-                <p>Repair hash mismatches, namespaces, and ContentKind.</p>
-<pre>dcpdoctor fix /path/to/DCP/
-<span class="cmt"># Dry-run (preview only)</span>
-dcpdoctor fix --dry-run /path/to/DCP/</pre>
-            </div>
-            <div class="pipeline-card">
-                <span class="pipe-tag">Reports</span>
-                <h3>JSON Report</h3>
-                <p>Machine-readable output for CI pipelines.</p>
-<pre>dcpdoctor --json \
-  /path/to/DCP/ &gt; report.json</pre>
-            </div>
-            <div class="pipeline-card">
-                <span class="pipe-tag">Advanced</span>
-                <h3>DCP Comparison</h3>
-                <p>Diff two DCP packages to find changes.</p>
-<pre>dcpdoctor diff /path/to/DCP_v1/ \
-  /path/to/DCP_v2/</pre>
-            </div>
-            <div class="pipeline-card">
-                <span class="pipe-tag">QC</span>
-                <h3>Automated QC</h3>
-                <p>Detect black frames, freeze frames, silence, and clipping.</p>
-<pre>dcpdoctor auto-qc \
-  --video /path/to/content.mxf</pre>
-            </div>
-            <div class="pipeline-card">
-                <span class="pipe-tag">Integrity</span>
-                <h3>Checksum Verification</h3>
-                <p>Verify all PKL hashes and file sizes in a package.</p>
-<pre>dcpdoctor checksum-verify \
-  /path/to/DCP/</pre>
-            </div>
-            <div class="pipeline-card">
-                <span class="pipe-tag">Extract</span>
-                <h3>MXF Extraction</h3>
-                <p>Unwrap video/audio essence from MXF containers.</p>
-<pre>dcpdoctor mxf-extract \
-  /path/to/picture.mxf -o ./out/</pre>
+                <span class="pipe-tag">REST API</span>
+                <h3>Call it from your tools</h3>
+                <p>Run a small HTTP service and POST a package path to check it.</p>
+<pre>dcpdoctor serve --port 8080</pre>
             </div>
         </div>
     </div>
 </section>
 
-<!-- ═══ INSTALL ═══ -->
-<section id="install" style="border-bottom: 1px solid var(--border);">
+<!-- ═══ FOR DEVELOPERS ═══ -->
+<section id="developers" style="border-bottom: 1px solid var(--border);">
     <div class="section-inner">
-        <span class="section-label">Quick Start</span>
-        <h2 class="section-title">Build in Minutes</h2>
-        <p class="section-desc">Rust-only codebase: just install the toolchain and build. No system libraries or proprietary dependencies.</p>
+        <span class="section-label">For developers</span>
+        <h2 class="section-title">Build from source</h2>
+        <p class="section-desc">The project is open source under GPL. The core and command line are written in Rust; the desktop app wraps them with Tauri.</p>
 
-        <div class="code-block fade-in">
-            <div class="tab-row">
-                <button class="tab-btn active" data-tab="linux">Linux</button>
-                <button class="tab-btn" data-tab="macos">macOS</button>
-                <button class="tab-btn" data-tab="windows">Windows</button>
-            </div>
-            <div class="tab-body">
-                <div class="tab-panel active" id="tab-linux">
-<pre><span class="cmt"># Install Rust (if not already installed)</span>
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-<span class="cmt"># Clone</span>
+        <div style="background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 32px; max-width: 760px;">
+            <pre style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.8;"><code style="color: var(--text-secondary);"><span style="color: var(--text-tertiary);"># command line (needs a Rust toolchain)</span>
 git clone https://github.com/PostPerfection/dcpdoctor.git
-cd dcpdoctor
+<span style="color: var(--accent);">cd</span> dcpdoctor/rust &amp;&amp; cargo build --release
 
-<span class="cmt"># Build</span>
-cd rust &amp;&amp; cargo build --release
-
-<span class="cmt"># Run</span>
-./target/release/dcpdoctor-cli /path/to/your/DCP/
-
-<span class="cmt"># Run tests</span>
-cargo test --workspace</pre>
-                </div>
-                <div class="tab-panel" id="tab-macos">
-<pre><span class="cmt"># Install Rust (if not already installed)</span>
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-<span class="cmt"># Clone</span>
-git clone https://github.com/PostPerfection/dcpdoctor.git
-cd dcpdoctor
-
-<span class="cmt"># Build</span>
-cd rust &amp;&amp; cargo build --release
-
-<span class="cmt"># Run</span>
-./target/release/dcpdoctor-cli /path/to/your/DCP/</pre>
-                </div>
-                <div class="tab-panel" id="tab-windows">
-<pre><span class="cmt"># Install Rust via rustup (https://rustup.rs)</span>
-<span class="cmt"># Download and run rustup-init.exe</span>
-
-<span class="cmt"># Clone</span>
-git clone https://github.com/PostPerfection/dcpdoctor.git
-cd dcpdoctor
-
-<span class="cmt"># Build</span>
-cd rust
-cargo build --release
-
-<span class="cmt"># Run</span>
-.\target\release\dcpdoctor-cli.exe C:\path\to\DCP\</pre>
-                </div>
-            </div>
+<span style="color: var(--text-tertiary);"># desktop app (needs Node.js + pnpm as well)</span>
+<span style="color: var(--accent);">cd</span> ../gui &amp;&amp; pnpm install
+pnpm tauri build</code></pre>
+            <p style="margin-top: 20px; color: var(--text-tertiary); font-size: 0.9rem;">
+                Full build notes and platform prerequisites are in the <a href="https://github.com/PostPerfection/dcpdoctor/blob/master/README.md" style="color: var(--accent); text-decoration: none;">README</a>. Source, issues and pull requests live on <a href="https://github.com/PostPerfection/dcpdoctor" style="color: var(--accent); text-decoration: none;">GitHub</a>.
+            </p>
         </div>
-    </div>
-</section>
-
-<!-- ═══ PLATFORMS ═══ -->
-<section id="platforms" style="border-bottom: 1px solid var(--border);">
-    <div class="section-inner">
-        <span class="section-label">Platforms</span>
-        <h2 class="section-title">Run Everywhere</h2>
-        <p class="section-desc">From post-production workstations to CI/CD pipelines.</p>
-
-        <div class="deploy-grid fade-in">
-            <div class="deploy-card">
-                <div class="d-icon">&#128421;</div>
-                <h3>Linux</h3>
-                <p>Ubuntu 22.04+, Fedora 39+, any distribution with a Rust 1.85+ toolchain. Rust and Tauri GUI checks run in GitHub Actions.</p>
-            </div>
-            <div class="deploy-card">
-                <div class="d-icon">&#127822;</div>
-                <h3>macOS</h3>
-                <p>macOS 13+ (Ventura) with Rust toolchain via rustup. ARM64 and x86_64. Tested on M-series hardware.</p>
-            </div>
-            <div class="deploy-card">
-                <div class="d-icon">&#128187;</div>
-                <h3>Windows</h3>
-                <p>Windows 10/11 with Rust toolchain via rustup. No external dependencies required. GitHub Actions CI verified.</p>
-            </div>
-        </div>
-    </div>
-</section>
-
-<!-- ═══ DESKTOP APP ═══ -->
-<section id="desktop" style="padding: 80px 24px; border-bottom: 1px solid var(--border);">
-    <div style="max-width: 1100px; margin: 0 auto;">
-        <h2 class="section-title">Desktop Application</h2>
-        <p style="text-align: center; color: var(--text-secondary); margin-bottom: 48px; max-width: 650px; margin-left: auto; margin-right: auto;">
-            A native desktop GUI built with <a href="https://tauri.app" style="color: var(--accent); text-decoration: none;">Tauri</a>.
-            Drag-and-drop DCP validation with zero configuration.
-        </p>
-
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-bottom: 40px;">
-            <div class="feat-card">
-                <div class="feat-icon" style="background: var(--accent-dim);">
-                    <svg viewBox="0 0 24 24" fill="none" width="24" height="24"><rect x="3" y="3" width="18" height="18" rx="3" stroke="#22D3EE" stroke-width="2"/><path d="M12 8v8m-4-4h8" stroke="#22D3EE" stroke-width="2" stroke-linecap="round"/></svg>
-                </div>
-                <h3>Drag &amp; Drop</h3>
-                <p>Drop a DCP folder onto the window to instantly start validation. No command line needed.</p>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon" style="background: rgba(56, 189, 248, 0.15);">
-                    <svg viewBox="0 0 24 24" fill="none" width="24" height="24"><rect x="2" y="4" width="20" height="16" rx="2" stroke="#38BDF8" stroke-width="2"/><path d="M6 10h12M6 14h8" stroke="#38BDF8" stroke-width="2" stroke-linecap="round"/></svg>
-                </div>
-                <h3>Visual Results</h3>
-                <p>Color-coded severity badges, filterable results table, and summary cards at a glance.</p>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon" style="background: rgba(167, 139, 250, 0.15);">
-                    <svg viewBox="0 0 24 24" fill="none" width="24" height="24"><circle cx="12" cy="12" r="9" stroke="#A78BFA" stroke-width="2"/><path d="M8 12h8M12 8v8" stroke="#A78BFA" stroke-width="2" stroke-linecap="round"/></svg>
-                </div>
-                <h3>One-Click Checks</h3>
-                <p>Toggle Studio, Deep, Netflix, HDR, Atmos, IMF, and Accessibility with option chips.</p>
-            </div>
-            <div class="feat-card">
-                <div class="feat-icon" style="background: rgba(74, 222, 128, 0.15);">
-                    <svg viewBox="0 0 24 24" fill="none" width="24" height="24"><rect x="2" y="3" width="20" height="18" rx="3" stroke="#4ADE80" stroke-width="2"/><path d="M2 9h20" stroke="#4ADE80" stroke-width="2"/><circle cx="5.5" cy="6" r="1" fill="#4ADE80"/><circle cx="8.5" cy="6" r="1" fill="#4ADE80"/></svg>
-                </div>
-                <h3>Native &amp; Tiny</h3>
-                <p>13MB binary using system webview. Builds .deb, .rpm, .dmg, and .msi packages.</p>
-            </div>
-        </div>
-
-        <div style="background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 32px; max-width: 700px; margin: 0 auto;">
-            <h3 style="color: var(--text-primary); margin-bottom: 16px; font-size: 1.05rem;">Build the Desktop App</h3>
-            <pre style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.8;"><code style="color: var(--text-secondary);"><span style="color: var(--text-tertiary);"># Build CLI</span>
-<span style="color: var(--accent);">cd</span> rust &amp;&amp; cargo build --release
-
-<span style="color: var(--text-tertiary);"># Copy CLI as sidecar + build GUI</span>
-<span style="color: var(--accent);">cd</span> ../gui && pnpm install
-cp ../rust/target/release/dcpdoctor-cli src-tauri/dcpdoctor-cli-$(rustc -vV | grep host | cut -d' ' -f2)
-pnpm tauri build
-
-<span style="color: var(--text-tertiary);"># Packages in gui/src-tauri/target/release/bundle/</span></code></pre>
-        </div>
-    </div>
-</section>
-
-<!-- ═══ ONLINE VALIDATOR ═══ -->
-<section id="validator" style="padding: 100px 0; background: var(--bg-secondary);">
-    <div style="max-width: 1200px; margin: 0 auto; padding: 0 24px;">
-        <div style="text-align: center; margin-bottom: 48px;">
-            <h2 style="color: var(--text-primary); font-size: 2.2rem; font-weight: 700; margin-bottom: 16px;">Try It Online</h2>
-            <p style="color: var(--text-secondary); font-size: 1.1rem; max-width: 600px; margin: 0 auto;">Validate your DCP right in the browser. No upload, no server - everything runs locally in WebAssembly.</p>
-        </div>
-        <div style="border: 1px solid var(--border); border-radius: 16px; overflow: hidden; height: 700px; background: var(--bg-primary);">
-            <iframe src="validate/" style="width: 100%; height: 100%; border: none;" title="DCP Doctor Online Validator"></iframe>
-        </div>
-        <p style="text-align: center; margin-top: 16px; color: var(--text-tertiary); font-size: 0.85rem;">Or open the <a href="validate/" style="color: var(--accent);">full-page validator</a> for more space.</p>
     </div>
 </section>
 
 <!-- ═══ CTA ═══ -->
 <section class="cta-section">
     <div class="cta-content">
-        <h2>Ready to validate?</h2>
-        <p>DCP Doctor is free, open source (GPLv3), and built for professional workflows. Start validating your DCPs today.</p>
+        <h2>Ready to check your next delivery?</h2>
+        <p>DCP Doctor is free and open source (GPL), for cinema and streaming post-production. Download it or check a package in your browser.</p>
         <div class="cta-actions">
-            <a href="https://github.com/PostPerfection/dcpdoctor" class="btn btn-accent">
-                Get Started
+            <a href="#download" class="btn btn-accent">
+                Download the app
             </a>
-            <a href="https://github.com/PostPerfection/dcpdoctor/issues" class="btn btn-outline">
-                Report an Issue
+            <a href="#online" class="btn btn-outline">
+                Check one online
             </a>
         </div>
         <p style="margin-top: 40px; font-size: 0.85rem; color: var(--text-muted);">
@@ -1199,14 +1064,14 @@ pnpm tauri build
                 </svg>
                 DCP Doctor
             </a>
-            <p>Professional DCP &amp; IMF validation. SMPTE Bv2.1, Dolby Atmos, HDR, Netflix specs, audio loudness, color gamut, and more. Free and open source.</p>
+            <p>Check a DCP or IMF package before it ships. Structure, hashes, keys, loudness, subtitles, HDR, and automated QC. Free and open source.</p>
         </div>
         <div class="footer-col">
             <h4>Resources</h4>
             <a href="https://github.com/PostPerfection/dcpdoctor">GitHub</a>
             <a href="https://github.com/PostPerfection/dcpdoctor/blob/master/README.md">Documentation</a>
-            <a href="https://github.com/PostPerfection/dcpdoctor/releases">Releases</a>
-            <a href="#install">Installation Guide</a>
+            <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest">Download</a>
+            <a href="#developers">Build from source</a>
         </div>
         <div class="footer-col">
             <h4>Community</h4>
@@ -1223,7 +1088,7 @@ pnpm tauri build
         </div>
     </div>
     <div class="footer-bottom">
-        <p>&copy; 2025 DCP Doctor. Open source under the GPLv3 License.</p>
+        <p>&copy; 2026 DCP Doctor. Open source under the GPL.</p>
         <div>
             <a href="https://github.com/PostPerfection/dcpdoctor">GitHub</a>
         </div>
