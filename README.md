@@ -52,6 +52,9 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **SMPTE ST 429-5** timed text support
 - **Timing validation**: TimeIn/TimeOut ordering and overlap detection
 - **First-event timing (Bv2.1)**: Warns when the first reel's first subtitle starts under 4s in; ignores empty placeholder assets (avoids DCP-o-matic bug #2757)
+- **Line count & length (Bv2.1)**: More than 3 lines at once, and subtitle lines over 52 (recommended) / 79 (max) characters, warn; closed-caption lines over 32 characters error. Character counts are unicode scalar values, not bytes
+- **Duration & spacing (Bv2.1)**: Warns on timed-text events shorter than 15 frames or gaps under 2 frames
+- **Closed-caption character set**: Info note lists characters outside the ISDCF Doc 9 set (ISO 8859-1 plus U+266A)
 - **Required element checks**: ReelNumber, Language, LoadFont
 - **SubtitleID presence**: Unique identifier validation
 

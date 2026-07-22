@@ -1128,6 +1128,355 @@ fn subtitle_time_seconds(s: &str, standard: Standard, fps: f64) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + sec + frac)
 }
 
+// ─── Timed-text content (Bv2.1 §7.2.5-7.2.7) ──────────────────────────────────
+// libdcp verify.cc thresholds: subtitle lines warn at 52 chars, "max" at 79 (both
+// WARNING severity there); closed-caption lines error at 32 (BV21_ERROR); more
+// than 3 lines at once is a line-count violation; a cue shorter than 15 frames or
+// a gap under 2 frames warns. Character counts are unicode scalar values, not
+// bytes (DoM bug #3097 counted '…' as 3).
+
+const SUBTITLE_LINE_WARN: usize = 52;
+const SUBTITLE_LINE_MAX: usize = 79;
+const CCAP_LINE_MAX: usize = 32;
+const MAX_LINES: usize = 3;
+const MIN_DURATION_FRAMES: f64 = 15.0;
+const MIN_SPACING_FRAMES: i64 = 2;
+
+#[derive(Clone, Copy)]
+enum TimedTextKind {
+    Subtitle,
+    ClosedCaption,
+}
+
+/// One `<Subtitle>` cue: its in/out in seconds and one string per `<Text>` line.
+struct Cue {
+    in_s: f64,
+    out_s: f64,
+    lines: Vec<String>,
+}
+
+/// Bv2.1 timed-text content checks over every MainSubtitle and ClosedCaption
+/// asset in the CPL. Subtitle limits are looser (warnings), closed-caption limits
+/// stricter (errors); assets whose essence is missing/encrypted are skipped.
+pub fn check_timed_text_content(
+    cpl_path: &Path,
+    standard: Standard,
+    id_to_file: &HashMap<String, PathBuf>,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    let sub_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?MainSubtitle(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?MainSubtitle>",
+    )
+    .unwrap();
+    let ccap_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?ClosedCaption(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?ClosedCaption>",
+    )
+    .unwrap();
+
+    for reel_cap in reel_re.captures_iter(&content) {
+        let reel = reel_cap.get(1).unwrap().as_str();
+        for cap in sub_re.captures_iter(reel) {
+            let block = cap.get(1).unwrap().as_str();
+            content_notes(
+                block,
+                reel,
+                TimedTextKind::Subtitle,
+                standard,
+                id_to_file,
+                cpl_path,
+                &mut notes,
+            );
+        }
+        for cap in ccap_re.captures_iter(reel) {
+            let block = cap.get(1).unwrap().as_str();
+            content_notes(
+                block,
+                reel,
+                TimedTextKind::ClosedCaption,
+                standard,
+                id_to_file,
+                cpl_path,
+                &mut notes,
+            );
+        }
+    }
+    notes
+}
+
+#[allow(clippy::too_many_arguments)]
+fn content_notes(
+    block: &str,
+    reel: &str,
+    kind: TimedTextKind,
+    standard: Standard,
+    id_to_file: &HashMap<String, PathBuf>,
+    cpl_path: &Path,
+    notes: &mut Vec<Note>,
+) {
+    let Some(xml) = subtitle_xml(block, id_to_file) else {
+        return; // essence missing/encrypted/unreadable
+    };
+    let fps = extract_rate(block, "EditRate")
+        .or_else(|| reel_picture_edit_rate(reel))
+        .map(|(n, d)| n as f64 / d.max(1) as f64)
+        .unwrap_or(24.0);
+    let cues = parse_timed_text_cues(&xml, standard, fps);
+
+    check_lines(&cues, kind, cpl_path, notes);
+    check_durations_and_spacing(&cues, fps, cpl_path, notes);
+    if let TimedTextKind::ClosedCaption = kind {
+        check_ccap_charset(&cues, cpl_path, notes);
+    }
+}
+
+/// Parse a subtitle/caption reel into cues, treating each `<Text>` element as one
+/// displayed line (text of nested formatting elements is concatenated).
+fn parse_timed_text_cues(xml: &str, standard: Standard, fps: f64) -> Vec<Cue> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_str(xml);
+    let mut cues = Vec::new();
+    let mut cur: Option<Cue> = None;
+    let mut text_depth: u32 = 0; // >0 while inside a <Text>
+    let mut line = String::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match local_name(e.name()).as_str() {
+                "Subtitle" => {
+                    let tin = attr_val(&e, "TimeIn")
+                        .and_then(|s| subtitle_time_seconds(&s, standard, fps));
+                    let tout = attr_val(&e, "TimeOut")
+                        .and_then(|s| subtitle_time_seconds(&s, standard, fps));
+                    if let (Some(i), Some(o)) = (tin, tout) {
+                        cur = Some(Cue {
+                            in_s: i,
+                            out_s: o,
+                            lines: Vec::new(),
+                        });
+                    }
+                }
+                "Text" if cur.is_some() => {
+                    if text_depth == 0 {
+                        line.clear();
+                    }
+                    text_depth += 1;
+                }
+                _ => {}
+            },
+            Ok(Event::Text(e)) => {
+                if text_depth > 0 {
+                    line.push_str(&dcpdoctor_parse::text_of(&e));
+                }
+            }
+            Ok(Event::End(e)) => match local_name(e.name()).as_str() {
+                "Text" if text_depth > 0 => {
+                    text_depth -= 1;
+                    if text_depth == 0
+                        && let Some(c) = cur.as_mut()
+                    {
+                        c.lines.push(line.trim().to_string());
+                    }
+                }
+                "Subtitle" => {
+                    if let Some(c) = cur.take() {
+                        cues.push(c);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    cues
+}
+
+fn local_name(name: quick_xml::name::QName) -> String {
+    String::from_utf8_lossy(name.local_name().as_ref()).into_owned()
+}
+
+fn attr_val(e: &quick_xml::events::BytesStart, name: &str) -> Option<String> {
+    e.attributes().flatten().find_map(|a| {
+        (a.key.local_name().as_ref() == name.as_bytes())
+            .then(|| String::from_utf8_lossy(&a.value).into_owned())
+    })
+}
+
+/// Line-count and line-length checks. Counts unicode scalar values per line.
+fn check_lines(cues: &[Cue], kind: TimedTextKind, cpl: &Path, notes: &mut Vec<Note>) {
+    let (warn_len, max_len) = match kind {
+        TimedTextKind::Subtitle => (SUBTITLE_LINE_WARN, SUBTITLE_LINE_MAX),
+        TimedTextKind::ClosedCaption => (CCAP_LINE_MAX, CCAP_LINE_MAX),
+    };
+
+    let mut over_count = false;
+    let mut over_warn = false;
+    let mut over_max = false;
+    let mut longest = 0usize;
+    for c in cues {
+        if c.lines.len() > MAX_LINES {
+            over_count = true;
+        }
+        for line in &c.lines {
+            let n = line.chars().count();
+            longest = longest.max(n);
+            if n > max_len {
+                over_max = true;
+            } else if n > warn_len {
+                over_warn = true;
+            }
+        }
+    }
+
+    match kind {
+        TimedTextKind::Subtitle => {
+            if over_count {
+                notes.push(
+                    Note::warning(
+                        Code::SubtitleLineCount,
+                        "More than 3 subtitle lines are shown at once (Bv2.1 §7.2.7)",
+                    )
+                    .with_file(cpl),
+                );
+            }
+            if over_max {
+                notes.push(
+                    Note::warning(
+                        Code::SubtitleLineLength,
+                        format!(
+                            "A subtitle line exceeds the {SUBTITLE_LINE_MAX}-character maximum (longest {longest})"
+                        ),
+                    )
+                    .with_file(cpl),
+                );
+            } else if over_warn {
+                notes.push(
+                    Note::warning(
+                        Code::SubtitleLineLength,
+                        format!(
+                            "A subtitle line exceeds the recommended {SUBTITLE_LINE_WARN} characters (longest {longest})"
+                        ),
+                    )
+                    .with_file(cpl),
+                );
+            }
+        }
+        TimedTextKind::ClosedCaption => {
+            if over_count {
+                notes.push(
+                    Note::error(
+                        Code::ClosedCaptionLineCount,
+                        "More than 3 closed-caption lines are shown at once (Bv2.1 §7.2.6)",
+                    )
+                    .with_file(cpl),
+                );
+            }
+            if over_max {
+                notes.push(
+                    Note::error(
+                        Code::ClosedCaptionLineLength,
+                        format!(
+                            "A closed-caption line exceeds the {CCAP_LINE_MAX}-character limit (longest {longest})"
+                        ),
+                    )
+                    .with_file(cpl),
+                );
+            }
+        }
+    }
+}
+
+/// Minimum-duration and minimum-gap checks, in editable units at the reel rate.
+/// Both severities are warnings, matching libdcp for subtitles and captions.
+fn check_durations_and_spacing(cues: &[Cue], fps: f64, cpl: &Path, notes: &mut Vec<Note>) {
+    let mut too_short = false;
+    let mut too_close = false;
+    let mut last_out_frame: Option<i64> = None;
+
+    for c in cues {
+        // ceil the duration into frames, like libdcp's as_editable_units_ceil
+        let dur_frames = ((c.out_s - c.in_s) * fps - 1e-6).ceil();
+        if dur_frames < MIN_DURATION_FRAMES {
+            too_short = true;
+        }
+        let in_frame = (c.in_s * fps - 1e-6).ceil() as i64;
+        if let Some(prev_out) = last_out_frame {
+            let distance = in_frame - prev_out;
+            if (0..MIN_SPACING_FRAMES).contains(&distance) {
+                too_close = true;
+            }
+        }
+        last_out_frame = Some((c.out_s * fps + 1e-6).floor() as i64);
+    }
+
+    if too_short {
+        notes.push(
+            Note::warning(
+                Code::SubtitleDuration,
+                format!(
+                    "A timed-text event is shorter than the Bv2.1 minimum of {} frames",
+                    MIN_DURATION_FRAMES as i64
+                ),
+            )
+            .with_file(cpl),
+        );
+    }
+    if too_close {
+        notes.push(
+            Note::warning(
+                Code::SubtitleSpacing,
+                format!(
+                    "Two timed-text events are separated by less than the Bv2.1 minimum of {MIN_SPACING_FRAMES} frames"
+                ),
+            )
+            .with_file(cpl),
+        );
+    }
+}
+
+/// ISDCF Doc 9 recommends the ISO 8859-1 set plus U+266A (♪) for closed captions;
+/// flag any character outside it as an Info note so authors can review portability.
+fn check_ccap_charset(cues: &[Cue], cpl: &Path, notes: &mut Vec<Note>) {
+    let mut out_of_set: std::collections::BTreeSet<char> = std::collections::BTreeSet::new();
+    for c in cues {
+        for ch in c.lines.iter().flat_map(|l| l.chars()) {
+            if !isdcf_doc9_char(ch) {
+                out_of_set.insert(ch);
+            }
+        }
+    }
+    if out_of_set.is_empty() {
+        return;
+    }
+    let list = out_of_set
+        .iter()
+        .map(|c| format!("{c} (U+{:04X})", *c as u32))
+        .collect::<Vec<_>>()
+        .join(", ");
+    notes.push(
+        Note::info(
+            Code::ClosedCaptionCharset,
+            format!(
+                "Closed-caption text uses characters outside the ISDCF Doc 9 recommended set (ISO 8859-1 plus U+266A): {list}"
+            ),
+        )
+        .with_file(cpl),
+    );
+}
+
+fn isdcf_doc9_char(c: char) -> bool {
+    let u = c as u32;
+    matches!(u, 0x20..=0x7E | 0xA0..=0xFF | 0x266A) || c == '\n' || c == '\t'
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Extract the first `<Tag>` or `<ns:Tag>` element's trimmed text.
@@ -1531,6 +1880,207 @@ mod tests {
             check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file).is_empty(),
             "empty first-reel subtitle must not warn regardless of later reels"
         );
+    }
+
+    // ─── Timed-text content (Bv2.1 §7.2.5-7.2.7) ───────────────────────────
+
+    const TT_ID: &str = "cccccccc-0000-0000-0000-0000000000c1";
+
+    /// Build a CPL whose single reel points `elem` (MainSubtitle or ClosedCaption)
+    /// at the given reel XML on disk.
+    fn tt_case(
+        elem: &str,
+        reel_xml: &str,
+    ) -> (
+        tempfile::NamedTempFile,
+        tempfile::TempDir,
+        HashMap<String, PathBuf>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tt.xml");
+        std::fs::write(&path, reel_xml).unwrap();
+        let mut id_to_file = HashMap::new();
+        id_to_file.insert(TT_ID.to_string(), path);
+        let cpl = write_cpl(&format!(
+            r#"<CompositionPlaylist><Reel><AssetList>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><EditRate>24 1</EditRate><Duration>240</Duration></MainPicture>
+  <{elem}><Id>urn:uuid:{TT_ID}</Id><EditRate>24 1</EditRate><Duration>240</Duration></{elem}>
+</AssetList></Reel></CompositionPlaylist>"#
+        ));
+        (cpl, dir, id_to_file)
+    }
+
+    fn cue(tin: &str, tout: &str, lines: &[&str]) -> String {
+        let texts: String = lines
+            .iter()
+            .map(|l| format!("<dcst:Text>{l}</dcst:Text>"))
+            .collect();
+        format!(
+            r#"<dcst:Subtitle SpotNumber="1" TimeIn="{tin}" TimeOut="{tout}">{texts}</dcst:Subtitle>"#
+        )
+    }
+
+    fn reel_of(cues: &str) -> String {
+        format!(
+            r#"<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST"><dcst:SubtitleList>{cues}</dcst:SubtitleList></dcst:SubtitleReel>"#
+        )
+    }
+
+    fn content(cpl: &Path, id_to_file: &HashMap<String, PathBuf>) -> Vec<Note> {
+        check_timed_text_content(cpl, Standard::Smpte, id_to_file)
+    }
+
+    #[test]
+    fn clean_subtitle_has_no_findings() {
+        let xml = reel_of(&cue(
+            "00:00:05:000",
+            "00:00:07:000",
+            &["Hello there", "second line"],
+        ));
+        let (cpl, _d, map) = tt_case("MainSubtitle", &xml);
+        assert!(content(cpl.path(), &map).is_empty(), "expected clean");
+    }
+
+    #[test]
+    fn subtitle_more_than_three_lines_warns() {
+        let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &["a", "b", "c", "d"]));
+        let (cpl, _d, map) = tt_case("MainSubtitle", &xml);
+        assert!(
+            content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::SubtitleLineCount && n.severity == Severity::Warning)
+        );
+    }
+
+    #[test]
+    fn subtitle_line_over_recommended_warns() {
+        let long = "a".repeat(60); // 60 > 52, <= 79
+        let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &[&long]));
+        let (cpl, _d, map) = tt_case("MainSubtitle", &xml);
+        let notes = content(cpl.path(), &map);
+        assert!(notes.iter().any(|n| n.code == Code::SubtitleLineLength
+            && n.severity == Severity::Warning
+            && n.message.contains("recommended")));
+    }
+
+    #[test]
+    fn subtitle_line_over_max_warns() {
+        let long = "a".repeat(85); // > 79
+        let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &[&long]));
+        let (cpl, _d, map) = tt_case("MainSubtitle", &xml);
+        let notes = content(cpl.path(), &map);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleLineLength && n.message.contains("maximum"))
+        );
+    }
+
+    #[test]
+    fn closed_caption_line_over_32_errors() {
+        let long = "a".repeat(40); // > 32
+        let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &[&long]));
+        let (cpl, _d, map) = tt_case("ClosedCaption", &xml);
+        assert!(
+            content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionLineLength && n.severity == Severity::Error)
+        );
+    }
+
+    #[test]
+    fn closed_caption_more_than_three_lines_errors() {
+        let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &["a", "b", "c", "d"]));
+        let (cpl, _d, map) = tt_case("ClosedCaption", &xml);
+        assert!(
+            content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionLineCount && n.severity == Severity::Error)
+        );
+    }
+
+    #[test]
+    fn ccap_and_subtitle_apply_different_line_limits() {
+        // 40 chars: fine for a 52-char subtitle line, over the 32-char caption limit.
+        let line = "a".repeat(40);
+        let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &[&line]));
+
+        let (sub_cpl, _d1, sub_map) = tt_case("MainSubtitle", &xml);
+        assert!(
+            !content(sub_cpl.path(), &sub_map)
+                .iter()
+                .any(|n| n.code == Code::SubtitleLineLength),
+            "40 chars is under the subtitle limit"
+        );
+
+        let (cc_cpl, _d2, cc_map) = tt_case("ClosedCaption", &xml);
+        assert!(
+            content(cc_cpl.path(), &cc_map)
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionLineLength),
+            "40 chars is over the caption limit"
+        );
+    }
+
+    #[test]
+    fn short_subtitle_duration_warns() {
+        // 100 SMPTE ticks = 0.4s = 9.6 frames at 24fps, under the 15-frame minimum.
+        let xml = reel_of(&cue("00:00:05:000", "00:00:05:100", &["hi"]));
+        let (cpl, _d, map) = tt_case("MainSubtitle", &xml);
+        assert!(
+            content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::SubtitleDuration)
+        );
+    }
+
+    #[test]
+    fn tight_subtitle_spacing_warns() {
+        // first ends at 5.0s (frame 120); second starts at 5.04s (ceil frame 121),
+        // a 1-frame gap, under the 2-frame minimum.
+        let cues = format!(
+            "{}{}",
+            cue("00:00:04:000", "00:00:05:000", &["one"]),
+            cue("00:00:05:010", "00:00:07:000", &["two"]),
+        );
+        let xml = reel_of(&cues);
+        let (cpl, _d, map) = tt_case("MainSubtitle", &xml);
+        assert!(
+            content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::SubtitleSpacing)
+        );
+    }
+
+    #[test]
+    fn line_length_counts_chars_not_bytes() {
+        // 42 'a' + 10 '…' = 52 chars but 72 bytes. Char counting must not warn;
+        // byte counting would (DoM bug #3097 counted '…' as 3).
+        let line = format!("{}{}", "a".repeat(42), "…".repeat(10));
+        assert_eq!(line.chars().count(), 52);
+        assert_eq!(line.len(), 72);
+        let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &[&line]));
+        let (cpl, _d, map) = tt_case("MainSubtitle", &xml);
+        assert!(
+            !content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::SubtitleLineLength),
+            "52 unicode chars is at the limit, not over it"
+        );
+    }
+
+    #[test]
+    fn ccap_charset_flags_out_of_set_but_allows_music_note() {
+        // ♪ (U+266A) is in the ISDCF Doc 9 set; ★ (U+2605) is not.
+        let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &["♪ music ★"]));
+        let (cpl, _d, map) = tt_case("ClosedCaption", &xml);
+        let notes = content(cpl.path(), &map);
+        let charset = notes
+            .iter()
+            .find(|n| n.code == Code::ClosedCaptionCharset && n.severity == Severity::Info)
+            .expect("expected charset info note");
+        assert!(charset.message.contains("U+2605"), "should list ★");
+        assert!(!charset.message.contains('♪'), "must not list ♪");
     }
 
     #[test]
