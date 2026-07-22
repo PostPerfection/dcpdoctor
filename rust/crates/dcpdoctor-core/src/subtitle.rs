@@ -424,14 +424,114 @@ pub fn check_glyph_coverage(
     file: &Path,
     resolve_font: impl Fn(&FontDecl) -> Option<PathBuf>,
 ) -> Vec<Note> {
-    use skrifa::{FontRef, MetadataProvider};
-
     let xml = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
+    glyph_notes(&xml, file, |decl| {
+        resolve_font(decl).and_then(|p| std::fs::read(p).ok())
+    })
+}
 
-    let mut reader = Reader::from_str(&xml);
+/// Same glyph-coverage check for a SMPTE MXF-wrapped ST 429-5 subtitle asset:
+/// read the timed-text document from the MXF, pull its embedded OpenType fonts
+/// (ancillary resources), and check every used code point against the font a
+/// LoadFont urn resolves to. Encrypted essence with no KDM, or any unreadable
+/// MXF, is skipped silently (same convention as the other essence checks).
+pub fn check_glyph_coverage_mxf(mxf_path: &Path) -> Vec<Note> {
+    let Some((xml, fonts)) = read_mxf_timed_text(mxf_path) else {
+        return Vec::new();
+    };
+    glyph_notes(&xml, mxf_path, |decl| {
+        decl.urn
+            .as_deref()
+            .and_then(parse_urn_uuid)
+            .and_then(|u| fonts.get(&u).cloned())
+    })
+}
+
+/// A timed-text document plus its embedded OpenType fonts keyed by resource uuid.
+type MxfTimedText = (String, HashMap<[u8; 16], Vec<u8>>);
+
+/// Read the timed-text document and every embedded OpenType font from a
+/// timed-text MXF. Returns `None` if the MXF can't be opened or its document
+/// can't be read (missing, encrypted without a KDM, corrupt). Non-font
+/// resources (Png bitmap subs, Binary) are ignored.
+fn read_mxf_timed_text(mxf_path: &Path) -> Option<MxfTimedText> {
+    let s = mxf_path.to_str()?;
+    let mut reader = asdcplib::timed_text::MxfReader::new();
+    reader.open_read(s).ok()?;
+
+    // encrypted essence needs a KDM to decrypt; without one the document and its
+    // fonts come back as ciphertext, so skip silently (same as other essence checks)
+    match reader.writer_info() {
+        Ok(wi) if !wi.encrypted_essence => {}
+        _ => return None,
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    let xml = match reader.read_timed_text_resource(&mut buf, None, None) {
+        Ok(n) => String::from_utf8_lossy(&buf[..n]).into_owned(),
+        Err(asdcplib::Error::BufferTooSmall { needed, .. }) => {
+            buf = vec![0u8; needed];
+            let n = reader.read_timed_text_resource(&mut buf, None, None).ok()?;
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        }
+        Err(_) => return None,
+    };
+
+    let mut fonts: HashMap<[u8; 16], Vec<u8>> = HashMap::new();
+    let count = reader.ancillary_resource_count().ok()?;
+    for i in 0..count {
+        let Ok(info) = reader.ancillary_resource_info(i) else {
+            continue;
+        };
+        if info.mime_type != asdcplib::timed_text::MimeType::OpenType {
+            continue; // Png bitmap subs / Binary are not fonts
+        }
+        let mut fbuf: Vec<u8> = Vec::new();
+        let bytes = match reader.read_ancillary_resource(&info.uuid, &mut fbuf, None, None) {
+            Ok(n) => fbuf[..n].to_vec(),
+            Err(asdcplib::Error::BufferTooSmall { needed, .. }) => {
+                fbuf = vec![0u8; needed];
+                match reader.read_ancillary_resource(&info.uuid, &mut fbuf, None, None) {
+                    Ok(n) => fbuf[..n].to_vec(),
+                    Err(_) => continue, // encrypted-without-KDM or unreadable font: skip
+                }
+            }
+            Err(_) => continue,
+        };
+        fonts.insert(info.uuid, bytes);
+    }
+    Some((xml, fonts))
+}
+
+/// Parse `urn:uuid:xxxxxxxx-xxxx-...` into its 16 raw bytes. Returns `None` on a
+/// urn that isn't a well-formed uuid.
+fn parse_urn_uuid(urn: &str) -> Option<[u8; 16]> {
+    let hex = urn.trim().strip_prefix("urn:uuid:")?.replace('-', "");
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Parse a subtitle document and warn on any used code point missing from its
+/// resolved font. `resolve_font` hands back the font's raw bytes (from disk for
+/// plain XML, from the MXF for wrapped subs); fonts that don't resolve are
+/// skipped silently.
+fn glyph_notes(
+    xml: &str,
+    file: &Path,
+    resolve_font: impl Fn(&FontDecl) -> Option<Vec<u8>>,
+) -> Vec<Note> {
+    use skrifa::{FontRef, MetadataProvider};
+
+    let mut reader = Reader::from_str(xml);
     let mut scan = GlyphScan::default();
     loop {
         match reader.read_event() {
@@ -453,8 +553,7 @@ pub fn check_glyph_coverage(
     // load and cache each resolvable font's byte data once
     let mut font_bytes: HashMap<String, Option<Vec<u8>>> = HashMap::new();
     for (id, decl) in &scan.fonts {
-        let bytes = resolve_font(decl).and_then(|p| std::fs::read(p).ok());
-        font_bytes.insert(id.clone(), bytes);
+        font_bytes.insert(id.clone(), resolve_font(decl));
     }
 
     // stable output: sort by (font id, spot, code point)
@@ -696,6 +795,126 @@ mod tests {
     fn unresolvable_font_is_skipped() {
         let f = sub_with_text("Hé");
         let notes = check_glyph_coverage(f.path(), |_decl| None);
+        assert!(notes.is_empty(), "expected silent skip, got: {notes:?}");
+    }
+
+    // ─── MXF-wrapped (SMPTE ST 429-5) glyph coverage ─────────────────────────
+
+    fn uuid_urn(b: &[u8; 16]) -> String {
+        let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        format!(
+            "urn:uuid:{}-{}-{}-{}-{}",
+            &h[0..8],
+            &h[8..12],
+            &h[12..16],
+            &h[16..20],
+            &h[20..32]
+        )
+    }
+
+    fn mxf_doc(text: &str, font_urn: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?>
+<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:Id>urn:uuid:11111111-2222-3333-4444-555555555555</dcst:Id>
+  <dcst:LoadFont ID="f1">{font_urn}</dcst:LoadFont>
+  <dcst:SubtitleList>
+    <dcst:Font ID="f1">
+      <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
+        <dcst:Text>{text}</dcst:Text>
+      </dcst:Subtitle>
+    </dcst:Font>
+  </dcst:SubtitleList>
+</dcst:SubtitleReel>"#
+        )
+    }
+
+    /// Build a timed-text MXF at `dir/sub.mxf` carrying `doc`, optionally embedding
+    /// `font` as an OpenType ancillary resource keyed by `font_uuid`.
+    fn write_mxf(dir: &Path, doc: &str, font: Option<(&[u8], [u8; 16])>) -> PathBuf {
+        use asdcplib::timed_text::*;
+        use asdcplib::{EDIT_RATE_24, WriterInfo};
+
+        let path = dir.join("sub.mxf");
+        let ps = path.to_string_lossy().to_string();
+        let info = WriterInfo {
+            asset_uuid: [4; 16],
+            ..Default::default()
+        };
+        let desc = TimedTextDescriptor {
+            edit_rate: EDIT_RATE_24,
+            container_duration: 96,
+            asset_id: [5; 16],
+        };
+        let mut writer = MxfWriter::new();
+        match font {
+            Some((bytes, uuid)) => {
+                writer
+                    .open_write_with_resources(
+                        &ps,
+                        &info,
+                        &desc,
+                        &[AncillaryResourceInfo {
+                            uuid,
+                            mime_type: MimeType::OpenType,
+                        }],
+                        32_768,
+                    )
+                    .unwrap();
+                writer.write_timed_text_resource(doc, None, None).unwrap();
+                writer
+                    .write_ancillary_resource(
+                        bytes,
+                        &uuid,
+                        "application/x-font-opentype",
+                        None,
+                        None,
+                    )
+                    .unwrap();
+            }
+            None => {
+                writer.open_write(&ps, &info, &desc, 16_384).unwrap();
+                writer.write_timed_text_resource(doc, None, None).unwrap();
+            }
+        }
+        writer.finalize().unwrap();
+        path
+    }
+
+    #[test]
+    fn mxf_missing_glyph_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid = [0xAB; 16];
+        let doc = mxf_doc("Hé", &uuid_urn(&uuid)); // 'é' absent from the embedded font
+        let path = write_mxf(dir.path(), &doc, Some((&make_font(&['H', 'i']), uuid)));
+        let notes = check_glyph_coverage_mxf(&path);
+        assert_eq!(notes.len(), 1, "got: {notes:?}");
+        assert_eq!(notes[0].code, Code::SubtitleGlyphMissing);
+        assert!(
+            notes[0].message.contains("U+00E9"),
+            "got: {}",
+            notes[0].message
+        );
+        assert!(notes[0].message.contains("00:00:05:000"));
+    }
+
+    #[test]
+    fn mxf_full_coverage_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid = [0xCD; 16];
+        let doc = mxf_doc("Hi", &uuid_urn(&uuid));
+        let path = write_mxf(dir.path(), &doc, Some((&make_font(&['H', 'i']), uuid)));
+        let notes = check_glyph_coverage_mxf(&path);
+        assert!(notes.is_empty(), "expected clean, got: {notes:?}");
+    }
+
+    #[test]
+    fn mxf_without_font_resource_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        // urn points at a font that isn't embedded: no OpenType resource to check
+        let doc = mxf_doc("Hé", &uuid_urn(&[0xEF; 16]));
+        let path = write_mxf(dir.path(), &doc, None);
+        let notes = check_glyph_coverage_mxf(&path);
         assert!(notes.is_empty(), "expected silent skip, got: {notes:?}");
     }
 }

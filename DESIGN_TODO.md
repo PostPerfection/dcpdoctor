@@ -85,15 +85,24 @@ The guard-bit count check moved out of `validate_cinema_j2k` into the per-frame
   the DCP root); SMPTE ST 428-7 uses the `LoadFont` element text as an asset urn
   resolved through the ASSETMAP. A font that doesn't resolve is skipped silently
   (the structural check already warns on a missing LoadFont). Wired into the core
-  verify path (`validate.rs` §4b) next to `validate_subtitle`; only plain-XML
-  subtitles are inspected, matching the existing validator (MXF-wrapped ST 429-5
-  timed text is still skipped, so the encrypted ISDCF fixture stays clean). Uses
-  `skrifa` (googlefonts/fontations) for cmap lookup rather than the suggested
+  verify path (`validate.rs` §4b) next to `validate_subtitle`. Both the plain-XML
+  and the SMPTE MXF-wrapped ST 429-5 form are now covered:
+  `subtitle::check_glyph_coverage_mxf` opens the timed-text MXF, reads the document
+  and its embedded OpenType fonts (ancillary resources, filtering out `Png` bitmap
+  subs and `Binary`), maps each `LoadFont` urn to a resource uuid, and runs the same
+  cmap coverage over the cues. Both entry points share one core (`glyph_notes`), the
+  MXF path handing back font bytes straight from the essence instead of a file.
+  Still skipped: encrypted timed text with no KDM, detected up front via
+  `writer_info().encrypted_essence` (the document and fonts would be ciphertext), so
+  the encrypted ISDCF fixture (whose `sub.mxf` is encrypted, verified) stays clean.
+  Uses `skrifa` (googlefonts/fontations) for cmap lookup rather than the suggested
   `ttf-parser`: ttf-parser 0.25.1 is flagged unmaintained (RUSTSEC-2026-0192),
   while skrifa/read-fonts is the actively-maintained equivalent and its `Charmap`
   picks the broadest Unicode subtable. Tests build a synthetic sfnt (cmap format 12)
   and prove a missing glyph fires, full coverage is silent, and an unresolvable
-  font is skipped.
+  font is skipped; the MXF path builds an in-test timed-text MXF via asdcplib
+  `open_write_with_resources` embedding that same synthetic font and proves the same
+  fire / silent / no-OpenType-resource skip cases.
 - Guard-bit error locations with timecode (dom#2984): `j2k::check_guard_bits_mxf`
   iterates the picture MXF's frames via asdcplib jp2k, reads each frame's QCD guard
   bits (reusing `qcd_guard_bits`), and on the first frame that violates the RDD 52

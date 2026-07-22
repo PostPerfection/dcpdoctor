@@ -265,7 +265,8 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             }
             if let Some(&asset_path) = id_to_path.get(reel.subtitle.id.as_str()) {
                 let full_path = dcp_dir.join(asset_path);
-                // SMPTE subtitles are usually MXF-wrapped; only the plain-XML form is inspectable here
+                // plain-XML subs get the full structural + glyph check; MXF-wrapped
+                // SMPTE subs get the glyph check straight from the essence below
                 let is_xml = full_path
                     .extension()
                     .and_then(|e| e.to_str())
@@ -297,6 +298,12 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                         None
                     };
                     for note in crate::subtitle::check_glyph_coverage(&full_path, resolve) {
+                        result.add(note);
+                    }
+                } else if full_path.exists() {
+                    // SMPTE ST 429-5 MXF-wrapped timed text: fonts are embedded
+                    // as ancillary resources, read them straight from the MXF.
+                    for note in crate::subtitle::check_glyph_coverage_mxf(&full_path) {
                         result.add(note);
                     }
                 }
