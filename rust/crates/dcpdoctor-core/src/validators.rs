@@ -807,11 +807,13 @@ pub fn check_aux_data(cpl_path: &Path, id_to_file: &HashMap<String, PathBuf>) ->
         let pic_dur = pic_re
             .captures(reel)
             .and_then(|c| extract_u64(c.get(1).unwrap().as_str(), "Duration"));
+        // ST 429-2 §9.4: aux data is not timed text, so its Duration shall equal
+        // the reel's picture duration.
         if let (Some(a), Some(p)) = (aux_dur, pic_dur)
             && a != p
         {
             notes.push(
-                Note::warning(
+                Note::error(
                     Code::CplMismatchedDurations,
                     format!(
                         "Reel {} aux-data duration {a} differs from picture duration {p}",
@@ -1867,7 +1869,7 @@ mod tests {
     }
 
     #[test]
-    fn aux_data_duration_mismatch_warns() {
+    fn aux_data_duration_mismatch_errors() {
         let cpl = r#"<CompositionPlaylist><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
   <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><Duration>48</Duration></MainPicture>
   <axd:AuxData xmlns:axd="http://www.dolby.com/schemas/2012/AD">
@@ -1881,7 +1883,7 @@ mod tests {
         assert!(
             notes
                 .iter()
-                .any(|n| n.code == Code::CplMismatchedDurations && n.severity == Severity::Warning),
+                .any(|n| n.code == Code::CplMismatchedDurations && n.severity == Severity::Error),
             "got: {notes:?}"
         );
         // matching durations stay clean

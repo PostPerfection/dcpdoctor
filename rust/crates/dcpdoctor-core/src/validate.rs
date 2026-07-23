@@ -230,9 +230,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     line: 0,
                 });
             }
+            // ST 429-2 §9.4: all Duration elements in a reel (except timed text)
+            // shall be equal, so a sound/picture mismatch is a hard violation.
             if reel.sound.duration > 0 && reel.sound.duration != reel.picture.duration {
                 result.add(Note {
-                    severity: Severity::Warning,
+                    severity: Severity::Error,
                     code: Code::CplMismatchedDurations,
                     message: format!(
                         "Sound duration differs from picture duration in reel {}",

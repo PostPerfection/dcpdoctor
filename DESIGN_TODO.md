@@ -10,6 +10,24 @@ Done items are in the dated done notes below.
 
 The list is now empty: every DoM tracker gap is done (notes below).
 
+## Severity escalations to spec (2026-07-23)
+
+Four checks moved WARNING -> ERROR where SMPTE text uses "shall" (citations in
+the code comments); the dci-ctp differential moved these from CLAIRMETA_ONLY_FAIL
+to BOTH_FAIL:
+
+- `cpl_mismatched_durations` (sound/picture in validate.rs, aux-data in
+  validators.rs): ST 429-2 §9.4, all non-timed-text reel Durations shall be equal.
+- `subtitle_font_missing`: ST 428-7:2014, LoadFont shall be present when Text
+  elements are; escalated only when the subtitle carries Text (image-only subs
+  still warn), so `Scan` now tracks `has_text`.
+- `smpte_namespace_wrong` / `interop_namespace_wrong` on the subtitle path:
+  ST 428-7 fixes the DCST namespace string, so a wrong namespace is unparseable.
+
+`reel_discontinuity`, `pkl_missing_asset_reference`, and `bv21_pkl_no_xml_ext`
+stay WARNING: no SMPTE "shall" demands rejection (per-code justification in
+dci-ctp/DESIGN_TODO.md).
+
 ## Verify encrypted DCPs with a KDM: done (2026-07-22)
 
 dom#2971 (decrypt + verify encrypted essence) and dom#1957 (HMAC/MIC integrity),
@@ -165,9 +183,10 @@ vendored postkit) wired into the core verify path:
   a dcpwizard `--right-eye` DCP passes, a FrameRate-not-doubled variant fails, real
   ECL07 (TST-3D-48) passes clean.
 - Atmos (ST 429-18): `check_aux_data` surfaces `aux_data_detected` for each AuxData
-  track (essence-enriched) and warns `cpl_mismatched_durations` when the aux
-  duration differs from the reel's picture (ClairMeta
-  `check_cpl_reel_duration_picture_aux`); cross-refs/PKL hashes for the aux asset
+  track (essence-enriched) and errors `cpl_mismatched_durations` when the aux
+  duration differs from the reel's picture (ST 429-2 §9.4: all non-timed-text reel
+  Durations shall be equal; ClairMeta `check_cpl_reel_duration_picture_aux`);
+  cross-refs/PKL hashes for the aux asset
   are covered by the generic checks (proven by a hash-corruption test). The
   cross-ref and reel-coherence regexes now match the `msp-cpl:`/`axd:` namespaced
   forms.

@@ -22,13 +22,15 @@ pub fn validate_subtitle(file: &Path, standard: Standard) -> Vec<Note> {
 
     let mut notes = Vec::new();
 
-    // Check if the namespace matches the standard
+    // Check if the namespace matches the standard. ST 428-7 §6.1: the DCST
+    // namespace name shall be the fixed string, so a wrong namespace makes the
+    // document non-conformant and unparseable by a compliant player (ERROR).
     match standard {
         Standard::Smpte => {
             if !xml.contains("http://www.smpte-ra.org/schemas/428-7/2010/DCST") {
-                notes.push(warn(
+                notes.push(err(
                     Code::SmpteNamespaceWrong,
-                    "Subtitle file does not use SMPTE namespace",
+                    "Subtitle file does not use SMPTE namespace".into(),
                     file,
                 ));
             }
@@ -39,9 +41,9 @@ pub fn validate_subtitle(file: &Path, standard: Standard) -> Vec<Note> {
             if !xml.contains("<DCSubtitle")
                 && !xml.contains("http://www.digicine.com/PROTO-ASDCP-TT-DEF")
             {
-                notes.push(warn(
+                notes.push(err(
                     Code::InteropNamespaceWrong,
-                    "Subtitle file does not use Interop namespace",
+                    "Subtitle file does not use Interop namespace".into(),
                     file,
                 ));
             }
@@ -89,6 +91,7 @@ struct Scan {
     has_language: bool,
     has_load_font: bool,
     has_subtitle_id: bool,
+    has_text: bool,
     capture_id: bool,
     spans: Vec<Span>,
 }
@@ -112,6 +115,7 @@ impl Scan {
             "ReelNumber" => self.has_reel_number = true,
             "Language" => self.has_language = true,
             "LoadFont" => self.has_load_font = true,
+            "Text" => self.has_text = true,
             // SMPTE DCST uses <Id>; Interop DCSubtitle uses a <SubtitleID> element
             "Id" | "SubtitleID" => self.capture_id = true,
             "Subtitle" => {
@@ -191,7 +195,17 @@ fn check_structure(xml: &str, file: &Path, notes: &mut Vec<Note>) {
         notes.push(warn(Code::MissingRequiredElement, "Missing Language", file));
     }
     if !scan.has_load_font {
-        notes.push(warn(Code::SubtitleFontMissing, "Missing LoadFont", file));
+        // ST 428-7:2014: when one or more Text elements are present, at least one
+        // LoadFont shall also be present (image-only subtitles may omit it).
+        if scan.has_text {
+            notes.push(err(
+                Code::SubtitleFontMissing,
+                "Subtitle has Text but no LoadFont".into(),
+                file,
+            ));
+        } else {
+            notes.push(warn(Code::SubtitleFontMissing, "Missing LoadFont", file));
+        }
     }
 
     // TimeIn must precede TimeOut on each cue
