@@ -345,6 +345,13 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     for note in crate::validators::check_encryption(dcp_dir, &cpl_paths) {
         result.add(note);
     }
+    // Encrypted packages must have a signed CPL and PKL (ClairMeta check_dcp_signed).
+    if opts.check_signatures {
+        let pkl_paths: Vec<std::path::PathBuf> = dcp.pkls.iter().map(|(p, _)| p.clone()).collect();
+        for note in crate::validators::check_dcp_signed(&cpl_paths, &pkl_paths) {
+            result.add(note);
+        }
+    }
     for note in crate::validators::check_cross_references(
         &known_asset_ids,
         ov_asset_ids.as_ref(),

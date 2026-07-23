@@ -60,12 +60,28 @@ pub fn analyze_j2k(path: &Path) -> Result<J2kCodestreamInfo, String> {
     }
 }
 
+/// Build our codestream info from postkit's J2K header (its parser now carries
+/// every SIZ/COD field we need: code-block exponents and the wavelet type
+/// included) plus the frame size in bytes.
+fn info_from_header(hdr: &postkit::j2k::J2kHeader, frame_bytes: u64) -> J2kCodestreamInfo {
+    J2kCodestreamInfo {
+        rsiz: hdr.profile,
+        profile: rsiz_to_profile(hdr.profile),
+        width: hdr.width,
+        height: hdr.height,
+        components: hdr.num_components,
+        bit_depth: hdr.bit_depth,
+        decomposition_levels: hdr.num_decomp_levels,
+        codeblock_width_exp: hdr.codeblock_width_exp,
+        codeblock_height_exp: hdr.codeblock_height_exp,
+        irreversible_transform: hdr.irreversible_transform,
+        layers: hdr.num_layers,
+        progression_order: progression_order_name(hdr.progression_order),
+        frame_bytes,
+    }
+}
+
 /// Parse J2K codestream directly from a .j2c/.j2k file.
-///
-/// The SIZ-derived fields, profile (RSIZ), decomposition levels, layers and
-/// progression order come from postkit's header parser. Code-block size and the
-/// wavelet transform type aren't in postkit's J2kHeader, so we read those extra
-/// COD fields locally.
 fn parse_j2k_codestream(path: &Path) -> Result<J2kCodestreamInfo, String> {
     let data = std::fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
 
@@ -76,66 +92,7 @@ fn parse_j2k_codestream(path: &Path) -> Result<J2kCodestreamInfo, String> {
     let hdr = postkit::j2k::parse_j2k_header(&data)
         .ok_or("Missing SOC marker (not a valid J2K codestream)")?;
 
-    let mut info = J2kCodestreamInfo {
-        rsiz: hdr.profile,
-        profile: rsiz_to_profile(hdr.profile),
-        width: hdr.width,
-        height: hdr.height,
-        components: hdr.num_components,
-        bit_depth: hdr.bit_depth,
-        decomposition_levels: hdr.num_decomp_levels,
-        layers: hdr.num_layers,
-        progression_order: progression_order_name(hdr.progression_order),
-        frame_bytes: data.len() as u64,
-        ..Default::default()
-    };
-
-    parse_cod_extras(&data, &mut info);
-
-    Ok(info)
-}
-
-/// Read the COD fields postkit's header parser doesn't expose: code-block size
-/// exponents and the wavelet transform type. Marker walk mirrors postkit's.
-fn parse_cod_extras(data: &[u8], info: &mut J2kCodestreamInfo) {
-    const SOT: u16 = 0xFF90;
-    const SOD: u16 = 0xFF93;
-    const COD: u16 = 0xFF52;
-    const EOC: u16 = 0xFFD9;
-
-    let mut pos = 2; // skip SOC
-    while pos + 2 < data.len() {
-        let marker = u16::from_be_bytes([data[pos], data[pos + 1]]);
-        pos += 2;
-
-        if marker == SOD || marker == EOC || marker == SOT {
-            break;
-        }
-        if pos + 2 > data.len() {
-            break;
-        }
-        let seg_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
-        pos += 2;
-        if seg_len < 2 || pos + seg_len - 2 > data.len() {
-            break;
-        }
-        let seg = &data[pos..pos + seg_len - 2];
-
-        if marker == COD {
-            if seg.len() > 6 {
-                info.codeblock_width_exp = seg[6];
-            }
-            if seg.len() > 7 {
-                info.codeblock_height_exp = seg[7];
-            }
-            if seg.len() > 9 {
-                // 0 = 9-7 irreversible, 1 = 5-3 reversible
-                info.irreversible_transform = seg[9] == 0;
-            }
-        }
-
-        pos += seg_len - 2;
-    }
+    Ok(info_from_header(&hdr, data.len() as u64))
 }
 
 fn progression_order_name(po: u8) -> String {
@@ -161,8 +118,24 @@ fn rsiz_to_profile(rsiz: u16) -> String {
     }
 }
 
-/// Analyze J2K parameters from an MXF file via ffprobe.
+/// Analyze J2K parameters from a picture MXF. Reads frame 0's real codestream
+/// via postkit's asdcplib reader (AS-DCP OP-Atom, gives the true RSIZ/COD
+/// fields), falling back to ffprobe for AS-02 (OP1a, IMF) essence the OP-Atom
+/// reader can't open.
 fn analyze_j2k_from_mxf(path: &Path) -> Result<J2kCodestreamInfo, String> {
+    if let Ok(frame) = postkit::j2k::read_mxf_j2k_frame(path, 0)
+        && let Some(hdr) = postkit::j2k::parse_j2k_header(&frame)
+    {
+        return Ok(info_from_header(&hdr, frame.len() as u64));
+    }
+    analyze_j2k_from_mxf_ffprobe(path)
+}
+
+/// ffprobe fallback: for AS-02/OP1a essence the asdcplib OP-Atom reader rejects.
+/// ffprobe can't see the codestream markers, so only the fields it exposes
+/// (dimensions, per-frame byte size, bit depth) are filled; the rest is guessed
+/// from the resolution the way the DCI checks expect.
+fn analyze_j2k_from_mxf_ffprobe(path: &Path) -> Result<J2kCodestreamInfo, String> {
     let output = std::process::Command::new("ffprobe")
         .args([
             "-v",

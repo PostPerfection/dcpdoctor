@@ -90,6 +90,58 @@ pub fn check_encryption(dcp_dir: &Path, cpl_paths: &[PathBuf]) -> Vec<Note> {
     notes
 }
 
+/// True if an XML document carries an enveloped signature (same presence test
+/// signature verification uses).
+fn has_signature(content: &str) -> bool {
+    content.contains("<Signature") || content.contains("<ds:Signature")
+}
+
+/// True if any CPL declares encrypted essence (a KeyId or an embedded
+/// EncryptedDocumentKey), i.e. the package needs a KDM.
+fn package_is_encrypted(cpl_paths: &[PathBuf]) -> bool {
+    cpl_paths.iter().any(|p| {
+        std::fs::read_to_string(p)
+            .map(|c| c.contains("<KeyId>") || c.contains("<EncryptedDocumentKey"))
+            .unwrap_or(false)
+    })
+}
+
+/// ClairMeta `check_dcp_signed`: an encrypted DCP must carry a signed CPL and
+/// PKL. The KDM only delivers content keys, so an unsigned CPL/PKL leaves the
+/// package's authenticity unverifiable (SMPTE ST 429-7/-8 require the signature
+/// on encrypted packages). Silent on unencrypted packages, where signing is
+/// optional. Closes the gap where a KDM-present-but-unsigned package slipped
+/// through only as `kdm_required`.
+pub fn check_dcp_signed(cpl_paths: &[PathBuf], pkl_paths: &[PathBuf]) -> Vec<Note> {
+    let mut notes = Vec::new();
+    if !package_is_encrypted(cpl_paths) {
+        return notes;
+    }
+
+    let mut check = |path: &PathBuf, kind: &str| {
+        if let Ok(content) = std::fs::read_to_string(path)
+            && !has_signature(&content)
+        {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::DcpNotSigned,
+                message: format!(
+                    "encrypted DCP has an unsigned {kind}; encrypted packages must have a signed CPL and PKL"
+                ),
+                file: Some(path.clone()),
+                line: 0,
+            });
+        }
+    };
+    for cpl in cpl_paths {
+        check(cpl, "CPL");
+    }
+    for pkl in pkl_paths {
+        check(pkl, "PKL");
+    }
+    notes
+}
+
 // ─── Reel Continuity ──────────────────────────────────────────────────────────
 
 /// Check that reel entry-points form a continuous chain.
@@ -1859,6 +1911,46 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(xml.as_bytes()).unwrap();
         f
+    }
+
+    // ─── check_dcp_signed (ClairMeta) ──────────────────────────────────────
+
+    #[test]
+    fn encrypted_unsigned_package_fires() {
+        let cpl = write_cpl("<CompositionPlaylist><KeyId>k</KeyId></CompositionPlaylist>");
+        let pkl = write_cpl("<PackingList></PackingList>");
+        let notes = check_dcp_signed(&[cpl.path().to_path_buf()], &[pkl.path().to_path_buf()]);
+        // both the encrypted CPL and the PKL lack a signature
+        assert_eq!(
+            notes
+                .iter()
+                .filter(|n| n.code == Code::DcpNotSigned)
+                .count(),
+            2,
+            "unsigned CPL and PKL of an encrypted package must both fire"
+        );
+    }
+
+    #[test]
+    fn encrypted_signed_package_silent() {
+        let cpl = write_cpl(
+            "<CompositionPlaylist><KeyId>k</KeyId><Signature>x</Signature></CompositionPlaylist>",
+        );
+        let pkl = write_cpl("<PackingList><ds:Signature>x</ds:Signature></PackingList>");
+        assert!(
+            check_dcp_signed(&[cpl.path().to_path_buf()], &[pkl.path().to_path_buf()]).is_empty(),
+            "signed encrypted package must be clean"
+        );
+    }
+
+    #[test]
+    fn unencrypted_unsigned_package_silent() {
+        let cpl = write_cpl("<CompositionPlaylist></CompositionPlaylist>");
+        let pkl = write_cpl("<PackingList></PackingList>");
+        assert!(
+            check_dcp_signed(&[cpl.path().to_path_buf()], &[pkl.path().to_path_buf()]).is_empty(),
+            "an unencrypted package need not be signed"
+        );
     }
 
     // ─── MainSoundConfiguration (ST 429-16) ────────────────────────────────

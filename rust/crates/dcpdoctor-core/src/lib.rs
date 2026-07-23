@@ -102,6 +102,7 @@ pub enum Code {
 
     // Signature
     SignatureInvalid,
+    DcpNotSigned,
     CertificateExpired,
     CertificateChainBroken,
     CertificateBasicConstraintsInvalid,
@@ -214,6 +215,7 @@ impl Code {
             Code::MxfHashMismatch => "mxf_hash_mismatch",
             Code::MxfInvalidStructure => "mxf_invalid_structure",
             Code::SignatureInvalid => "signature_invalid",
+            Code::DcpNotSigned => "dcp_not_signed",
             Code::CertificateExpired => "certificate_expired",
             Code::CertificateChainBroken => "certificate_chain_broken",
             Code::CertificateBasicConstraintsInvalid => "certificate_basic_constraints_invalid",

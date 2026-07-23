@@ -250,8 +250,13 @@ the core `verify_dcp` path and covered by tests.
   (`foreign_file_in_package`) and zero-byte (`empty_file_in_package`) files.
 - PKL `Size` vs actual file size: `pkl_size_mismatch` (ClairMeta
   `check_assets_pkl_size`), checked in `verify_dcp` regardless of `--no-hashes`.
-  The last ClairMeta ERROR check with no equivalent is `check_dcp_signed`
-  (encrypted-but-unsigned; those packages already fail via `kdm_required`).
+- `dcp_not_signed` (ClairMeta `check_dcp_signed`, done 2026-07-23): an encrypted
+  package (a CPL declares a `<KeyId>` or carries an `<EncryptedDocumentKey`) whose
+  CPL or PKL lacks a `<Signature>` errors. Closes the recorded gap where such a
+  package only surfaced as the milder `kdm_required`. `validators::check_dcp_signed`
+  runs in `verify_dcp` gated on `check_signatures` (so `info`/ImpInfo skip it),
+  silent on unencrypted packages. Tests: encrypted-unsigned fires (CPL + PKL),
+  encrypted-signed silent, unencrypted-unsigned silent.
 - Verified clean on ECL09 (SMPTE OV) and ECL01 (Interop OV): 0 errors, no new notes.
 
 ## GUI: done
@@ -275,13 +280,39 @@ the core `verify_dcp` path and covered by tests.
 - hash.rs now adapts `sha1_base64`/`sha1_hex` onto `postkit::hash::hash_file`. Done.
 - loudness.rs now uses `postkit::loudness::LoudnessResult` (the local copy's unused
   `compliant_*` flags were dropped). Done.
-- loudness.rs Leq(m) (ISO 21727 / CCIR 468) is implemented locally (dom#3092);
-  the weighting + level math should migrate to `postkit::loudness` alongside the
-  R128 helper once a pin bump is worthwhile. Added a `rustfft` dep to dcpdoctor-core
-  for the CCIR 468 weighting FFT; if it moves to postkit the dep moves with it.
-- Still open (needs postkit API work, left as-is): j2k.rs in dcpdoctor-core and
-  dcpdoctor-wasm re-implement postkit::j2k; bitrate.rs redoes postkit's analyse_bitrate;
-  frame_compare.rs duplicated with imfwizard-core.
+- App switch DONE 2026-07-23 (extern/postkit synced to canonical HEAD, pin bump at
+  commit time). j2k / bitrate / frame_compare / Leq(m) now delegate to postkit; the
+  workspace compiled clean against the newer postkit with no aba7c12->HEAD call-site
+  fallout. Per item:
+  - j2k.rs: dropped local `parse_cod_extras`; `J2kCodestreamInfo` is now built from
+    `postkit::j2k::parse_j2k_header` (it carries code-block exponents +
+    irreversible_transform). `analyze_j2k_from_mxf` now reads
+    `postkit::j2k::read_mxf_j2k_frame` + `parse_j2k_header` first, so a DCP picture
+    MXF reports its real RSIZ/components/transform instead of ffprobe guesses (used by
+    `--deep-j2k` / `frame-qc`). The asdcplib jp2k reader is AS-DCP OP-Atom only, so
+    when it can't open the essence (IMF AS-02 / OP1a) it falls back to the old
+    ffprobe-derived path (dimensions/frame-bytes/bit-depth, profile guessed from
+    resolution), keeping `frame-qc` working on IMF video MXFs. No AS-02 fixture lives
+    in dcpdoctor's own tests/ (and the fallback needs ffprobe), so it's covered by a
+    manual sanity check: `frame-qc` on the photon PHDR AS-02 video MXF reports
+    3840x2160 via the fallback.
+    The DCI validation + Note layers (`validate_j2k_dci`, `validate_cinema_j2k`,
+    `detect_legacy_ffff`, `check_picture_j2k_mxf`, `check_guard_bits_mxf`) stay
+    app-side (they need per-tile-part sizes + encryption-aware reads postkit doesn't
+    expose). dcpdoctor-wasm stays pure-bytes (deliberately avoids postkit).
+  - bitrate.rs: `FrameBitrateStats` is now a type alias for
+    `postkit::j2k::MxfBitrateStats` and `analyze_picture_bitrate` delegates to
+    `postkit::j2k::analyse_mxf_bitrate`; the local reader is gone. Note-producing
+    `check_bitrate_compliance` stays app-side.
+  - frame_compare.rs: local ffmpeg PSNR/SSIM/VMAF core deleted; `compare_files` is a
+    thin wrapper over `postkit::frame_compare::compare_frames` (+ `compute_vmaf`) that
+    keeps dcpdoctor's per-frame PSNR-threshold scoring. Unused `QualityMetrics`/
+    `QualityOptions`/`compute_quality` dropped. `CompareOptions` lost `start_frame`/
+    `end_frame` (postkit has no range support; the CLI always passed 0/0).
+  - loudness.rs Leq(m): local CCIR 468 weighting + level math (and the `rustfft` dep)
+    removed; re-exports `postkit::loudness::{leq_m_from_samples, measure_leq_m,
+    LeqMResult}`. The 101.99 dB full-scale-sine assertion is kept as an app-level
+    integration test over the re-exported function.
 
 ## Keep in sync with the wizards (deliberately duplicated, no clean shared home)
 

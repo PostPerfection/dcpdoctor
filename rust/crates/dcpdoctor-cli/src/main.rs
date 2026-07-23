@@ -1391,8 +1391,6 @@ fn main() {
             };
 
             let opts = dcpdoctor_core::frame_compare::CompareOptions {
-                start_frame: 0,
-                end_frame: 0,
                 threshold_psnr: 30.0,
                 compute_ssim: true,
                 compute_vmaf: vmaf,
