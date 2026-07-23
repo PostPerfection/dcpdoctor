@@ -6,7 +6,7 @@ license.workspace = true
 description = "DCP/IMF validation and analysis library"
 
 [dependencies]
-asdcplib = { git = "https://github.com/PostPerfection/asdcplib-rs.git", rev = "66de9d0" }
+asdcplib = { git = "https://github.com/PostPerfection/asdcplib-rs.git", rev = "6d7b8ca" }
 base64 = "0.22"
 dcpdoctor-imf.workspace = true
 dcpdoctor-parse.workspace = true
