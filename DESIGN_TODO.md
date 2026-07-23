@@ -1,20 +1,34 @@
 # Planned
 
-Advertised (README/docs/CHANGELOG) but missing, stubbed, or partial. Wire or de-advertise each.
+Genuinely open items and standing decisions. Everything advertised in
+README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N =
+https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
+policy plus one test-coverage gap.
 
-## DoM tracker gaps (2026-07-22)
+## Severity policy: three checks stay WARNING
 
-Feature requests from the DCP-o-matic Mantis tracker (dom#N =
-https://dcpomatic.com/bugs/view.php?id=N) that dcpdoctor lacks. Priority order.
-Done items are in the dated done notes below.
+`reel_discontinuity`, `pkl_missing_asset_reference`, and `bv21_pkl_no_xml_ext`
+stay WARNING: no SMPTE "shall" demands rejection, so they stay CLAIRMETA_ONLY_FAIL
+in the dci-ctp differential (per-code justification in dci-ctp/DESIGN_TODO.md).
+Escalate only if a spec citation forces it, as with the four codes already moved
+to ERROR (see "Severity escalations to spec" under Done).
 
-The list is now empty: every DoM tracker gap is done (notes below).
+## AS-02 / OP1a picture reads have no fixture
+
+The asdcplib jp2k reader is AS-DCP OP-Atom only, so on IMF AS-02 / OP1a video MXFs
+the j2k path falls back to ffprobe-derived dimensions/frame-bytes/bit-depth
+(profile guessed from resolution). No AS-02 fixture lives in dcpdoctor's tests/
+and the fallback needs ffprobe, so it is covered only by a manual sanity check:
+`frame-qc` on the Photon PHDR AS-02 video MXF reports 3840x2160 via the fallback.
+Add an AS-02 fixture to make it a real test.
+
+# Done
 
 ## Severity escalations to spec (2026-07-23)
 
-Four checks moved WARNING -> ERROR where SMPTE text uses "shall" (citations in
-the code comments); the dci-ctp differential moved these from CLAIRMETA_ONLY_FAIL
-to BOTH_FAIL:
+Four codes moved WARNING -> ERROR where SMPTE text uses "shall" (citations in the
+code comments); the dci-ctp differential moved these from CLAIRMETA_ONLY_FAIL to
+BOTH_FAIL:
 
 - `cpl_mismatched_durations` (sound/picture in validate.rs, aux-data in
   validators.rs): ST 429-2 §9.4, all non-timed-text reel Durations shall be equal.
@@ -23,10 +37,6 @@ to BOTH_FAIL:
   still warn), so `Scan` now tracks `has_text`.
 - `smpte_namespace_wrong` / `interop_namespace_wrong` on the subtitle path:
   ST 428-7 fixes the DCST namespace string, so a wrong namespace is unparseable.
-
-`reel_discontinuity`, `pkl_missing_asset_reference`, and `bv21_pkl_no_xml_ext`
-stay WARNING: no SMPTE "shall" demands rejection (per-code justification in
-dci-ctp/DESIGN_TODO.md).
 
 ## Verify encrypted DCPs with a KDM: done (2026-07-22)
 
@@ -171,8 +181,8 @@ The guard-bit count check moved out of `validate_cinema_j2k` into the per-frame
 
 ## MCA / 3D / Atmos essence awareness: done
 
-Native asdcplib probing (pin bumped to `5fe4d61` for `pcm::mca_labels`, aligned in
-vendored postkit) wired into the core verify path:
+Native asdcplib probing (asdcplib pinned 6d7b8ca; `pcm::mca_labels` landed at
+5fe4d61) wired into the core verify path:
 
 - MCA labeling: `check_audio_channels` reads the sound MXF's ST 429-12
   subdescriptors and clears `sound_invalid_channel_count` when present; falls back
@@ -184,12 +194,11 @@ vendored postkit) wired into the core verify path:
   ECL07 (TST-3D-48) passes clean.
 - Atmos (ST 429-18): `check_aux_data` surfaces `aux_data_detected` for each AuxData
   track (essence-enriched) and errors `cpl_mismatched_durations` when the aux
-  duration differs from the reel's picture (ST 429-2 §9.4: all non-timed-text reel
-  Durations shall be equal; ClairMeta `check_cpl_reel_duration_picture_aux`);
-  cross-refs/PKL hashes for the aux asset
-  are covered by the generic checks (proven by a hash-corruption test). The
-  cross-ref and reel-coherence regexes now match the `msp-cpl:`/`axd:` namespaced
-  forms.
+  duration differs from the reel's picture (ClairMeta
+  `check_cpl_reel_duration_picture_aux`; escalation rationale under "Severity
+  escalations to spec"); cross-refs/PKL hashes for the aux asset are covered by the
+  generic checks (proven by a hash-corruption test). The cross-ref and
+  reel-coherence regexes now match the `msp-cpl:`/`axd:` namespaced forms.
 
 ## Dead modules: done
 
@@ -299,22 +308,17 @@ the core `verify_dcp` path and covered by tests.
 - hash.rs now adapts `sha1_base64`/`sha1_hex` onto `postkit::hash::hash_file`. Done.
 - loudness.rs now uses `postkit::loudness::LoudnessResult` (the local copy's unused
   `compliant_*` flags were dropped). Done.
-- App switch DONE 2026-07-23 (extern/postkit synced to canonical HEAD, pin bump at
-  commit time). j2k / bitrate / frame_compare / Leq(m) now delegate to postkit; the
-  workspace compiled clean against the newer postkit with no aba7c12->HEAD call-site
+- App switch DONE 2026-07-23 (extern/postkit synced to canonical HEAD be89fe0).
+  j2k / bitrate / frame_compare / Leq(m) now delegate to postkit; the workspace
+  compiled clean against the newer postkit with no aba7c12->be89fe0 call-site
   fallout. Per item:
   - j2k.rs: dropped local `parse_cod_extras`; `J2kCodestreamInfo` is now built from
     `postkit::j2k::parse_j2k_header` (it carries code-block exponents +
     irreversible_transform). `analyze_j2k_from_mxf` now reads
     `postkit::j2k::read_mxf_j2k_frame` + `parse_j2k_header` first, so a DCP picture
     MXF reports its real RSIZ/components/transform instead of ffprobe guesses (used by
-    `--deep-j2k` / `frame-qc`). The asdcplib jp2k reader is AS-DCP OP-Atom only, so
-    when it can't open the essence (IMF AS-02 / OP1a) it falls back to the old
-    ffprobe-derived path (dimensions/frame-bytes/bit-depth, profile guessed from
-    resolution), keeping `frame-qc` working on IMF video MXFs. No AS-02 fixture lives
-    in dcpdoctor's own tests/ (and the fallback needs ffprobe), so it's covered by a
-    manual sanity check: `frame-qc` on the photon PHDR AS-02 video MXF reports
-    3840x2160 via the fallback.
+    `--deep-j2k` / `frame-qc`). The AS-02 / OP1a ffprobe fallback and its
+    test-coverage gap are in Planned above.
     The DCI validation + Note layers (`validate_j2k_dci`, `validate_cinema_j2k`,
     `detect_legacy_ffff`, `check_picture_j2k_mxf`, `check_guard_bits_mxf`) stay
     app-side (they need per-tile-part sizes + encryption-aware reads postkit doesn't

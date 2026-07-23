@@ -8,8 +8,10 @@
 - First-subtitle timing (Bv2.1): warns (`subtitle_first_event_early`) when the first reel's first displayable timed-text event starts under 4s in. Only the first reel counts and empty placeholder subtitle assets are ignored, avoiding DCP-o-matic bug #2757. Reads MXF-wrapped ST 428-7 XML and handles both SMPTE tick and Interop editable-unit TimeIn forms.
 - Timed-text content (Bv2.1 §7.2.5-7.2.7): every MainSubtitle and ClosedCaption asset is checked for line count (>3 lines), line length (subtitle 52 warn / 79 max, both `subtitle_line_length`; closed caption 32, `closed_caption_line_length`, error), minimum duration (`subtitle_duration`, 15 frames) and minimum gap (`subtitle_spacing`, 2 frames). Subtitle vs closed-caption limits are picked from the CPL asset type. Character counts are unicode scalar values, not bytes (DoM bug #3097). A `closed_caption_charset` INFO lists caption characters outside the ISDCF Doc 9 set (ISO 8859-1 plus U+266A). Reuses the plain-XML/MXF ST 428-7 extraction. (DoM #3149, #3151, #3153, #3158, #3097)
 - Stereoscopic 3D (ST 429-10): the msp-cpl `MainStereoscopicPicture` form is now validated as a picture track (cross-refs, duration), the FrameRate = 2x EditRate relationship is checked, and the essence type is confirmed as stereoscopic J2K where the MXF is present.
-- Auxiliary data (ST 429-18): an `aux_data_detected` INFO identifies each AuxData track (Dolby Atmos / IAB), enriched with the probed essence type, and a duration mismatch against the reel's picture warns as `cpl_mismatched_durations`. The aux asset's cross-refs and PKL hashes are covered by the generic asset checks.
+- Auxiliary data (ST 429-18): an `aux_data_detected` INFO identifies each AuxData track (Dolby Atmos / IAB), enriched with the probed essence type, and a duration mismatch against the reel's picture errors as `cpl_mismatched_durations` (ST 429-2 §9.4). The aux asset's cross-refs and PKL hashes are covered by the generic asset checks.
 - PKL `Size` is checked against the actual file size (`pkl_size_mismatch`), independent of `--no-hashes`.
+- Leq(m) loudness (ISO 21727, CCIR 468-weighted): reported alongside EBU R128 in the `loudness` command (text + JSON `leq_m_db`) and the qc-report HTML table.
+- `dcp_not_signed` (ClairMeta `check_dcp_signed`): an encrypted package (a CPL declares a `<KeyId>` or carries an `<EncryptedDocumentKey>`) whose CPL or PKL lacks a `<Signature>` now errors instead of only surfacing the milder `kdm_required`. Silent on unencrypted packages.
 
 ### Fixed
 - MCA channel labeling is read from the sound MXF's ST 429-12 subdescriptors (asdcplib `pcm::mca_labels`) instead of grepping the CPL, so `sound_invalid_channel_count` no longer false-fires on correctly labeled DCPs. Falls back to the CPL markers only for XML-only validation.
@@ -17,7 +19,9 @@
 
 ### Changed
 - Schema validation (`xml_schema_violation`) is now on by default: the SMPTE/Interop XSDs are vendored under `schemas/` (from the ClairMeta set, with `catalog.xml`), so `DCPDOCTOR_SCHEMA_DIR` is no longer required. The env var still overrides, and a missing dir degrades to skip.
-- Bumped asdcplib pin to `5fe4d61` (adds `pcm::mca_labels`), aligned across the vendored postkit.
+- Severity escalated to ERROR where SMPTE text uses "shall": `cpl_mismatched_durations` (ST 429-2 §9.4), `subtitle_font_missing` when the subtitle carries Text (ST 428-7:2014; image-only subs still warn), and a wrong subtitle DCST namespace (`smpte_namespace_wrong` / `interop_namespace_wrong`, ST 428-7).
+- j2k / bitrate / frame comparison / Leq(m) now delegate to the shared `postkit` library; the DCI-validation and note layers stay app-side. The AS-DCP jp2k reader is OP-Atom only, so IMF AS-02 / OP1a picture MXFs fall back to the ffprobe-derived path.
+- Bumped asdcplib pin to `6d7b8ca` (adds `pcm::mca_labels`); postkit vendored at `be89fe0`.
 
 ## [0.1.1] - 2026-07-19
 

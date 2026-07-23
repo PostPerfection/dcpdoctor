@@ -15,7 +15,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 ### Core Validation
 - **Structure validation**: ASSETMAP, PKL, CPL parsing with full cross-referencing
 - **Hash verification**: SHA-1 integrity checking for all assets
-- **XML digital signatures**: enveloped signature verification plus embedded X.509 chain linkage and expiry checks
+- **XML digital signatures**: enveloped signature verification plus embedded X.509 chain linkage and expiry checks; an encrypted package with an unsigned CPL or PKL errors (`dcp_not_signed`)
 - **Schema validation:** Well-formedness checks for every package XML file, with full XSD validation when schemas are supplied
 - **Duplicate detection**: Identifies duplicate asset IDs across packages
 
@@ -87,7 +87,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **IMF compliance**: Platform-specific compliance checks (Netflix, Disney, Amazon, Apple, Cinema, Broadcast)
 - **Frame-level QC**: Per-frame J2K bitrate analysis with over/under-budget detection
 - **QC reports**: HTML/PDF QC reports with package and track summary, plus per-track EBU R128 loudness
-- **Loudness measurement**: EBU R128 / ATSC A/85 loudness measurement and normalization
+- **Loudness measurement**: EBU R128 / ATSC A/85 and ISO 21727 Leq(m) measurement, plus normalization
 - **AV sync detection**: Audio/video sync drift detection and measurement
 - **HDR validation**: HDR10, HLG, Dolby Vision metadata validation
 - **Frame comparison**: Frame-by-frame PSNR/SSIM/VMAF comparison between IMPs or files
@@ -273,6 +273,9 @@ dcpdoctor kdm /path/to/kdm.xml
 
 # Validate KDM against specific DCP
 dcpdoctor kdm /path/to/kdm.xml --dcp /path/to/dcp
+
+# Verify an encrypted DCP: decrypt essence with a KDM and run the full checks
+dcpdoctor validate /path/to/dcp --kdm /path/to/kdm.xml --recipient-key /path/to/private.pem
 ```
 
 ### Theater Profiles
