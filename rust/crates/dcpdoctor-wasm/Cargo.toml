@@ -2,7 +2,7 @@
 name = "dcpdoctor-wasm"
 version = "0.1.1"
 edition = "2021"
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-or-later"
 description = "DCP/IMF validator — WebAssembly build for browser-based validation"
 
 [lib]

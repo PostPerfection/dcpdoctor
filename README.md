@@ -606,4 +606,4 @@ dcpdoctor/
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+AGPL-3.0-or-later. Copyright (C) 2026 Grok Image Compression Inc. See [LICENSE](LICENSE).

@@ -2,7 +2,7 @@
 name = "dcpdoctor-imf"
 version = "0.1.1"
 edition = "2021"
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-or-later"
 description = "Shared IMF validation logic for dcpdoctor (no I/O dependencies)"
 
 [dependencies]
