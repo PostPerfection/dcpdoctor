@@ -632,7 +632,7 @@ pub fn check_cross_references(
         // optional prefix/attributes match the msp-cpl (429-10 stereo) and axd
         // (429-18 aux data) namespaced forms real DCPs emit.
         let asset_block_re = regex_lite::Regex::new(
-            r"<(?:[\w-]+:)?(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|ClosedCaption|MainImage|AuxData)(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|ClosedCaption|MainImage|AuxData)>",
+            r"<(?:[\w-]+:)?(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|(?:Main)?ClosedCaption|MainImage|AuxData)(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:MainPicture|MainSound|MainSubtitle|MainStereoscopicPicture|(?:Main)?ClosedCaption|MainImage|AuxData)>",
         ).unwrap();
 
         for block_cap in asset_block_re.captures_iter(&content) {
@@ -1915,6 +1915,34 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(xml.as_bytes()).unwrap();
         f
+    }
+
+    // ─── check_cross_references ────────────────────────────────────────────
+
+    #[test]
+    fn main_closed_caption_asset_id_is_cross_ref_checked() {
+        let cpl = write_cpl(
+            r#"<CompositionPlaylist><Reel><AssetList>
+  <cc:MainClosedCaption xmlns:cc="http://www.digicine.com/PROTO-ASDCP-CC-CPL-20070926#">
+    <Id>urn:uuid:11111111-2222-3333-4444-555555555555</Id>
+  </cc:MainClosedCaption>
+</AssetList></Reel></CompositionPlaylist>"#,
+        );
+        let paths = vec![cpl.path().to_path_buf()];
+        let ov = HashSet::new();
+
+        let notes = check_cross_references(&[], Some(&ov), &paths);
+        assert!(
+            notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "unregistered MainClosedCaption asset id must break cross-refs"
+        );
+
+        let known = vec!["urn:uuid:11111111-2222-3333-4444-555555555555".to_string()];
+        let notes = check_cross_references(&known, Some(&ov), &paths);
+        assert!(
+            notes.is_empty(),
+            "registered caption asset must stay clean, got {notes:?}"
+        );
     }
 
     // ─── check_dcp_signed (ClairMeta) ──────────────────────────────────────

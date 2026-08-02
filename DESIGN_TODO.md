@@ -3,16 +3,7 @@
 Genuinely open items and standing decisions. Everything advertised in
 README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N =
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
-policy plus one cross-ref gap.
-
-## `asset_block_re` skips MainClosedCaption cross-refs
-
-The element list in `check_cross_references` (validators.rs) omits
-`MainClosedCaption`, so a caption track's asset id is never cross-ref checked.
-The fix is `(?:Main)?ClosedCaption` in both alternation lists, but it newly
-emits `cross_ref_broken`/`supplemental_ov_not_provided` on packages with
-caption tracks, so it should land with a corpus fixture proving real caption
-packages stay clean.
+policy.
 
 ## Severity policy: three checks stay WARNING
 
