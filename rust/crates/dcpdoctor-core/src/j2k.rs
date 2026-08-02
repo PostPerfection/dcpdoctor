@@ -910,7 +910,7 @@ mod cinema_tests {
 
     // Assemble a codestream: SOC, SIZ, COD, QCD, then one tile-part per entry in
     // `tp_data_sizes` (each SOT+SOD plus that many data bytes), then EOC.
-    fn build_j2k(
+    pub(super) fn build_j2k(
         rsiz: u16,
         width: u32,
         height: u32,
@@ -1027,6 +1027,89 @@ mod cinema_tests {
                 .iter()
                 .any(|n| n.message.contains("exceeds the Cinema 4K maximum")),
             "resolution beyond 4K must be flagged"
+        );
+    }
+}
+
+#[cfg(test)]
+mod as02_tests {
+    use super::*;
+    use postkit::mxf_wrap::{EssenceType, MxfStandard, MxfWrapOptions, mxf_wrap};
+
+    // Wrap a synthetic 2K codestream as AS-02 (OP1a, IMF) picture essence.
+    fn write_as02_mxf(dir: &Path, width: u32, height: u32) -> PathBuf {
+        let frame = super::cinema_tests::build_j2k(3, width, height, width, height, 1, &[64; 3]);
+        let j2c = dir.join("frame.j2c");
+        std::fs::write(&j2c, &frame).unwrap();
+        let out = dir.join("as02.mxf");
+        let result = mxf_wrap(&MxfWrapOptions {
+            input_files: vec![j2c],
+            output: out.clone(),
+            essence_type: EssenceType::J2k,
+            standard: MxfStandard::As02,
+            fps_num: 24,
+            fps_den: 1,
+            partition_size: 0,
+            encryption: None,
+            mca_config: None,
+            resource_ids: vec![],
+            hdr: None,
+        });
+        assert!(result.success, "AS-02 wrap failed: {}", result.error);
+        out
+    }
+
+    #[test]
+    fn as02_picture_falls_back_to_ffprobe() {
+        if std::process::Command::new("ffprobe")
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mxf = write_as02_mxf(dir.path(), 2048, 1080);
+
+        assert!(
+            postkit::j2k::read_mxf_j2k_frame(&mxf, 0).is_err(),
+            "the OP-Atom reader must reject AS-02 essence, otherwise this test never reaches the fallback"
+        );
+
+        let info = analyze_j2k_from_mxf(&mxf).expect("ffprobe fallback must read the AS-02 MXF");
+        assert_eq!((info.width, info.height), (2048, 1080), "dimensions");
+        assert_eq!(info.components, 3, "components");
+        assert_eq!(info.bit_depth, 12, "bit depth");
+        assert!(info.irreversible_transform, "9-7 assumed for DCI");
+        assert_eq!(
+            info.profile, "Cinema 2K (from MXF)",
+            "profile guessed from width"
+        );
+        assert!(info.frame_bytes > 0, "frame bytes");
+        // the fallback can't see the codestream, so the marker-derived fields stay unset
+        assert_eq!(info.rsiz, 0, "rsiz is not visible to ffprobe");
+        assert_eq!(
+            info.decomposition_levels, 0,
+            "decomposition levels are not visible to ffprobe"
+        );
+    }
+
+    #[test]
+    fn as02_4k_profile_guess_follows_width() {
+        if std::process::Command::new("ffprobe")
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mxf = write_as02_mxf(dir.path(), 3840, 2160);
+        let info = analyze_j2k_from_mxf(&mxf).expect("ffprobe fallback must read the AS-02 MXF");
+        assert_eq!((info.width, info.height), (3840, 2160), "dimensions");
+        assert_eq!(
+            info.profile, "Cinema 4K (from MXF)",
+            "profile guessed from width"
         );
     }
 }

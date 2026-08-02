@@ -3,7 +3,25 @@
 Genuinely open items and standing decisions. Everything advertised in
 README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N =
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
-policy plus one test-coverage gap.
+policy plus three defects found by the dci-ctp corpus work (2026-08-02).
+
+## Defects found building the dci-ctp advisory fixtures
+
+Found while writing isolated corpus fixtures (dci-ctp corpus_gen.py works around
+each, so its fixtures keep firing after a fix, details in dci-ctp/DESIGN_TODO.md):
+
+- SMPTE glyph coverage never resolves a font: `check_glyph_coverage` looks up the
+  ST 428-7 `LoadFont` element text (`urn:uuid:...`) in a map keyed by ASSETMAP ids
+  stored with the `urn:uuid:` prefix stripped, so the SMPTE form always misses and
+  only the Interop `URI` form works.
+- `ccap_re` matches a `ClosedCaption` track element with an optional namespace
+  prefix but not `MainClosedCaption`, which is what the vendored
+  PROTO-ASDCP-CC_CPL_20070926.xsd declares and what real Bv2.1 packages ship, so
+  the caption checks never run on them.
+- `schema_file_for` decides Interop from a `digicine.com` substring anywhere in
+  the document, so a SMPTE CPL that declares the digicine CC namespace routes to
+  the Interop CPL schema and fails at the root element with a spurious
+  `xml_schema_violation`. Any real CCAP package hits this.
 
 ## Severity policy: three checks stay WARNING
 
@@ -12,15 +30,6 @@ stay WARNING: no SMPTE "shall" demands rejection, so they stay CLAIRMETA_ONLY_FA
 in the dci-ctp differential (per-code justification in dci-ctp/DESIGN_TODO.md).
 Escalate only if a spec citation forces it, as with the four codes already moved
 to ERROR (see "Severity escalations to spec" under Done).
-
-## AS-02 / OP1a picture reads have no fixture
-
-The asdcplib jp2k reader is AS-DCP OP-Atom only, so on IMF AS-02 / OP1a video MXFs
-the j2k path falls back to ffprobe-derived dimensions/frame-bytes/bit-depth
-(profile guessed from resolution). No AS-02 fixture lives in dcpdoctor's tests/
-and the fallback needs ffprobe, so it is covered only by a manual sanity check:
-`frame-qc` on the Photon PHDR AS-02 video MXF reports 3840x2160 via the fallback.
-Add an AS-02 fixture to make it a real test.
 
 # Done
 
@@ -317,8 +326,8 @@ the core `verify_dcp` path and covered by tests.
     irreversible_transform). `analyze_j2k_from_mxf` now reads
     `postkit::j2k::read_mxf_j2k_frame` + `parse_j2k_header` first, so a DCP picture
     MXF reports its real RSIZ/components/transform instead of ffprobe guesses (used by
-    `--deep-j2k` / `frame-qc`). The AS-02 / OP1a ffprobe fallback and its
-    test-coverage gap are in Planned above.
+    `--deep-j2k` / `frame-qc`). The AS-02 / OP1a ffprobe fallback is described in
+    DESIGN.md and covered by `j2k::as02_tests`.
     The DCI validation + Note layers (`validate_j2k_dci`, `validate_cinema_j2k`,
     `detect_legacy_ffff`, `check_picture_j2k_mxf`, `check_guard_bits_mxf`) stay
     app-side (they need per-tile-part sizes + encryption-aware reads postkit doesn't
