@@ -5,11 +5,13 @@ use std::path::{Path, PathBuf};
 use crate::{Code, Note, Severity};
 
 /// Pick the XSD to validate against from the document's root element and
-/// standard (Interop docs carry the digicine.com namespace). Mirrors the
-/// namespace->schema mapping in ClairMeta's XML catalog. `None` if the file is
-/// not a CPL/PKL/ASSETMAP we schema-check.
+/// standard (Interop docs bind their root element to a digicine.com namespace).
+/// Mirrors the namespace->schema mapping in ClairMeta's XML catalog. `None` if
+/// the file is not a CPL/PKL/ASSETMAP we schema-check.
 fn schema_file_for(content: &str) -> Option<&'static str> {
-    let interop = content.contains("digicine.com");
+    // only the root element's own namespace decides the standard: a SMPTE CPL
+    // may declare the digicine closed-caption namespace on a track element.
+    let interop = root_namespace(content).is_some_and(|ns| ns.contains("digicine.com"));
     // Key off the root element tag. AssetMap must be checked first: a SMPTE
     // ASSETMAP carries a <PackingList>true</PackingList> boolean per asset, so a
     // bare "PackingList" substring would mis-route it to the PKL schema.
@@ -34,6 +36,27 @@ fn schema_file_for(content: &str) -> Option<&'static str> {
         })
     } else {
         None
+    }
+}
+
+/// Namespace bound to the document's root element, empty when it declares none.
+/// `None` when no element can be read at all.
+fn root_namespace(content: &str) -> Option<String> {
+    use quick_xml::events::Event;
+    use quick_xml::name::ResolveResult;
+
+    let mut reader = quick_xml::NsReader::from_str(content);
+    loop {
+        match reader.read_resolved_event() {
+            Ok((ns, Event::Start(_) | Event::Empty(_))) => {
+                return Some(match ns {
+                    ResolveResult::Bound(ns) => String::from_utf8_lossy(ns.0).into_owned(),
+                    _ => String::new(),
+                });
+            }
+            Ok((_, Event::Eof)) | Err(_) => return None,
+            Ok(_) => {}
+        }
     }
 }
 
@@ -403,6 +426,84 @@ mod tests {
         assert!(
             notes.iter().any(|n| n.code == Code::XmlSchemaViolation),
             "schema-invalid ASSETMAP must fire xml_schema_violation, got: {notes:?}"
+        );
+    }
+
+    const CCAP_CPL: &str = r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <cc:ClosedCaption xmlns:cc="http://www.digicine.com/PROTO-ASDCP-CC-CPL-20070926#">
+    <cc:Id>urn:uuid:dddddddd-0000-0000-0000-000000000000</cc:Id>
+  </cc:ClosedCaption>
+</CompositionPlaylist>"#;
+
+    const INTEROP_CPL: &str = r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.digicine.com/PROTO-ASDCP-CPL-20040511#">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+</CompositionPlaylist>"#;
+
+    #[test]
+    fn interop_cpl_routes_to_interop_schema() {
+        assert_eq!(
+            schema_file_for(INTEROP_CPL),
+            Some("PROTO-ASDCP-CPL-20040511.xsd")
+        );
+    }
+
+    // both CPL schemas are written out, so mis-routing the SMPTE CPL to the
+    // Interop one surfaces as a violation instead of a silent skip.
+    #[test]
+    fn smpte_cpl_declaring_digicine_cc_namespace_uses_smpte_schema() {
+        if std::process::Command::new("xmllint")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("SMPTE-429-16-2014-CPL-Metadata.xsd"),
+            r###"<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="http://www.smpte-ra.org/schemas/429-7/2006/CPL"
+    xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL"
+    elementFormDefault="qualified">
+  <xs:element name="CompositionPlaylist">
+    <xs:complexType><xs:sequence>
+      <xs:element name="Id" type="xs:string"/>
+      <xs:any namespace="##other" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>"###,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("PROTO-ASDCP-CPL-20040511.xsd"),
+            r#"<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="http://www.digicine.com/PROTO-ASDCP-CPL-20040511#"
+    xmlns="http://www.digicine.com/PROTO-ASDCP-CPL-20040511#"
+    elementFormDefault="qualified">
+  <xs:element name="CompositionPlaylist">
+    <xs:complexType><xs:sequence>
+      <xs:element name="Id" type="xs:string"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>"#,
+        )
+        .unwrap();
+
+        let cpl = dir.path().join("cpl.xml");
+        std::fs::write(&cpl, CCAP_CPL).unwrap();
+        let notes = check_schema(&cpl, dir.path());
+        assert!(
+            notes.is_empty(),
+            "SMPTE CPL with a digicine CC namespace must not fire a schema violation, got: {notes:?}"
+        );
+        assert_eq!(
+            schema_file_for(CCAP_CPL),
+            Some("SMPTE-429-16-2014-CPL-Metadata.xsd")
         );
     }
 }

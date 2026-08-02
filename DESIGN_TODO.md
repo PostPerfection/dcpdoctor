@@ -3,25 +3,16 @@
 Genuinely open items and standing decisions. Everything advertised in
 README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N =
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
-policy plus three defects found by the dci-ctp corpus work (2026-08-02).
+policy plus one cross-ref gap.
 
-## Defects found building the dci-ctp advisory fixtures
+## `asset_block_re` skips MainClosedCaption cross-refs
 
-Found while writing isolated corpus fixtures (dci-ctp corpus_gen.py works around
-each, so its fixtures keep firing after a fix, details in dci-ctp/DESIGN_TODO.md):
-
-- SMPTE glyph coverage never resolves a font: `check_glyph_coverage` looks up the
-  ST 428-7 `LoadFont` element text (`urn:uuid:...`) in a map keyed by ASSETMAP ids
-  stored with the `urn:uuid:` prefix stripped, so the SMPTE form always misses and
-  only the Interop `URI` form works.
-- `ccap_re` matches a `ClosedCaption` track element with an optional namespace
-  prefix but not `MainClosedCaption`, which is what the vendored
-  PROTO-ASDCP-CC_CPL_20070926.xsd declares and what real Bv2.1 packages ship, so
-  the caption checks never run on them.
-- `schema_file_for` decides Interop from a `digicine.com` substring anywhere in
-  the document, so a SMPTE CPL that declares the digicine CC namespace routes to
-  the Interop CPL schema and fails at the root element with a spurious
-  `xml_schema_violation`. Any real CCAP package hits this.
+The element list in `check_cross_references` (validators.rs) omits
+`MainClosedCaption`, so a caption track's asset id is never cross-ref checked.
+The fix is `(?:Main)?ClosedCaption` in both alternation lists, but it newly
+emits `cross_ref_broken`/`supplemental_ov_not_provided` on packages with
+caption tracks, so it should land with a corpus fixture proving real caption
+packages stay clean.
 
 ## Severity policy: three checks stay WARNING
 

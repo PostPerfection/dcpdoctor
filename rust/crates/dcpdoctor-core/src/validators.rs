@@ -1227,8 +1227,10 @@ pub fn check_timed_text_content(
         r"<(?:[\w-]+:)?MainSubtitle(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?MainSubtitle>",
     )
     .unwrap();
+    // the digicine CC-CPL schema names the track element MainClosedCaption,
+    // which is what real Bv2.1 packages ship
     let ccap_re = regex_lite::Regex::new(
-        r"<(?:[\w-]+:)?ClosedCaption(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?ClosedCaption>",
+        r"<(?:[\w-]+:)?(?:Main)?ClosedCaption(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:Main)?ClosedCaption>",
     )
     .unwrap();
 
@@ -2307,6 +2309,21 @@ mod tests {
             content(cpl.path(), &map)
                 .iter()
                 .any(|n| n.code == Code::ClosedCaptionLineCount && n.severity == Severity::Error)
+        );
+    }
+
+    // real Bv2.1 packages name the track MainClosedCaption, per the digicine
+    // CC-CPL schema
+    #[test]
+    fn main_closed_caption_track_runs_the_caption_checks() {
+        let long = "a".repeat(40); // > 32
+        let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &[&long]));
+        let (cpl, _d, map) = tt_case("MainClosedCaption", &xml);
+        assert!(
+            content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionLineLength && n.severity == Severity::Error),
+            "expected the caption limits on a MainClosedCaption track"
         );
     }
 

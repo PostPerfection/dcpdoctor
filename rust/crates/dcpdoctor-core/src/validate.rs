@@ -295,9 +295,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                             let abs = dcp_dir.join(uri);
                             return abs.exists().then_some(abs);
                         }
-                        // SMPTE ST 428-7: font is an asset addressed by urn
+                        // SMPTE ST 428-7: font is an asset addressed by urn.
+                        // ASSETMAP ids are stored with urn:uuid: stripped.
                         if let Some(urn) = &decl.urn
-                            && let Some(&ap) = id_to_path.get(urn.as_str())
+                            && let Some(&ap) =
+                                id_to_path.get(crate::assetmap::strip_urn_uuid(urn).as_str())
                         {
                             let p = dcp_dir.join(ap);
                             return p.exists().then_some(p);
@@ -746,6 +748,90 @@ mod tests {
                 .iter()
                 .any(|n| n.code == Code::SubtitleInvalidTiming),
             "expected subtitle timing note from pipeline, got: {:?}",
+            result.notes
+        );
+    }
+
+    // SMPTE ST 428-7 carries the font asset id as the LoadFont element text, and
+    // the ASSETMAP ids it resolves against are stored with urn:uuid: stripped.
+    #[test]
+    fn smpte_subtitle_font_urn_resolves_for_glyph_coverage() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub_id = "11111111-2222-3333-4444-555555555555";
+        let font_id = "22222222-3333-4444-5555-666666666666";
+
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+    <Asset><Id>urn:uuid:{sub_id}</Id>
+      <ChunkList><Chunk><Path>sub.xml</Path></Chunk></ChunkList></Asset>
+    <Asset><Id>urn:uuid:{font_id}</Id>
+      <ChunkList><Chunk><Path>font.ttf</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#
+            ),
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><Duration>48</Duration></MainPicture>
+      <MainSubtitle><Id>urn:uuid:{sub_id}</Id><Duration>48</Duration></MainSubtitle>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+
+        // the font covers only 'H' and 'i', so the accented character has no glyph
+        std::fs::write(
+            dir.path().join("font.ttf"),
+            crate::subtitle::tests::make_font(&['H', 'i']),
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.path().join("sub.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:Id>urn:uuid:22222222-2222-3333-4444-555555555555</dcst:Id>
+  <dcst:ReelNumber>1</dcst:ReelNumber>
+  <dcst:Language>en</dcst:Language>
+  <dcst:LoadFont ID="f">urn:uuid:{font_id}</dcst:LoadFont>
+  <dcst:SubtitleList>
+    <dcst:Font ID="f">
+      <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
+        <dcst:Text>Hé</dcst:Text>
+      </dcst:Subtitle>
+    </dcst:Font>
+  </dcst:SubtitleList>
+</dcst:SubtitleReel>"#
+            ),
+        )
+        .unwrap();
+
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleGlyphMissing && n.message.contains("U+00E9")),
+            "expected a glyph-coverage note from the SMPTE LoadFont urn, got: {:?}",
             result.notes
         );
     }

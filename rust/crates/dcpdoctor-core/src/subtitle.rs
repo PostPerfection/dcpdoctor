@@ -637,7 +637,7 @@ fn glyph_notes(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Write;
 
@@ -752,7 +752,7 @@ mod tests {
 
     // minimal sfnt with a single cmap (format 12) mapping the given chars to
     // sequential glyph ids; chars not listed have no glyph.
-    fn make_font(chars: &[char]) -> Vec<u8> {
+    pub(crate) fn make_font(chars: &[char]) -> Vec<u8> {
         let n = chars.len() as u32;
         let mut sub = Vec::new();
         sub.extend_from_slice(&12u16.to_be_bytes()); // format 12
