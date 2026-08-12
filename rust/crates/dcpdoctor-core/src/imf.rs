@@ -183,6 +183,7 @@ pub fn validate_imp(imp_dir: &Path, ov_dir: Option<&Path>) -> Vec<Note> {
 
     // PKL ↔ CPL cross-referencing
     validate_pkl_cpl_refs(imp_dir, &cpl_files, &mut notes);
+    validate_pkl_hash_algorithm(imp_dir, &mut notes);
 
     notes
 }
@@ -563,6 +564,35 @@ fn validate_ttml_file(ttml_path: &Path, cpl_path: &Path, notes: &mut Vec<Note>) 
     }
 }
 
+/// ST 2067-2:2016 makes HashAlgorithm the last element of every PKL asset, so an
+/// IMF PKL that omits it does not say which digest its Hash values are. The DCP
+/// PKL schema (ST 429-8) has no such element, which is why this runs on the IMF
+/// path only.
+fn validate_pkl_hash_algorithm(imp_dir: &Path, notes: &mut Vec<Note>) {
+    for pkl_path in find_pkls(imp_dir) {
+        let Ok(xml) = std::fs::read_to_string(&pkl_path) else {
+            continue;
+        };
+        let Some(pkl) = dcpdoctor_parse::parse_pkl(&xml) else {
+            continue;
+        };
+        for asset in &pkl.assets {
+            if asset.hash_algorithm.is_empty() {
+                notes.push(Note {
+                    severity: Severity::Error,
+                    code: Code::MissingRequiredElement,
+                    message: format!(
+                        "PKL asset {} has no HashAlgorithm; ST 2067-2 requires it on every asset",
+                        asset.id
+                    ),
+                    file: Some(pkl_path.clone()),
+                    line: 0,
+                });
+            }
+        }
+    }
+}
+
 // ─── PKL ↔ CPL Cross-referencing ──────────────────────────────────────────────
 
 fn validate_pkl_cpl_refs(imp_dir: &Path, cpl_files: &[PathBuf], notes: &mut Vec<Note>) {
@@ -834,6 +864,62 @@ fn extract_cpl_id(xml: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── IMF PKL HashAlgorithm (ST 2067-2:2016) ───────────────────────────────
+
+    fn imf_pkl(hash_algorithm: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<PackingList xmlns="http://www.smpte-ra.org/schemas/2067-2/2016/PKL">
+  <Id>urn:uuid:7281a71b-0dcb-4ed7-93a4-97b7929e2a7c</Id>
+  <IssueDate>2016-06-30T18:19:27-00:00</IssueDate>
+  <Issuer>dcpdoctor</Issuer>
+  <Creator>dcpdoctor</Creator>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:88b5b453-a342-46eb-bc0a-4c9645f4d627</Id>
+      <Hash>oQjE4GVsXTeawQOL//tMJ3HAMzk=</Hash>
+      <Size>1024</Size>
+      <Type>application/mxf</Type>
+      <OriginalFileName>1.mxf</OriginalFileName>
+      {hash_algorithm}
+    </Asset>
+  </AssetList>
+</PackingList>"#
+        )
+    }
+
+    fn pkl_notes(pkl_xml: &str) -> Vec<Note> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("PKL.xml"), pkl_xml).unwrap();
+        let mut notes = Vec::new();
+        validate_pkl_hash_algorithm(dir.path(), &mut notes);
+        notes
+    }
+
+    #[test]
+    fn imf_pkl_with_hash_algorithm_draws_no_note() {
+        let notes = pkl_notes(&imf_pkl(
+            r#"<HashAlgorithm Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>"#,
+        ));
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    #[test]
+    fn imf_pkl_without_hash_algorithm_is_an_error() {
+        let notes = pkl_notes(&imf_pkl(""));
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].code, Code::MissingRequiredElement);
+        assert_eq!(notes[0].severity, Severity::Error);
+        assert!(
+            notes[0].message.contains("HashAlgorithm")
+                && notes[0]
+                    .message
+                    .contains("88b5b453-a342-46eb-bc0a-4c9645f4d627"),
+            "{}",
+            notes[0].message
+        );
+    }
 
     #[test]
     fn test_parse_imf_cpl_minimal() {

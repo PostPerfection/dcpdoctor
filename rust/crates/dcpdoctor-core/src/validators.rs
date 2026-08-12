@@ -29,6 +29,95 @@ fn probe_sound_has_mca(path: &Path) -> Option<bool> {
     Some(mca.channel_labels > 0 || mca.soundfield_groups > 0 || mca.has_mca_channel_assignment)
 }
 
+/// The AssetUUID an MXF carries in its own header. Every reader family exposes
+/// it through the writer info, so pick the one matching the essence rather than
+/// opening the file with each in turn.
+fn mxf_asset_uuid(path: &Path) -> Option<[u8; 16]> {
+    use asdcplib::EssenceType;
+
+    let path_str = path.to_str()?;
+
+    macro_rules! asset_uuid_from {
+        ($reader:path $(, $extra:expr)*) => {{
+            let mut reader = <$reader>::new();
+            reader.open_read(path_str $(, $extra)*).ok()?;
+            Some(reader.writer_info().ok()?.asset_uuid)
+        }};
+    }
+
+    match asdcplib::essence_type(path_str).ok()? {
+        EssenceType::Jpeg2000 => asset_uuid_from!(asdcplib::jp2k::MxfReader),
+        EssenceType::Jpeg2000Stereo => asset_uuid_from!(asdcplib::jp2k::StereoMxfReader),
+        EssenceType::Pcm24b48k | EssenceType::Pcm24b96k => {
+            asset_uuid_from!(asdcplib::pcm::MxfReader)
+        }
+        EssenceType::TimedText => asset_uuid_from!(asdcplib::timed_text::MxfReader),
+        EssenceType::DcDataDolbyAtmos => asset_uuid_from!(asdcplib::atmos::MxfReader),
+        EssenceType::As02Jpeg2000 => asset_uuid_from!(asdcplib::as02::jp2k::MxfReader),
+        // AS-02 sound is clip-wrapped, so its reader wants an edit rate to size a
+        // frame. It only affects the frame count, never the header id read here.
+        EssenceType::As02Pcm24b48k | EssenceType::As02Pcm24b96k => {
+            asset_uuid_from!(
+                asdcplib::as02::pcm::MxfReader,
+                asdcplib::Rational::new(24, 1)
+            )
+        }
+        EssenceType::As02TimedText => asset_uuid_from!(asdcplib::as02::timed_text::MxfReader),
+        _ => None,
+    }
+}
+
+/// ST 429-2: the Id a CPL uses for a track file is that file's own AssetUUID, so
+/// a package can satisfy every ASSETMAP and PKL reference and still hand the
+/// projector an asset that disagrees about what it is. ClairMeta rejects this in
+/// `check_assets_cpl_metadata`.
+pub fn check_asset_id_matches_essence(
+    cpl_path: &Path,
+    id_to_file: &HashMap<String, PathBuf>,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    let id_re =
+        regex_lite::Regex::new(r"urn:uuid:([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})")
+            .unwrap();
+    let mut checked = HashSet::new();
+
+    for capture in id_re.captures_iter(&content) {
+        let declared = capture[1].to_lowercase();
+        if !checked.insert(declared.clone()) {
+            continue;
+        }
+        let Some(path) = id_to_file.get(&declared) else {
+            continue; // not an asset of this package; other checks report that
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("mxf") {
+            continue; // only MXF track files declare an id of their own
+        }
+        let Some(actual) = mxf_asset_uuid(path) else {
+            continue;
+        };
+        let actual = uuid::Uuid::from_bytes(actual).hyphenated().to_string();
+        if actual != declared {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::MxfAssetIdMismatch,
+                message: format!(
+                    "CPL references asset {declared} but {} declares AssetUUID {actual}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                file: Some(cpl_path.to_path_buf()),
+                line: 0,
+            });
+        }
+    }
+
+    notes
+}
+
 /// Probe a picture MXF essence type. `Some(true)` for stereoscopic J2K,
 /// `Some(false)` for mono J2K, `None` when it can't be identified.
 fn probe_picture_is_stereo(path: &Path) -> Option<bool> {
@@ -1787,6 +1876,95 @@ fn extract_rate(xml: &str, tag: &str) -> Option<(u64, u64)> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    // ─── CPL asset Id vs the MXF's own AssetUUID ──────────────────────────────
+
+    /// Write a one-frame picture MXF that declares `asset_uuid` as its own id.
+    fn picture_mxf_with_asset_uuid(path: &Path, asset_uuid: uuid::Uuid) {
+        let info = asdcplib::WriterInfo {
+            asset_uuid: *asset_uuid.as_bytes(),
+            context_id: *uuid::Uuid::new_v4().as_bytes(),
+            label_set: asdcplib::LabelSet::Smpte,
+            ..Default::default()
+        };
+        let descriptor = asdcplib::jp2k::PictureDescriptor {
+            edit_rate: asdcplib::Rational::new(24, 1),
+            sample_rate: asdcplib::Rational::new(24, 1),
+            stored_width: 2048,
+            stored_height: 1080,
+            aspect_ratio: asdcplib::Rational::new(2048, 1080),
+            container_duration: 1,
+            component_count: 3,
+        };
+        let mut writer = asdcplib::jp2k::MxfWriter::new();
+        writer
+            .open_write(path.to_str().unwrap(), &info, &descriptor, 16384)
+            .unwrap();
+        writer.write_frame(&[0u8; 1024], None, None).unwrap();
+        writer.finalize().unwrap();
+    }
+
+    /// A CPL naming one picture asset, plus the id -> file map the package would
+    /// build from its ASSETMAP.
+    fn cpl_referencing(
+        dir: &Path,
+        declared: uuid::Uuid,
+        mxf: &Path,
+    ) -> (PathBuf, HashMap<String, PathBuf>) {
+        let cpl_path = dir.join("cpl.xml");
+        std::fs::write(
+            &cpl_path,
+            format!(
+                r#"<CompositionPlaylist>
+  <Id>urn:uuid:11111111-1111-1111-1111-111111111111</Id>
+  <ReelList><Reel><Id>urn:uuid:22222222-2222-2222-2222-222222222222</Id>
+    <AssetList><MainPicture><Id>urn:uuid:{declared}</Id></MainPicture></AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+        let map = HashMap::from([(declared.hyphenated().to_string(), mxf.to_path_buf())]);
+        (cpl_path, map)
+    }
+
+    #[test]
+    fn asset_id_matching_the_essence_draws_no_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let asset_uuid = uuid::Uuid::new_v4();
+        let mxf = dir.path().join("picture.mxf");
+        picture_mxf_with_asset_uuid(&mxf, asset_uuid);
+
+        let (cpl_path, id_to_file) = cpl_referencing(dir.path(), asset_uuid, &mxf);
+
+        assert!(check_asset_id_matches_essence(&cpl_path, &id_to_file).is_empty());
+    }
+
+    #[test]
+    fn asset_id_differing_from_the_essence_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_uuid = uuid::Uuid::new_v4();
+        let declared = uuid::Uuid::new_v4();
+        let mxf = dir.path().join("picture.mxf");
+        picture_mxf_with_asset_uuid(&mxf, real_uuid);
+
+        let (cpl_path, id_to_file) = cpl_referencing(dir.path(), declared, &mxf);
+
+        let notes = check_asset_id_matches_essence(&cpl_path, &id_to_file);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].code, Code::MxfAssetIdMismatch);
+        assert_eq!(notes[0].severity, Severity::Error);
+        assert!(
+            notes[0]
+                .message
+                .contains(&real_uuid.hyphenated().to_string())
+                && notes[0]
+                    .message
+                    .contains(&declared.hyphenated().to_string()),
+            "{}",
+            notes[0].message
+        );
+    }
 
     // two-reel CPL; {enc0}/{enc1} inject a picture KeyId, {fr0}/{fr1} the frame rate
     fn two_reel_cpl(enc0: &str, enc1: &str, fr0: &str, fr1: &str) -> String {

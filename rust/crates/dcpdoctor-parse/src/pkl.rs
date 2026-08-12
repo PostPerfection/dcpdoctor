@@ -13,6 +13,9 @@ pub struct PklAsset {
     pub annotation: String,
     pub original_filename: String,
     pub hash: String,
+    /// The `Algorithm` URI of the asset's `HashAlgorithm` element. Empty when the
+    /// element is absent, which is required in an IMF PKL and not allowed in a
+    /// DCP one. The element itself is empty, so the URI is the whole value.
     pub hash_algorithm: String,
     pub size: i64,
 }
@@ -52,7 +55,18 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
                         in_asset = true;
                         current_asset = PklAsset::default();
                     }
+                    "HashAlgorithm" if in_asset => {
+                        current_asset.hash_algorithm =
+                            crate::attribute(&e, "Algorithm").unwrap_or_default();
+                        current_tag = name;
+                    }
                     _ => current_tag = name,
+                }
+            }
+            Ok(Event::Empty(e)) => {
+                if in_asset && local_name(&e) == "HashAlgorithm" {
+                    current_asset.hash_algorithm =
+                        crate::attribute(&e, "Algorithm").unwrap_or_default();
                 }
             }
             Ok(Event::End(e)) => {
@@ -78,7 +92,6 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
                         "AnnotationText" => current_asset.annotation = text,
                         "OriginalFileName" => current_asset.original_filename = text,
                         "Hash" => current_asset.hash = text,
-                        "HashAlgorithm" => current_asset.hash_algorithm = text,
                         "Size" => current_asset.size = text.parse().unwrap_or(0),
                         _ => {}
                     }
@@ -142,6 +155,28 @@ mod tests {
         assert_eq!(a.size, 816);
         assert_eq!(a.asset_type, "text/xml");
         assert_eq!(a.original_filename, "CPL.xml");
+    }
+
+    #[test]
+    fn hash_algorithm_comes_from_the_algorithm_attribute() {
+        // ST 2067-2 declares HashAlgorithm as ds:DigestMethodType, whose value is
+        // the Algorithm attribute of an otherwise empty element.
+        let xml = PKL.replace(
+            "<OriginalFileName>CPL.xml</OriginalFileName>",
+            r#"<OriginalFileName>CPL.xml</OriginalFileName>
+      <HashAlgorithm Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>"#,
+        );
+        let pkl = parse_pkl(&xml).unwrap();
+        assert_eq!(
+            pkl.assets[0].hash_algorithm,
+            "http://www.w3.org/2000/09/xmldsig#sha1"
+        );
+    }
+
+    #[test]
+    fn hash_algorithm_is_empty_when_the_element_is_absent() {
+        let pkl = parse_pkl(PKL).unwrap();
+        assert!(pkl.assets[0].hash_algorithm.is_empty());
     }
 
     #[test]

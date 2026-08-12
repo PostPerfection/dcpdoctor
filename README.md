@@ -233,24 +233,23 @@ dcpdoctor fix /path/to/dcp && dcpdoctor validate --strict /path/to/dcp
 
 ### Photon Integration (IMF)
 
-dcpdoctor integrates [Netflix Photon](https://github.com/Netflix/photon) for deep IMF Application 2/2E conformance checks. It runs only when an ST 2067-3 Composition Playlist identifies an IMF package. SMPTE and Interop DCPs skip IMF and Photon validation. On first use, Photon is automatically cloned and built to `~/.cache/dcpdoctor/photon/`.
+dcpdoctor integrates [Netflix Photon](https://github.com/Netflix/photon) for deep IMF Application 2/2E conformance checks. It runs only when an ST 2067-3 Composition Playlist identifies an IMF package. SMPTE and Interop DCPs skip IMF and Photon validation.
 
-**Requirements:** Java 11+ and git.
+Photon has to be fetched first. dcpdoctor does not build it: Netflix pins Gradle 8.5, which cannot read Java 25 class files. Use imfwizard's `scripts/fetch_photon.sh`, which pulls the jars from Maven Central into `$PHOTON_DIR`. Without jars, validation runs everything else and reports the skipped Photon pass as an INFO note.
+
+**Requirements:** Java 11+ and Photon jars.
 
 ```bash
-# Validate includes Photon's deep IMF checks (auto-bootstraps on first run)
-dcpdoctor validate /path/to/imp
-
-# Or point to an existing Photon installation
-export PHOTON_DIR=/opt/photon
+export PHOTON_DIR=~/.cache/photon
 dcpdoctor validate /path/to/imp
 ```
 
 Photon findings are merged into dcpdoctor's report with `[Photon]` prefix. Discovery order:
-1. `PHOTON_DIR` environment variable (directory with `build/libs/*.jar`)
+1. `PHOTON_DIR` environment variable (a jar, a directory of jars, or one with `build/libs/*.jar`)
 2. `/usr/local/share/photon/libs/`
-3. `/opt/photon/build/libs/`
-4. `~/.cache/dcpdoctor/photon/build/libs/` (auto-built)
+3. `/usr/share/photon/libs/`
+4. `/opt/photon/build/libs/`
+5. `~/.cache/dcpdoctor/photon/` and `~/.cache/dcpdoctor/photon/build/libs/`
 
 ### DCP Comparison
 

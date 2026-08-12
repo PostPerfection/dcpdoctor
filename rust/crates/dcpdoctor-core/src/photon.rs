@@ -1,22 +1,23 @@
 //! Netflix Photon integration for deep IMF Application 2/2E validation.
 //!
-//! Photon is automatically cloned and built to `~/.cache/dcpdoctor/photon/`
-//! on first use. Requires Java 11+ and git.
+//! Photon has to be fetched beforehand: point `PHOTON_DIR` at a jar or at a
+//! directory of jars (imfwizard's `scripts/fetch_photon.sh` reads the same
+//! variable and pulls them from Maven Central). dcpdoctor does not build Photon:
+//! Netflix pins Gradle 8.5, which cannot read Java 25 class files, so building
+//! from source fails on a current JDK.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::{Code, Note, Severity};
 
-const PHOTON_REPO: &str = "https://github.com/Netflix/photon.git";
-
 /// Error returned when Photon cannot be used.
 #[derive(Debug)]
 pub enum PhotonError {
     /// Java runtime not found
     JavaNotFound,
-    /// Failed to obtain Photon
-    SetupFailed(String),
+    /// No Photon jars on any of the searched paths
+    NotInstalled,
     /// Failed to run Photon
     ExecutionFailed(String),
 }
@@ -28,7 +29,10 @@ impl std::fmt::Display for PhotonError {
                 f,
                 "Java runtime not found. Install Java 11+ (e.g. `apt install default-jre`)"
             ),
-            PhotonError::SetupFailed(e) => write!(f, "Photon setup failed: {e}"),
+            PhotonError::NotInstalled => write!(
+                f,
+                "Photon jars not found. Set PHOTON_DIR to a Photon jar or a directory of jars"
+            ),
             PhotonError::ExecutionFailed(e) => write!(f, "Photon execution failed: {e}"),
         }
     }
@@ -45,44 +49,50 @@ fn cache_dir() -> PathBuf {
     }
 }
 
-/// Find the Photon libs directory, checking (in order):
-/// 1. PHOTON_DIR environment variable (directory containing libs/*.jar)
-/// 2. Well-known system paths
-/// 3. Local cache (~/.cache/dcpdoctor/photon/build/libs/)
-pub fn find_photon() -> Option<PathBuf> {
-    // 1. Environment variable
+/// Where the Photon classpath can come from. `PHOTON_DIR` may name a single jar
+/// or a directory of jars; the rest are directories.
+pub fn find_photon() -> Option<PhotonClasspath> {
     if let Ok(path) = std::env::var("PHOTON_DIR") {
-        let p = PathBuf::from(&path);
-        if has_photon_jars(&p) {
-            return Some(p);
+        let configured = PathBuf::from(&path);
+        if configured.is_file() && configured.extension() == Some("jar".as_ref()) {
+            return Some(PhotonClasspath::Jar(configured));
         }
-        // Also check build/libs/ subdirectory
-        let libs = p.join("build").join("libs");
-        if has_photon_jars(&libs) {
-            return Some(libs);
+        for dir in [configured.clone(), configured.join("build").join("libs")] {
+            if has_photon_jars(&dir) {
+                return Some(PhotonClasspath::Directory(dir));
+            }
         }
     }
 
-    // 2. Well-known locations
     let candidates = [
-        "/usr/local/share/photon/libs",
-        "/usr/share/photon/libs",
-        "/opt/photon/build/libs",
+        PathBuf::from("/usr/local/share/photon/libs"),
+        PathBuf::from("/usr/share/photon/libs"),
+        PathBuf::from("/opt/photon/build/libs"),
+        cache_dir().join("photon"),
+        cache_dir().join("photon").join("build").join("libs"),
     ];
-    for candidate in &candidates {
-        let p = PathBuf::from(candidate);
-        if has_photon_jars(&p) {
-            return Some(p);
+    candidates
+        .into_iter()
+        .find(|dir| has_photon_jars(dir))
+        .map(PhotonClasspath::Directory)
+}
+
+/// A Photon classpath entry, ready for `java -cp`.
+#[derive(Debug, Clone)]
+pub enum PhotonClasspath {
+    Jar(PathBuf),
+    Directory(PathBuf),
+}
+
+impl PhotonClasspath {
+    /// The `-cp` argument. A directory expands with the wildcard java itself
+    /// understands, so every jar the fetch script dropped there is picked up.
+    fn argument(&self) -> String {
+        match self {
+            PhotonClasspath::Jar(path) => path.display().to_string(),
+            PhotonClasspath::Directory(dir) => format!("{}/*", dir.display()),
         }
     }
-
-    // 3. Local cache
-    let cached = cache_dir().join("photon").join("build").join("libs");
-    if has_photon_jars(&cached) {
-        return Some(cached);
-    }
-
-    None
 }
 
 /// Check if a directory contains Photon JAR files.
@@ -105,105 +115,18 @@ pub fn has_java() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-/// Clone and build Photon from source into the local cache.
-/// Requires git and Java 11+.
-fn bootstrap_photon() -> Result<PathBuf, PhotonError> {
-    let photon_dir = cache_dir().join("photon");
-    let libs_dir = photon_dir.join("build").join("libs");
-
-    // Already built
-    if has_photon_jars(&libs_dir) {
-        return Ok(libs_dir);
-    }
-
-    eprintln!("[dcpdoctor] Bootstrapping Photon (one-time setup)...");
-
-    // Clone if needed
-    if !photon_dir.join(".git").exists() {
-        let _ = std::fs::remove_dir_all(&photon_dir);
-        std::fs::create_dir_all(cache_dir())
-            .map_err(|e| PhotonError::SetupFailed(e.to_string()))?;
-
-        let output = Command::new("git")
-            .args(["clone", "--depth", "1", PHOTON_REPO])
-            .arg(&photon_dir)
-            .output()
-            .map_err(|e| PhotonError::SetupFailed(format!("git not found: {e}")))?;
-
-        if !output.status.success() {
-            return Err(PhotonError::SetupFailed(format!(
-                "git clone failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
-    }
-
-    // Build
-    let gradlew = if cfg!(windows) {
-        "gradlew.bat"
-    } else {
-        "./gradlew"
-    };
-
-    let output = Command::new(gradlew)
-        .args(["build", "-x", "test"])
-        .current_dir(&photon_dir)
-        .output()
-        .map_err(|e| PhotonError::SetupFailed(format!("gradle build failed to start: {e}")))?;
-
-    if !output.status.success() {
-        return Err(PhotonError::SetupFailed(format!(
-            "gradle build failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-
-    // Get dependencies
-    let output = Command::new(gradlew)
-        .args(["getDependencies"])
-        .current_dir(&photon_dir)
-        .output()
-        .map_err(|e| PhotonError::SetupFailed(format!("getDependencies failed: {e}")))?;
-
-    if !output.status.success() {
-        return Err(PhotonError::SetupFailed(format!(
-            "getDependencies failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-
-    if has_photon_jars(&libs_dir) {
-        eprintln!("[dcpdoctor] Photon ready.");
-        Ok(libs_dir)
-    } else {
-        Err(PhotonError::SetupFailed(
-            "build succeeded but no JARs found in build/libs/".to_string(),
-        ))
-    }
-}
-
-/// Ensure Photon is ready to use — build from source if needed, check Java.
-pub fn ensure_photon() -> Result<PathBuf, PhotonError> {
+/// Locate a usable Photon install, or say why there isn't one.
+pub fn ensure_photon() -> Result<PhotonClasspath, PhotonError> {
     if !has_java() {
         return Err(PhotonError::JavaNotFound);
     }
-
-    if let Some(path) = find_photon() {
-        return Ok(path);
-    }
-
-    bootstrap_photon()
+    find_photon().ok_or(PhotonError::NotInstalled)
 }
 
-/// Run Photon against an IMP directory and return validation notes.
-///
-/// Auto-builds Photon from source if not cached. Returns error if Java
-/// is missing or Photon cannot be obtained.
+/// Run Photon against an IMP directory and return validation notes. Errors when
+/// Java is missing or no Photon jars were fetched.
 pub fn run_photon(imp_dir: &Path) -> Result<Vec<Note>, PhotonError> {
-    let libs_dir = ensure_photon()?;
-
-    // Build classpath: all JARs in libs directory
-    let classpath = format!("{}/*:", libs_dir.display());
+    let classpath = ensure_photon()?.argument();
 
     let output = Command::new("java")
         .args(["-cp", &classpath, "com.netflix.imflibrary.app.IMPAnalyzer"])
@@ -216,6 +139,26 @@ pub fn run_photon(imp_dir: &Path) -> Result<Vec<Note>, PhotonError> {
 
     let combined = format!("{}\n{}", stdout, stderr);
     Ok(parse_photon_output(&combined, imp_dir))
+}
+
+/// Note for a Photon pass that could not run. A Photon that was never fetched is
+/// not a defect in the package, so that reports as Info. Only the first line of a
+/// failure is kept: a java or build failure can run to hundreds of lines and a
+/// Note is one line.
+pub fn unavailable_note(error: &PhotonError) -> Note {
+    let severity = match error {
+        PhotonError::ExecutionFailed(_) => Severity::Warning,
+        PhotonError::JavaNotFound | PhotonError::NotInstalled => Severity::Info,
+    };
+    let detail = error.to_string();
+    let first_line = detail.lines().next().unwrap_or_default().trim();
+    Note {
+        severity,
+        code: Code::MissingRequiredElement,
+        message: format!("[Photon] deep IMF checks skipped: {first_line}"),
+        file: None,
+        line: 0,
+    }
 }
 
 /// Parse Photon's text output into dcpdoctor Notes.

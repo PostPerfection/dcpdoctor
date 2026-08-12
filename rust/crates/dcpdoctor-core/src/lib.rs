@@ -99,6 +99,7 @@ pub enum Code {
     MxfUnreadable,
     MxfHashMismatch,
     MxfInvalidStructure,
+    MxfAssetIdMismatch,
 
     // Signature
     SignatureInvalid,
@@ -214,6 +215,7 @@ impl Code {
             Code::MxfUnreadable => "mxf_unreadable",
             Code::MxfHashMismatch => "mxf_hash_mismatch",
             Code::MxfInvalidStructure => "mxf_invalid_structure",
+            Code::MxfAssetIdMismatch => "mxf_asset_id_mismatch",
             Code::SignatureInvalid => "signature_invalid",
             Code::DcpNotSigned => "dcp_not_signed",
             Code::CertificateExpired => "certificate_expired",

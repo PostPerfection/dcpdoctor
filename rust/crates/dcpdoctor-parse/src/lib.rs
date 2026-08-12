@@ -31,6 +31,14 @@ pub(crate) fn local_name_end(e: &quick_xml::events::BytesEnd) -> String {
     String::from_utf8_lossy(e.local_name().as_ref()).to_string()
 }
 
+/// Value of an attribute by local name, ignoring any prefix on it.
+pub(crate) fn attribute(e: &quick_xml::events::BytesStart, name: &str) -> Option<String> {
+    e.attributes().flatten().find_map(|a| {
+        (a.key.local_name().as_ref() == name.as_bytes())
+            .then(|| String::from_utf8_lossy(&a.value).to_string())
+    })
+}
+
 /// Read the first start element and check its local name.
 pub(crate) fn root_is(xml: &str, expected: &str) -> bool {
     let mut reader = quick_xml::Reader::from_str(xml);

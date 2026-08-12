@@ -436,6 +436,9 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         for note in crate::validators::check_stereo(cpl_path, &id_to_file) {
             result.add(note);
         }
+        for note in crate::validators::check_asset_id_matches_essence(cpl_path, &id_to_file) {
+            result.add(note);
+        }
         for note in crate::validators::check_aux_data(cpl_path, &id_to_file) {
             result.add(note);
         }
@@ -484,6 +487,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     24.0
                 };
                 for note in crate::j2k::check_picture_j2k_mxf(&full_path, fps, &content_keys) {
+                    result.add(note);
+                }
+
+                let bitrate = crate::bitrate::analyze_picture_bitrate(&full_path);
+                for note in crate::bitrate::check_bitrate_compliance(&bitrate, &full_path) {
                     result.add(note);
                 }
             }
@@ -643,15 +651,7 @@ fn verify_imp(imp_dir: &Path, ov_dir: Option<&Path>) -> VerifyResult {
                 result.add(note);
             }
         }
-        Err(error) => {
-            result.add(Note {
-                severity: Severity::Warning,
-                code: Code::MissingRequiredElement,
-                message: format!("[Photon] {error}"),
-                file: None,
-                line: 0,
-            });
-        }
+        Err(error) => result.add(crate::photon::unavailable_note(&error)),
     }
 
     result

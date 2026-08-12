@@ -6,7 +6,6 @@
 /// - Code-block size
 /// - Wavelet transform type
 /// - Component count and bit depth
-/// - Per-frame bitrate
 use crate::{Code, Note};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -133,8 +132,9 @@ fn analyze_j2k_from_mxf(path: &Path) -> Result<J2kCodestreamInfo, String> {
 
 /// ffprobe fallback: for AS-02/OP1a essence the asdcplib OP-Atom reader rejects.
 /// ffprobe can't see the codestream markers, so only the fields it exposes
-/// (dimensions, per-frame byte size, bit depth) are filled; the rest is guessed
-/// from the resolution the way the DCI checks expect.
+/// (dimensions, bit depth) are filled; the rest is guessed from the resolution
+/// the way the DCI checks expect. `frame_bytes` stays 0: ffprobe reports the
+/// container size, not a codestream length.
 fn analyze_j2k_from_mxf_ffprobe(path: &Path) -> Result<J2kCodestreamInfo, String> {
     let output = std::process::Command::new("ffprobe")
         .args([
@@ -175,16 +175,6 @@ fn analyze_j2k_from_mxf_ffprobe(path: &Path) -> Result<J2kCodestreamInfo, String
 
     let width = stream["width"].as_u64().unwrap_or(0) as u32;
     let height = stream["height"].as_u64().unwrap_or(0) as u32;
-    let file_size = json["format"]["size"]
-        .as_str()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0);
-    let frame_count = stream["nb_frames"]
-        .as_str()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(1);
-
-    let frame_bytes = file_size.checked_div(frame_count).unwrap_or(0);
 
     let bit_depth = stream["bits_per_raw_sample"]
         .as_str()
@@ -196,7 +186,6 @@ fn analyze_j2k_from_mxf_ffprobe(path: &Path) -> Result<J2kCodestreamInfo, String
         height,
         components: 3,
         bit_depth,
-        frame_bytes,
         profile: if width > 2048 {
             "Cinema 4K (from MXF)".into()
         } else {
@@ -261,23 +250,8 @@ pub fn validate_j2k_dci(info: &J2kCodestreamInfo) -> Vec<Note> {
         ));
     }
 
-    // Bitrate check
-    if info.frame_bytes > 0 && info.width > 0 {
-        let max_bitrate_mbps = postkit::j2k::dci_max_bitrate_mbps(info.width);
-        let max_bitrate_bps = (max_bitrate_mbps * 1_000_000.0) as u64;
-        // At 24fps, one frame max = max_bitrate / 24 / 8 bytes
-        let max_frame_bytes_24 = max_bitrate_bps / 24 / 8;
-        if info.frame_bytes > max_frame_bytes_24 {
-            let actual_bitrate_mbps = (info.frame_bytes * 24 * 8) as f64 / 1_000_000.0;
-            notes.push(Note::error(
-                Code::J2kBitrateExceeded,
-                format!(
-                    "Frame size {} bytes implies {:.1} Mbps at 24fps (max {} Mbps)",
-                    info.frame_bytes, actual_bitrate_mbps, max_bitrate_mbps as u64
-                ),
-            ));
-        }
-    }
+    // a codestream header carries no frame rate, so the peak bitrate is measured
+    // over the whole essence by check_bitrate_compliance instead
 
     // RSIZ profile validation
     if info.rsiz > 0 {
@@ -1054,6 +1028,7 @@ mod as02_tests {
             mca_config: None,
             resource_ids: vec![],
             hdr: None,
+            asset_uuid: None,
         });
         assert!(result.success, "AS-02 wrap failed: {}", result.error);
         out
@@ -1085,7 +1060,10 @@ mod as02_tests {
             info.profile, "Cinema 2K (from MXF)",
             "profile guessed from width"
         );
-        assert!(info.frame_bytes > 0, "frame bytes");
+        assert_eq!(
+            info.frame_bytes, 0,
+            "ffprobe sees the container size, not a codestream length"
+        );
         // the fallback can't see the codestream, so the marker-derived fields stay unset
         assert_eq!(info.rsiz, 0, "rsiz is not visible to ffprobe");
         assert_eq!(

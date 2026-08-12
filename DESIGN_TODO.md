@@ -3,7 +3,40 @@
 Genuinely open items and standing decisions. Everything advertised in
 README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N =
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
-policy.
+policy plus the measurement gaps listed below.
+
+## Picture bitrate: what is still not measured
+
+Peak bitrate is now read frame by frame for AS-DCP picture essence, mono and 3D
+(see Done, 2026-08-12). Two gaps remain:
+
+- AS-02 / IMF picture essence gets no measurement. Both asdcplib JP2K readers are
+  OP-Atom, so an IMP picture track file falls through to no note at all. ffprobe
+  is the only reader that opens it and it reports container size, not codestream
+  length, so there is nothing honest to derive a frame rate from yet.
+- HFR keeps a fixed INFO string. `hfr_stereo.rs` emits `j2k_bitrate_exceeded` as
+  "DCI maximum bitrate is 500 Mbps for all HFR content" from the CPL edit rate
+  alone, and the measured check applies the resolution limit only (250 / 500), so
+  a 48 fps 2K package over 250 is reported as an error. asdcp-info uses 400 Mb/s
+  for the P-HFR essence label. Which limit is right for which HFR label needs a
+  spec citation before the measured check learns about frame rate.
+
+## Photon has to be fetched, not built
+
+`bootstrap_photon` is gone (see Done, 2026-08-12). dcpdoctor now runs Photon only
+when jars already exist, so a machine without them gets an INFO note saying the
+deep IMF pass was skipped. There is no fetch script in this repo: imfwizard's
+`scripts/fetch_photon.sh` pulls the jars from Maven Central and reads the same
+`PHOTON_DIR`, so pointing both at one directory works. Vendoring a fetch script
+here would mean two copies of the same pinned coordinates and checksums.
+
+## HashAlgorithm namespace is not checked
+
+The IMF PKL check tests that the element is present and carries an `Algorithm`
+URI. It matches on local name, so a `HashAlgorithm` wrongly bound to the xmldsig
+namespace instead of the PKL one still passes. Catching that needs namespace
+resolution in `dcpdoctor-parse`, which parses by local name throughout. The
+schema-validation path is the right place for it.
 
 ## Severity policy: three checks stay WARNING
 
@@ -14,6 +47,62 @@ Escalate only if a spec citation forces it, as with the four codes already moved
 to ERROR (see "Severity escalations to spec" under Done).
 
 # Done
+
+## Asset identity, IMF PKL digest, Photon bootstrap (2026-08-12)
+
+Three findings from diffing against ClairMeta and Photon, each a defect real
+packages carried past dcpdoctor unremarked.
+
+- `mxf_asset_id_mismatch` (new code): a CPL's Id for a track file has to be that
+  file's own AssetUUID. `check_asset_id_matches_essence` in validators.rs reads
+  the header id through asdcplib (one reader per essence family, picked from
+  `essence_type`) and compares it to every CPL id that resolves to an MXF. Runs on
+  plain `validate`, no flag: it is header metadata, not essence. ClairMeta rejects
+  this in `check_assets_cpl_metadata`. dcpdoctor passed it silently, which is how a
+  writer can satisfy every ASSETMAP and PKL reference and still ship assets that
+  disagree about what they are. AS-02 PCM aside, every DCP and IMF essence type is
+  covered. New code means dci-ctp's `ALL_CODES` denominator goes 80 -> 81.
+- IMF PKL `HashAlgorithm`: ST 2067-2:2016 makes it the last element of AssetType,
+  and ST 429-8 has no such element, so `validate_pkl_hash_algorithm` runs on the
+  IMF path only. The element is empty and carries its value in the `Algorithm`
+  attribute, so `dcpdoctor-parse` was reading text that is never there and
+  `PklAsset.hash_algorithm` was always empty. It now reads the attribute. Reported
+  as `missing_required_element`, one note per offending asset. Photon reports two
+  errors per PKL for the same defect.
+- Photon bootstrap: plain `validate` on an IMP used to git-clone Netflix/photon
+  and gradle-build it. Netflix pins Gradle 8.5, which cannot read Java 25 class
+  files, so on a current JDK it failed and the whole gradle stack trace went into
+  one `warning:` line. `bootstrap_photon` is deleted. `find_photon` now also
+  accepts `PHOTON_DIR` pointing at a single jar and looks in the cache directory
+  itself, which is where imfwizard's fetch script drops jars. Nothing to fetch is
+  an INFO note, not a warning: an absent optional tool is not a package defect.
+  Any failure keeps only its first line, so a Note stays one line.
+
+## Picture bitrate is measured, not estimated (2026-08-12)
+
+`j2k_bitrate_exceeded` never came from a measurement. `validate_j2k_dci` guessed
+it from one frame size at a hardcoded 24 fps, and for essence the OP-Atom reader
+cannot open (every 3D track file) the ffprobe fallback divided the whole file by
+an `nb_frames` that defaults to 1. dci-ctp `valid/dcp_3d` therefore reported
+12318.9 Mbps for a package asdcp-info measures at 264 Mb/s. The real analysis in
+`bitrate.rs` had no caller anywhere in the workspace.
+
+- `analyze_picture_bitrate` + `check_bitrate_compliance` now run under
+  `check_picture_details` (`--check-mxf` or `--deep-j2k`), beside the other checks
+  that open the essence, because measuring the peak means reading every frame.
+- Stereoscopic essence: the mono reader rejects it, so `bitrate.rs` falls back to
+  asdcplib's 3D reader and counts the left plus right codestream of one edit unit
+  as one frame. Measurements match asdcp-info: dcp_3d 264.4 against 264.38, ECL42
+  593.5 against 593.55, ECL25 358.2 against 358.25.
+- The limit comes from `postkit::j2k::dci_max_bitrate_mbps` (250 for 2K, 500 above
+  2048 stored width), not a second copy of the numbers.
+- The frame-size estimate is deleted, and the ffprobe fallback no longer fills
+  `frame_bytes`: it sees the container size, not a codestream length.
+- Tests write picture MXFs of known frame size (2K under the limit, 2K over, 4K
+  over the 2K limit but under the 4K one, and stereoscopic) and assert the
+  measured peak. asdcp-info reports the same rate for each of those files.
+- Fallout: dci-ctp's `valid/dcp_3d` baseline genuinely runs at 264 Mb/s and now
+  fails `--strict --check-mxf`. That correction belongs in dci-ctp.
 
 ## Severity escalations to spec (2026-07-23)
 
