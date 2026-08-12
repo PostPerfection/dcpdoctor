@@ -58,7 +58,7 @@ pub fn suggest_fixes(notes: &[crate::Note]) -> Vec<FixSuggestion> {
             }
             Code::J2kBitrateExceeded => Some(FixSuggestion {
                 related_code: Code::J2kBitrateExceeded,
-                description: "Re-encode picture at lower bitrate (DCI: 250 Mbps 2K / 500 Mbps 4K)"
+                description: "Re-encode picture at lower bitrate (DCI: 250 Mbps at any resolution)"
                     .into(),
                 command: String::new(),
                 auto_fixable: false,

@@ -5,38 +5,15 @@ README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N 
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
 policy plus the measurement gaps listed below.
 
-## Checks ClairMeta has and this does not
+## 4K frame rate is not checked against ST 429-2 Table 1
 
-From the 2026-08-12 differential over 155 packages (dci-ctp `diff/report.md`,
-regenerate before trusting the list). Three ClairMeta ERROR checks have no
-equivalent here:
-
-- `check_am_name`: the ASSETMAP filename itself is never checked. 4 packages.
-- `check_assets_am_size`: each ASSETMAP chunk carries a Length, and ClairMeta
-  compares it to the file on disk. Nothing here reads that element. 4 packages,
-  all of them DCP-o-matic fixtures that skip the reseal on purpose. dcpwizard
-  writes no Length at all, so this gap was invisible until the corpus gained a
-  second mastering tool.
-- `check_dcp_signed`: ClairMeta errors on an unsigned non-encrypted package.
-  `dcp_not_signed` only fires for encrypted ones here, which is the deliberate
-  reading of the "encrypted packages shall be signed" requirement, so closing
-  this needs a decision rather than code. 2 packages.
-
-Everything else the differential once listed as a gap is closed. The list in
-dci-ctp's DESIGN.md had gone stale claiming XSD validation was unwired and the
-deep certificate rules had no equivalent, when both run and the six certificate
-codes are ones ClairMeta misses.
-
-## Reel EditRate is only checked on the picture
-
-`cpl_invalid_edit_rate` reads the picture track's EditRate and nothing else. A
-DCP-o-matic package whose MainMarkers asset carries EditRate 13 1 against a 24 1
-picture is reported clean, no note at any severity. Found by running the dci-ctp
-mutations on a second vendor's package (dci-ctp DESIGN_TODO, two-vendor section).
-DoM writes MainMarkers ahead of MainPicture and dcpwizard writes no marker asset
-at all, so nothing here had ever seen one. ST 429-2 §9.4 covers durations within
-a reel rather than edit rates, so closing this needs a spec citation first, the
-same shape as the HFR bitrate item below.
+§8.2 Table 1 limits the 4K formats to a frame rate of 24/1, 25/1 or 30/1, where
+the 2K formats allow all six, and the same section says "Monoscopic picture
+essence tracks shall have matching frame rate and edit rate". So a monoscopic 4K
+composition at 48/1 violates a "shall", and nothing here reads it. Applying it
+needs the pixel array, which means the picture descriptor rather than the CPL, so
+it belongs with the checks that open the essence. Note this is §8.2, not §8.3,
+which is Sound Essence Encoding and says nothing about frame rates.
 
 ## Picture bitrate: what is still not measured
 
@@ -47,12 +24,12 @@ Peak bitrate is now read frame by frame for AS-DCP picture essence, mono and 3D
   OP-Atom, so an IMP picture track file falls through to no note at all. ffprobe
   is the only reader that opens it and it reports container size, not codestream
   length, so there is nothing honest to derive a frame rate from yet.
-- HFR keeps a fixed INFO string. `hfr_stereo.rs` emits `j2k_bitrate_exceeded` as
-  "DCI maximum bitrate is 500 Mbps for all HFR content" from the CPL edit rate
-  alone, and the measured check applies the resolution limit only (250 / 500), so
-  a 48 fps 2K package over 250 is reported as an error. asdcp-info uses 400 Mb/s
-  for the P-HFR essence label. Which limit is right for which HFR label needs a
-  spec citation before the measured check learns about frame rate.
+- P-HFR gets no special limit, deliberately. ISDCF's P-HFR paper (v005, 2012)
+  sets 500 Mb/s for the total codestream of 2K stereoscopic HFR, keyed on a
+  P-HFR-2K essence label, and calls itself a proposal for experimental use.
+  asdcplib applies 400 to that same label citing no source, stricter than the
+  document defining it. Neither is normative, and either would need the essence
+  coding UL, which dcpdoctor does not read. Same note in postkit's DESIGN_TODO.
 
 ## Photon has to be fetched, not built
 
@@ -63,23 +40,210 @@ deep IMF pass was skipped. There is no fetch script in this repo: imfwizard's
 `PHOTON_DIR`, so pointing both at one directory works. Vendoring a fetch script
 here would mean two copies of the same pinned coordinates and checksums.
 
-## HashAlgorithm namespace is not checked
+## Severity policy: four checks stay WARNING
 
-The IMF PKL check tests that the element is present and carries an `Algorithm`
-URI. It matches on local name, so a `HashAlgorithm` wrongly bound to the xmldsig
-namespace instead of the PKL one still passes. Catching that needs namespace
-resolution in `dcpdoctor-parse`, which parses by local name throughout. The
-schema-validation path is the right place for it.
-
-## Severity policy: three checks stay WARNING
-
-`reel_discontinuity`, `pkl_missing_asset_reference`, and `bv21_pkl_no_xml_ext`
-stay WARNING: no SMPTE "shall" demands rejection, so they stay CLAIRMETA_ONLY_FAIL
-in the dci-ctp differential (per-code justification in dci-ctp/DESIGN_TODO.md).
-Escalate only if a spec citation forces it, as with the four codes already moved
-to ERROR (see "Severity escalations to spec" under Done).
+`reel_discontinuity`, `pkl_missing_asset_reference`, `bv21_pkl_no_xml_ext`, and
+`unencrypted_dcp_not_signed` stay WARNING: no SMPTE "shall" demands rejection, so
+they stay CLAIRMETA_ONLY_FAIL in the dci-ctp differential (per-code justification
+in dci-ctp/DESIGN_TODO.md). Escalate only if a spec citation forces it, as with
+the four codes already moved to ERROR (see "Severity escalations to spec" under
+Done).
 
 # Done
+
+## One DCI bitrate limit at every resolution (2026-08-12)
+
+postkit pin d8d97cf -> 8b4a034, which the bitrate change needs: it replaces
+`j2k::dci_max_bitrate_mbps(width)` with `j2k::DCI_MAX_BITRATE_MBPS = 250.0`. No
+new code, and no code loses its producer.
+
+The 500 for 4K that this used to apply has no source in DCI, ST 429-4 or
+ST 429-2, and asdcplib has no 4K case at all. DCSS 4.3.3 states the cap as bytes
+per frame rather than a rate, and every figure works out to the same number:
+1,302,083 bytes at 24 fps for 2K and for 4K, 651,041 at 48 fps. So there is no
+resolution branch to make.
+
+- `bitrate::check_bitrate_compliance` reads the constant. This is a real verdict
+  change: a 4K package between 250 and 500 Mb/s now fails where it passed. Its
+  4K test flipped with it, from asserting the higher limit to asserting the same
+  limit, and gained an under-the-limit 4K case so the path is not just failing
+  everything.
+- The IMF path in validate.rs had its own `if pic.width > 2048 { 500.0 } else
+  { 250.0 }`, attributed to ST 429-4, which does not carry it. Deleted in favour
+  of the constant, so the number has one source.
+- `hfr_stereo.rs` emitted `j2k_bitrate_exceeded` as a fixed INFO reading "DCI
+  maximum bitrate is 500 Mbps for all HFR content" whenever the CPL edit rate
+  exceeded 30 fps. Deleted: it asserted a limit with no measurement behind it and
+  no source for the number, and the measured check covers the ground honestly.
+  The frame-rate findings in that file are a separate question and are untouched.
+- `fixes.rs` told the user to re-encode against "250 Mbps 2K / 500 Mbps 4K",
+  which would have contradicted the check that raised the note.
+
+## Standard from the namespace, and three EditRate rules at ERROR (2026-08-12)
+
+One new code, `composition_metadata_asset_mismatch`, so dci-ctp's `ALL_CODES`
+denominator goes 85 -> 86. All three ST 429-2 and ST 429-16 clauses below were
+read out of the published PDFs before being quoted in a comment.
+
+- `dcp::detect_standard` derives from the asset map's root namespace via
+  `schema::root_namespace`, not the file name. The file name is the thing
+  `assetmap_invalid_name` exists to catch, so keying the standard off it meant a
+  package under the wrong name was validated as the wrong standard throughout,
+  silently skipping three SMPTE-only checks and rescaling every subtitle time.
+  Matches on the namespace authority rather than one exact URI, the same test
+  `schema_file_for` uses, so the IMF asset map namespace still reads as SMPTE and
+  IMP behaviour is unchanged. An unrecognised namespace is Unknown.
+- `check_assetmap_name` now takes that shared `Standard` instead of deriving its
+  own, so the two cannot drift. That left `AssetMap.is_smpte` with no consumer and
+  it is deleted: it was a substring test over the whole document rather than a
+  root binding, which is exactly the weak signal this change moves away from.
+- ST 429-2 §9.6.1 and §9.7.1 turned out to be already enforced at ERROR by
+  `check_reel_coherence` as `reel_incoherent`, for EditRate, FrameRate,
+  ScreenAspectRatio and sound EditRate. Neither clause says a sound EditRate must
+  equal the picture's: both are intra-class rules, "All picture assets ... shall
+  have identical values" and "All sound assets ... shall have identical values".
+  So the two real gaps were the two list items nothing read: the picture element
+  name, which §9.6.1 names explicitly and which `essence_block` hides by
+  resolving both spellings to one block, and the sound `Language` element. Both
+  are now rows in the coherence table. No new code.
+- `composition_metadata_asset_mismatch` (ERROR): ST 429-16:2014 §4.4.1 binds the
+  CompositionMetadataAsset to the picture of its own reel in two "shall"
+  sentences, one for EditRate and one for IntrinsicDuration against the picture's
+  Duration. `check_composition_metadata_asset` covers both.
+- ST 429-2 §8.1, "The composition shall have an Edit Rate of 24/1, 25/1, 30/1,
+  48/1, 50/1 or 60/1", was already implemented at ERROR with exactly that list,
+  but gated behind `--strict`. A plain "shall" does not need a flag, so the gate
+  is gone. Read off the picture EditRate, which §9.6.1 makes identical across
+  every picture asset, so the picture rate is the composition Edit Rate. Not
+  applied to marker, subtitle or metadata assets: §8.1 speaks of the
+  composition's Edit Rate, not every asset's. The wasm validator already ran this
+  ungated, so this brings the native path in line rather than diverging.
+
+## Reel EditRate, KDM schema validation, dead compliance module (2026-08-12)
+
+One new code, `reel_edit_rate_mismatch`, so dci-ctp's `ALL_CODES` denominator
+goes 84 -> 85.
+
+- `reel_edit_rate_mismatch` (WARNING): every reel asset carries its own EditRate
+  and only the picture's was ever read, so the DCP-o-matic package whose
+  MainMarkers asset runs at 13 1 against a 24 1 picture was reported clean at
+  every severity. `check_reel_edit_rates` compares MainMarkers, MainSubtitle,
+  MainClosedCaption and AuxData against the picture. WARNING because no "shall"
+  reaches those classes: ST 429-2 §9.4 constrains Duration and scopes itself to
+  assets referring to an external track file, which excludes MainMarkers, and
+  §9.6.1 and §9.7.1 are the only per-asset-class EditRate equality rules and they
+  name picture and sound. ST 429-16 §4.4.1 giving CompositionMetadataAsset an
+  explicit rule is the argument that the omission for MainMarkers is deliberate.
+  ST 429-2 §9.9 is why it matters anyway: a marker Offset is compared against the
+  reel duration and that comparison only means anything if the rates agree.
+  Sound and CompositionMetadataAsset are excluded on purpose, and both are
+  covered at ERROR by their own rules (see the 2026-08-12 note above).
+- KDMs are schema-validated. `schema::check_schema` ran on ASSETMAP, CPL and PKL
+  only, so postkit shipping KDMs with no `AuthorizedDeviceInfo` element, which ST
+  430-1 Annex B makes required, went unremarked here. This is the same shape as
+  the sound-descriptor finding: the only thing checking the output was the family
+  of code that produced it. `schema_file_for` gained a KDM arm keyed on
+  `KDMRequiredExtensions` and placed ahead of the CompositionPlaylist arm, since
+  a KDM carries a `<CompositionPlaylistId>` element that matches that arm's
+  substring. Pointing xmllint at the 430-1 schema loads 430-3 through its import
+  and the strict `RequiredExtensions` wildcard reaches the KDM body. Wired into
+  `kdm::validate_kdm`, which both `validate --kdm` and the `kdm` subcommand route
+  through, so one seam covers both. Reports the existing `xml_schema_violation`.
+- The vendored `SMPTE-430-3-2006-ETM.xsd` had its UUID pattern facet split across
+  a line at `[0-9a-fA-\nF]`, which is not a valid regular expression, so both KDM
+  schemas failed to compile and no KDM could have been validated against them.
+  Joining the line was the whole fix. `SMPTE-429-10-2008-Main-Stereo-Picture-CPL.xsd`
+  still fails to compile, for an unrelated reason (it references
+  `cpl:PictureTrackFileAssetType`, which does not resolve), but nothing routes to
+  it so it is inert.
+- `compliance::check_smpte_compliance` is deleted, with the whole private subtree
+  that only it reached: `check_assetmap_compliance`, `check_pkl_compliance`,
+  `check_cpl_compliance`, `check_reel_compliance`, `check_namespace`,
+  `check_uuid`, `extract_tag` and seven constants. It had no caller anywhere in
+  the workspace, and its asset-map naming branch could never have fired even if
+  called, because it tested `standard == Smpte` against a `Standard` derived from
+  that same file name. Every code it produced is still produced elsewhere, so
+  nothing lost its only producer. 466 lines down to 50; `check_uuids` stays.
+
+## Standard derivation: blast radius of moving off the filename (2026-08-12)
+
+The investigation that led to the fix above. `dcp::detect_standard` returned Smpte when
+`ASSETMAP.xml` exists, Interop when `ASSETMAP` does, else Unknown. Three live
+call sites: `dcp::open_dcp`, and the CLI's facility-check and `--bv21` paths.
+
+Six checks change behaviour if the value changes, all reached from plain
+`validate` through `dcp.standard`:
+
+- `subtitle::validate_subtitle` picks the expected DCST namespace per standard
+  and reports a mismatch at ERROR, so a wrong standard inverts which of
+  `smpte_namespace_wrong` / `interop_namespace_wrong` fires.
+- `check_cpl_metadata` requires ContentVersion only for SMPTE.
+- `check_main_sound_configuration`, `check_sound_channel_configuration` and
+  `advanced::check_bv21_compliance` return empty unless SMPTE, so an Interop
+  verdict silently skips them entirely.
+- `check_first_subtitle_timing` reads Interop subtitle times as editable units
+  and SMPTE ones as ticks, via `subtitle_time_seconds`, so a wrong standard
+  scales every timing by the frame rate.
+
+`is_smpte` is not a sufficient replacement as it stands. It is
+`xml.contains(SMPTE_AM_NS)`, a substring test over the whole document rather than
+the root element's binding, so it is weaker than `schema::root_namespace`, which
+already resolves this properly and is what a fix should use. It is also binary
+and cannot express Unknown, which `validate_subtitle` and `validate_namespace`
+both branch on.
+
+No test depends on the filename derivation. Every fixture under `tests/fixtures`
+uses `ASSETMAP.xml`, and every standard-dependent unit test passes `Standard`
+directly rather than going through detection. The one package in the tree pairing
+a SMPTE-namespace asset map with the Interop name is
+`validate::tests::assetmap_name_and_chunk_length_reach_the_pipeline`, and its
+assertions are namespace-driven, so it is unaffected either way.
+
+Two dead things found while tracing this, left alone: `schema_validate::validate_namespace`
+has no caller, and `facility_check::FacilityCheckOptions::expected_standard` is
+written by the CLI and never read.
+
+## The last three ClairMeta gaps, and the HashAlgorithm namespace (2026-08-12)
+
+The 2026-08-12 differential over 155 packages (dci-ctp `diff/report.md`) left
+three ClairMeta ERROR checks with no equivalent here. All three are closed, and
+so is the namespace hole in the IMF PKL check. Three new codes, so dci-ctp's
+`ALL_CODES` denominator goes 81 -> 84.
+
+- `assetmap_invalid_name` (ClairMeta `check_am_name`): the asset map file's own
+  name was never checked. ST 429-9:2014 Annex A.4 (normative) says "Each Asset
+  Map document shall be a file named "ASSETMAP.xml"", so a SMPTE package under
+  any other name is an ERROR. The Interop name `ASSETMAP` comes from the MPEG
+  Interop asset map spec v3.4 §6.2, an informative annex and not SMPTE text, so
+  the Interop side is a WARNING. `check_assetmap_name` reads the standard from the
+  root namespace, never from the file name: `dcp::detect_standard` derives the
+  standard from the name, so a check built on it could never fire.
+- `assetmap_size_mismatch` (ClairMeta `check_assets_am_size`): nothing here read
+  the chunk `Length`. ST 429-9:2014 §7.4: "It shall be absent, or equal to the
+  length in bytes of the asset." Absent is legal and dcpwizard writes none at
+  all, so `check_assetmap_chunk_size` is silent unless a Length is present and
+  disagrees with the file, and silent on a missing file, which is already
+  `asset_not_found`. `dcpdoctor_parse::Asset` gained `length: Option<u64>` so
+  "not declared" stays distinct from zero.
+- `unencrypted_dcp_not_signed`: `dcp_not_signed` keeps its deliberate reading of
+  "encrypted packages shall be signed" and still fires at ERROR for encrypted
+  packages only. An unsigned unencrypted package now gets this separate code at
+  WARNING, a documented divergence from ClairMeta, which errors on it (see
+  "Severity policy" above). One `check_dcp_signed` picks severity and code from
+  whether the package is encrypted, so the two can never be confused.
+- IMF PKL `HashAlgorithm` namespace: the check matched on local name, so an
+  element bound to xmldsig instead of the PKL namespace passed. `ds:DigestMethodType`
+  is what invites that binding. `parse_pkl` now reads through quick-xml's
+  `NsReader` and records the root namespace plus the namespace `HashAlgorithm`
+  itself resolved to; `validate_pkl_hash_algorithm` reports a mismatch as
+  `missing_required_element`, the same code the absent element already used, so
+  no new code. Confined to the PKL parser: the rest of `dcpdoctor-parse` still
+  matches by local name.
+
+Not touched, but found while wiring this: `compliance::check_smpte_compliance`
+has no caller anywhere in the workspace, and its ASSETMAP naming branch is
+unreachable even if called, because it tests `standard == Smpte` against a
+`Standard` derived from that same file name.
 
 ## Sound essence read from the descriptor, not ffprobe (2026-08-12)
 

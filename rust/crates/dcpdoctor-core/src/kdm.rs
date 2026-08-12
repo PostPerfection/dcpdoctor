@@ -193,6 +193,13 @@ pub fn parse_kdm(kdm_path: &Path) -> Result<KdmInfo, String> {
 pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
     let mut notes = Vec::new();
 
+    // ST 430-1 Annex B makes several elements required that a hand-rolled writer
+    // can omit and every other check here would still pass, so the XSD runs
+    // first. Skips itself when the schema dir or xmllint is absent.
+    if let Some(schema_dir) = crate::schema::locate_schema_dir() {
+        notes.extend(crate::schema::check_schema(kdm_path, &schema_dir));
+    }
+
     let info = match parse_kdm(kdm_path) {
         Ok(i) => i,
         Err(e) => {
@@ -419,6 +426,115 @@ mod tests {
             "got: {notes:?}"
         );
         assert!(!notes.iter().any(|n| n.code == Code::KdmNotYetValid));
+    }
+
+    // ─── KDM schema validation (ST 430-1 / ST 430-3) ───────────────────────
+
+    const AUTHORIZED_DEVICE_INFO: &str = r#"<AuthorizedDeviceInfo>
+          <DeviceListIdentifier>urn:uuid:bbbbbbbb-cccc-dddd-eeee-ffffffffffff</DeviceListIdentifier>
+          <DeviceList>
+            <CertificateThumbprint>oQjE4GVsXTeawQOL//tMJ3HAMzk=</CertificateThumbprint>
+          </DeviceList>
+        </AuthorizedDeviceInfo>"#;
+
+    /// A structurally complete SMPTE KDM. `authorized_device_info` is spliced in
+    /// so the same document can be built with and without that one element.
+    fn smpte_kdm(authorized_device_info: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<DCinemaSecurityMessage xmlns="http://www.smpte-ra.org/schemas/430-3/2006/ETM" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+  <AuthenticatedPublic Id="ID_AuthenticatedPublic">
+    <MessageId>urn:uuid:11111111-2222-3333-4444-555555555555</MessageId>
+    <MessageType>http://www.smpte-ra.org/430-1/2006/KDM#kdm-key-type</MessageType>
+    <IssueDate>2026-01-01T00:00:00+00:00</IssueDate>
+    <Signer>
+      <ds:X509IssuerName>dnQualifier=abc,CN=test,OU=test,O=test</ds:X509IssuerName>
+      <ds:X509SerialNumber>1</ds:X509SerialNumber>
+    </Signer>
+    <RequiredExtensions>
+      <KDMRequiredExtensions xmlns="http://www.smpte-ra.org/schemas/430-1/2006/KDM">
+        <Recipient>
+          <X509IssuerSerial>
+            <ds:X509IssuerName>dnQualifier=abc,CN=test,OU=test,O=test</ds:X509IssuerName>
+            <ds:X509SerialNumber>2</ds:X509SerialNumber>
+          </X509IssuerSerial>
+          <X509SubjectName>dnQualifier=xyz,CN=recipient,OU=test,O=test</X509SubjectName>
+        </Recipient>
+        <CompositionPlaylistId>urn:uuid:66666666-7777-8888-9999-aaaaaaaaaaaa</CompositionPlaylistId>
+        <ContentTitleText>test</ContentTitleText>
+        <ContentKeysNotValidBefore>2026-01-01T00:00:00+00:00</ContentKeysNotValidBefore>
+        <ContentKeysNotValidAfter>2099-01-01T00:00:00+00:00</ContentKeysNotValidAfter>
+        {authorized_device_info}
+        <KeyIdList>
+          <TypedKeyId>
+            <KeyType>MDIK</KeyType>
+            <KeyId>urn:uuid:cccccccc-dddd-eeee-ffff-000000000000</KeyId>
+          </TypedKeyId>
+        </KeyIdList>
+      </KDMRequiredExtensions>
+    </RequiredExtensions>
+    <NonCriticalExtensions/>
+  </AuthenticatedPublic>
+  <AuthenticatedPrivate Id="ID_AuthenticatedPrivate">
+    <enc:EncryptedKey>
+      <enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p"/>
+      <enc:CipherData><enc:CipherValue>YWJj</enc:CipherValue></enc:CipherData>
+    </enc:EncryptedKey>
+  </AuthenticatedPrivate>
+  <ds:Signature>
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315#"/>
+      <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+      <ds:Reference URI="">
+        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+        <ds:DigestValue>oQjE4GVsXTeawQOL//tMJ3HAMzk=</ds:DigestValue>
+      </ds:Reference>
+    </ds:SignedInfo>
+    <ds:SignatureValue>YWJj</ds:SignatureValue>
+  </ds:Signature>
+</DCinemaSecurityMessage>"#
+        )
+        .unwrap();
+        f
+    }
+
+    /// The schema pass shells out to xmllint against the vendored XSDs, so it
+    /// cannot run without either.
+    fn schema_validation_available() -> bool {
+        std::process::Command::new("xmllint")
+            .arg("--version")
+            .output()
+            .is_ok()
+            && crate::schema::locate_schema_dir().is_some()
+    }
+
+    #[test]
+    fn kdm_without_authorized_device_info_violates_the_schema() {
+        if !schema_validation_available() {
+            return;
+        }
+        let f = smpte_kdm("");
+        let notes = validate_kdm(f.path(), None);
+        assert!(
+            notes.iter().any(|n| n.code == Code::XmlSchemaViolation
+                && n.message.contains("AuthorizedDeviceInfo")),
+            "a KDM missing AuthorizedDeviceInfo must fail the ST 430-1 schema, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn complete_kdm_passes_the_schema() {
+        if !schema_validation_available() {
+            return;
+        }
+        let f = smpte_kdm(AUTHORIZED_DEVICE_INFO);
+        let notes = validate_kdm(f.path(), None);
+        assert!(
+            !notes.iter().any(|n| n.code == Code::XmlSchemaViolation),
+            "a complete KDM must draw no schema violation, got: {notes:?}"
+        );
     }
 }
 

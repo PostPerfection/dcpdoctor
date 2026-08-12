@@ -15,7 +15,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 ### Core Validation
 - **Structure validation**: ASSETMAP, PKL, CPL parsing with full cross-referencing
 - **Hash verification**: SHA-1 integrity checking for all assets
-- **XML digital signatures**: enveloped signature verification plus embedded X.509 chain linkage and expiry checks; an encrypted package with an unsigned CPL or PKL errors (`dcp_not_signed`)
+- **XML digital signatures**: enveloped signature verification plus embedded X.509 chain linkage and expiry checks; an encrypted package with an unsigned CPL or PKL errors (`dcp_not_signed`), an unsigned unencrypted one warns (`unencrypted_dcp_not_signed`)
 - **Schema validation:** Well-formedness checks for every package XML file, with full XSD validation when schemas are supplied
 - **Duplicate detection**: Identifies duplicate asset IDs across packages
 

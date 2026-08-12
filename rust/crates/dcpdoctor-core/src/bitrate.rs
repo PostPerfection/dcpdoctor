@@ -89,7 +89,8 @@ fn analyze_stereoscopic_bitrate(mxf_path: &Path) -> Option<FrameBitrateStats> {
     })
 }
 
-/// Check measured bitrate against the DCI peak limit for the container resolution.
+/// Check measured bitrate against the DCI peak limit. One limit at every
+/// resolution: DCSS 4.3.3 caps a 4K frame at the same bytes as a 24 fps 2K one.
 pub fn check_bitrate_compliance(stats: &FrameBitrateStats, mxf_path: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
 
@@ -97,7 +98,7 @@ pub fn check_bitrate_compliance(stats: &FrameBitrateStats, mxf_path: &Path) -> V
         return notes;
     }
 
-    let max_allowed = postkit::j2k::dci_max_bitrate_mbps(stats.width);
+    let max_allowed = postkit::j2k::DCI_MAX_BITRATE_MBPS;
 
     if stats.max_bitrate_mbps > max_allowed {
         notes.push(
@@ -256,16 +257,39 @@ mod tests {
         assert!(notes[0].message.contains("268.8"), "{}", notes[0].message);
     }
 
-    // 1_600_000 bytes per frame at 24 fps is 307.2 Mb/s: over the 2K limit but
-    // under the 4K one, so a 4K container passes.
+    // 1_600_000 bytes per frame at 24 fps is 307.2 Mb/s. DCSS 4.3.3 caps a 4K
+    // frame at the same bytes as a 24 fps 2K one, so the container resolution
+    // buys nothing and this fails exactly as the 2K case would.
     #[test]
-    fn four_k_container_uses_the_higher_limit() {
+    fn four_k_container_uses_the_same_limit_as_2k() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("picture_4k.mxf");
         write_mono_mxf(&path, 4096, 2160, 1_600_000);
 
         let stats = measure(&path);
         assert!((stats.max_bitrate_mbps - 307.2).abs() < 0.05);
+
+        let notes = check_bitrate_compliance(&stats, &path);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].severity, crate::Severity::Error);
+        assert_eq!(notes[0].code, Code::J2kBitrateExceeded);
+        assert!(
+            notes[0].message.contains("307.2") && notes[0].message.contains("250"),
+            "{}",
+            notes[0].message
+        );
+    }
+
+    // 1_000_000 bytes per frame at 24 fps is 192 Mb/s, under the limit at any
+    // resolution, so the 4K path is not simply failing everything.
+    #[test]
+    fn four_k_container_under_the_limit_is_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_4k_ok.mxf");
+        write_mono_mxf(&path, 4096, 2160, 1_000_000);
+
+        let stats = measure(&path);
+        assert!((stats.max_bitrate_mbps - 192.0).abs() < 0.05);
         assert!(check_bitrate_compliance(&stats, &path).is_empty());
     }
 }

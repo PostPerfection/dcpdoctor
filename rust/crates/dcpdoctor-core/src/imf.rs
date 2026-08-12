@@ -565,9 +565,10 @@ fn validate_ttml_file(ttml_path: &Path, cpl_path: &Path, notes: &mut Vec<Note>) 
 }
 
 /// ST 2067-2:2016 makes HashAlgorithm the last element of every PKL asset, so an
-/// IMF PKL that omits it does not say which digest its Hash values are. The DCP
-/// PKL schema (ST 429-8) has no such element, which is why this runs on the IMF
-/// path only.
+/// IMF PKL that omits it does not say which digest its Hash values are, and one
+/// that binds it to the wrong namespace has not declared that element at all.
+/// The DCP PKL schema (ST 429-8) has no such element, which is why this runs on
+/// the IMF path only.
 fn validate_pkl_hash_algorithm(imp_dir: &Path, notes: &mut Vec<Note>) {
     for pkl_path in find_pkls(imp_dir) {
         let Ok(xml) = std::fs::read_to_string(&pkl_path) else {
@@ -584,6 +585,23 @@ fn validate_pkl_hash_algorithm(imp_dir: &Path, notes: &mut Vec<Note>) {
                     message: format!(
                         "PKL asset {} has no HashAlgorithm; ST 2067-2 requires it on every asset",
                         asset.id
+                    ),
+                    file: Some(pkl_path.clone()),
+                    line: 0,
+                });
+                continue;
+            }
+            // ST 2067-2 Annex J: the Asset element "shall conform to Table J.1",
+            // which declares HashAlgorithm in the PKL schema. Its ds:DigestMethodType
+            // type invites binding the element to xmldsig instead, which the local
+            // name alone cannot tell apart.
+            if asset.hash_algorithm_namespace != pkl.namespace {
+                notes.push(Note {
+                    severity: Severity::Error,
+                    code: Code::MissingRequiredElement,
+                    message: format!(
+                        "PKL asset {} binds HashAlgorithm to namespace \"{}\" instead of the PKL namespace \"{}\"",
+                        asset.id, asset.hash_algorithm_namespace, pkl.namespace
                     ),
                     file: Some(pkl_path.clone()),
                     line: 0,
@@ -916,6 +934,26 @@ mod tests {
                 && notes[0]
                     .message
                     .contains("88b5b453-a342-46eb-bc0a-4c9645f4d627"),
+            "{}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn imf_pkl_with_hash_algorithm_bound_to_xmldsig_is_an_error() {
+        let notes = pkl_notes(&imf_pkl(
+            r#"<ds:HashAlgorithm xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>"#,
+        ));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::MissingRequiredElement);
+        assert_eq!(notes[0].severity, Severity::Error);
+        assert!(
+            notes[0]
+                .message
+                .contains("http://www.w3.org/2000/09/xmldsig#")
+                && notes[0]
+                    .message
+                    .contains("http://www.smpte-ra.org/schemas/2067-2/2016/PKL"),
             "{}",
             notes[0].message
         );

@@ -77,6 +77,17 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         }
     }
 
+    // 2b. ASSETMAP's own file name and its declared chunk lengths (ClairMeta
+    // check_am_name / check_assets_am_size).
+    for note in crate::validators::check_assetmap_name(&dcp.assetmap_path, dcp.standard) {
+        result.add(note);
+    }
+    for note in
+        crate::validators::check_assetmap_chunk_size(dcp_dir, &dcp.assetmap_path, &dcp.assetmap)
+    {
+        result.add(note);
+    }
+
     // 3. Validate PKLs
     if dcp.pkls.is_empty() {
         result.add(Note {
@@ -245,21 +256,22 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 });
             }
 
-            // EditRate validation (strict mode)
-            if opts.strict_smpte && !reel.picture.edit_rate.is_empty() {
-                const VALID_EDIT_RATES: &[&str] = &["24 1", "25 1", "30 1", "48 1", "50 1", "60 1"];
-                if !VALID_EDIT_RATES.contains(&reel.picture.edit_rate.as_str()) {
-                    result.add(Note {
-                        severity: Severity::Error,
-                        code: Code::CplInvalidEditRate,
-                        message: format!(
-                            "Non-DCI edit rate '{}' (allowed: 24, 25, 30, 48, 50, 60 fps)",
-                            reel.picture.edit_rate
-                        ),
-                        file: Some(cpl_path.clone()),
-                        line: 0,
-                    });
-                }
+            // ST 429-2:2020 §8.1: "The composition shall have an Edit Rate of
+            // 24/1, 25/1, 30/1, 48/1, 50/1 or 60/1." Read off the picture, which
+            // §9.6.1 makes identical across every picture asset.
+            if !reel.picture.edit_rate.is_empty()
+                && !edit_rate_is_permitted(&reel.picture.edit_rate)
+            {
+                result.add(Note {
+                    severity: Severity::Error,
+                    code: Code::CplInvalidEditRate,
+                    message: format!(
+                        "Non-DCI edit rate '{}' (allowed: 24, 25, 30, 48, 50, 60 fps)",
+                        reel.picture.edit_rate
+                    ),
+                    file: Some(cpl_path.clone()),
+                    line: 0,
+                });
             }
         }
     }
@@ -420,6 +432,12 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         for note in crate::validators::check_reel_coherence(cpl_path) {
             result.add(note);
         }
+        for note in crate::validators::check_reel_edit_rates(cpl_path) {
+            result.add(note);
+        }
+        for note in crate::validators::check_composition_metadata_asset(cpl_path) {
+            result.add(note);
+        }
         for note in crate::validators::check_reel_duration(cpl_path) {
             result.add(note);
         }
@@ -539,8 +557,7 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 let bitrate_mbps =
                     (mxf_info.file_size_bytes as f64 * 8.0) / (duration_secs * 1_000_000.0);
 
-                // SMPTE ST 429-4: 250 Mbps for 2K, 500 Mbps for 4K
-                let max_bitrate = if pic.width > 2048 { 500.0 } else { 250.0 };
+                let max_bitrate = postkit::j2k::DCI_MAX_BITRATE_MBPS;
 
                 if bitrate_mbps > max_bitrate {
                     result.add(Note {
@@ -582,6 +599,27 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
 /// KDM window / CPL-match / unwrap-failure notes to `result`. Returns
 /// `ContentKeys::none()` when no KDM is supplied (or unwrap fails), so encrypted
 /// essence keeps skipping instead of producing garbage findings.
+/// True when an `EditRate` is one of the six ST 429-2 §8.1 composition rates.
+///
+/// Compares the value, not the text: a CPL may write 48 2 for 24 fps, and
+/// rejecting that would be a false positive on a conformant package.
+fn edit_rate_is_permitted(edit_rate: &str) -> bool {
+    const PERMITTED_RATES: &[u32] = &[24, 25, 30, 48, 50, 60];
+
+    let mut parts = edit_rate.split_whitespace();
+    let (Some(numerator), Some(denominator), None) = (parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let (Ok(numerator), Ok(denominator)) = (numerator.parse::<u32>(), denominator.parse::<u32>())
+    else {
+        return false;
+    };
+    denominator != 0
+        && numerator % denominator == 0
+        && PERMITTED_RATES.contains(&(numerator / denominator))
+}
+
 fn build_content_keys(
     dcp_dir: &Path,
     opts: &VerifyOptions,
@@ -683,6 +721,160 @@ mod tests {
         assert!(!result.notes.iter().any(|note| {
             note.message.contains("IMF Composition Playlist") || note.message.contains("[Photon]")
         }));
+    }
+
+    /// Write a package whose asset map sits at `am_name` and declares
+    /// `length_element` for a 4-byte CPL, so the pipeline sees both ST 429-9
+    /// asset map checks.
+    fn assetmap_pipeline_package(am_name: &str, length_element: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cpl.xml"), "abcd").unwrap();
+        std::fs::write(
+            dir.path().join(am_name),
+            format!(
+                r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path>{length_element}</Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#
+            ),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn assetmap_name_and_chunk_length_reach_the_pipeline() {
+        let dir = assetmap_pipeline_package("ASSETMAP", "<Length>99</Length>");
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::AssetmapInvalidName),
+            "SMPTE asset map named ASSETMAP must fire from verify_dcp, got: {:?}",
+            result.notes
+        );
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::AssetmapSizeMismatch),
+            "Length 99 against a 4-byte file must fire from verify_dcp, got: {:?}",
+            result.notes
+        );
+
+        let clean = assetmap_pipeline_package("ASSETMAP.xml", "<Length>4</Length>");
+        let result = verify_dcp(clean.path(), &VerifyOptions::default());
+        assert!(
+            !result.notes.iter().any(
+                |n| n.code == Code::AssetmapInvalidName || n.code == Code::AssetmapSizeMismatch
+            ),
+            "correctly named asset map with a matching Length must stay silent, got: {:?}",
+            result.notes
+        );
+    }
+
+    /// ST 429-2 §8.1 is a plain "shall", so it must not need --strict.
+    #[test]
+    fn non_dci_composition_edit_rate_fires_without_strict() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:96558952-39b8-42d3-825e-9ddd31298219</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><EditRate>13 1</EditRate><Duration>48</Duration></MainPicture>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#,
+        )
+        .unwrap();
+
+        let opts = VerifyOptions::default();
+        assert!(!opts.strict_smpte, "this test is about the default path");
+        let result = verify_dcp(dir.path(), &opts);
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::CplInvalidEditRate && n.severity == Severity::Error),
+            "13 1 is not one of the six permitted composition edit rates, got: {:?}",
+            result.notes
+        );
+    }
+
+    #[test]
+    fn permitted_edit_rates_are_compared_by_value_not_by_text() {
+        for rate in [
+            "24 1", "25 1", "30 1", "48 1", "50 1", "60 1", "48 2", "120 5",
+        ] {
+            assert!(edit_rate_is_permitted(rate), "{rate} reduces to a DCI rate");
+        }
+        for rate in ["13 1", "24000 1001", "23 1", "24 0", "24", "", "x 1"] {
+            assert!(!edit_rate_is_permitted(rate), "{rate} is not a DCI rate");
+        }
+    }
+
+    #[test]
+    fn marker_edit_rate_mismatch_reaches_the_pipeline() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#,
+        )
+        .unwrap();
+        // DCP-o-matic writes MainMarkers ahead of MainPicture, so keep that order
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:96558952-39b8-42d3-825e-9ddd31298219</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainMarkers><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e50</Id><EditRate>13 1</EditRate><IntrinsicDuration>48</IntrinsicDuration></MainMarkers>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><EditRate>24 1</EditRate><Duration>48</Duration></MainPicture>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#,
+        )
+        .unwrap();
+
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::ReelEditRateMismatch),
+            "a 13 1 marker asset against a 24 1 picture must fire from verify_dcp, got: {:?}",
+            result.notes
+        );
     }
 
     #[test]

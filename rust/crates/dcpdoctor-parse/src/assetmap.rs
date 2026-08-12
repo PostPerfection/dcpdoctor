@@ -10,6 +10,10 @@ pub struct Asset {
     pub id: String,
     pub path: String,
     pub is_pkl: bool,
+    /// The chunk's `Length` in bytes. Optional in the schema and absent from
+    /// packages that write no Length at all, so None means "not declared"
+    /// rather than zero.
+    pub length: Option<u64>,
 }
 
 /// Parsed ASSETMAP.
@@ -18,7 +22,6 @@ pub struct AssetMap {
     pub id: String,
     pub creator: String,
     pub issue_date: String,
-    pub is_smpte: bool,
     pub assets: Vec<Asset>,
 }
 
@@ -26,10 +29,7 @@ pub struct AssetMap {
 pub fn parse_assetmap(xml: &str) -> Option<AssetMap> {
     let mut reader = Reader::from_str(xml);
 
-    let mut am = AssetMap {
-        is_smpte: xml.contains("http://www.smpte-ra.org/schemas/429-9/2007/AM"),
-        ..Default::default()
-    };
+    let mut am = AssetMap::default();
     let mut in_asset = false;
     let mut in_chunk = false;
     let mut current_asset = Asset::default();
@@ -72,6 +72,7 @@ pub fn parse_assetmap(xml: &str) -> Option<AssetMap> {
                     match current_tag.as_str() {
                         "Id" if !in_chunk => current_asset.id = strip_urn_uuid(&text),
                         "Path" if in_chunk => current_asset.path = text,
+                        "Length" if in_chunk => current_asset.length = text.parse().ok(),
                         "PackingList" if text == "true" || text == "1" => {
                             current_asset.is_pkl = true
                         }
@@ -130,7 +131,6 @@ mod tests {
         let am = parse_assetmap(SMPTE_AM).unwrap();
         assert_eq!(am.id, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
         assert_eq!(am.creator, "test");
-        assert!(am.is_smpte);
         assert_eq!(am.assets.len(), 2);
         assert_eq!(am.assets[0].path, "pkl.xml");
         assert!(am.assets[0].is_pkl);
@@ -139,12 +139,14 @@ mod tests {
     }
 
     #[test]
-    fn test_interop_not_smpte() {
+    fn chunk_length_is_read_when_present_and_none_when_absent() {
         let xml = SMPTE_AM.replace(
-            "http://www.smpte-ra.org/schemas/429-9/2007/AM",
-            "http://www.digicine.com/PROTO-ASDCP-AM-20040311#",
+            "<Path>pkl.xml</Path>",
+            "<Path>pkl.xml</Path><Length>1234</Length>",
         );
-        assert!(!parse_assetmap(&xml).unwrap().is_smpte);
+        let am = parse_assetmap(&xml).unwrap();
+        assert_eq!(am.assets[0].length, Some(1234));
+        assert_eq!(am.assets[1].length, None);
     }
 
     #[test]

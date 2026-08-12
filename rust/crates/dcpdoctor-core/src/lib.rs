@@ -76,6 +76,8 @@ pub enum Code {
     MissingCpl,
     AssetNotFound,
     DuplicateAssetId,
+    AssetmapInvalidName,
+    AssetmapSizeMismatch,
 
     // XML
     XmlParseError,
@@ -104,6 +106,7 @@ pub enum Code {
     // Signature
     SignatureInvalid,
     DcpNotSigned,
+    UnencryptedDcpNotSigned,
     CertificateExpired,
     CertificateChainBroken,
     CertificateBasicConstraintsInvalid,
@@ -168,6 +171,8 @@ pub enum Code {
     ReelDiscontinuity,
     ReelIncoherent,
     ReelTooShort,
+    ReelEditRateMismatch,
+    CompositionMetadataAssetMismatch,
 
     // 3D
     StereoMismatch,
@@ -200,6 +205,8 @@ impl Code {
             Code::MissingCpl => "missing_cpl",
             Code::AssetNotFound => "asset_not_found",
             Code::DuplicateAssetId => "duplicate_asset_id",
+            Code::AssetmapInvalidName => "assetmap_invalid_name",
+            Code::AssetmapSizeMismatch => "assetmap_size_mismatch",
             Code::XmlParseError => "xml_parse_error",
             Code::XmlSchemaViolation => "xml_schema_violation",
             Code::InvalidUuid => "invalid_uuid",
@@ -218,6 +225,7 @@ impl Code {
             Code::MxfAssetIdMismatch => "mxf_asset_id_mismatch",
             Code::SignatureInvalid => "signature_invalid",
             Code::DcpNotSigned => "dcp_not_signed",
+            Code::UnencryptedDcpNotSigned => "unencrypted_dcp_not_signed",
             Code::CertificateExpired => "certificate_expired",
             Code::CertificateChainBroken => "certificate_chain_broken",
             Code::CertificateBasicConstraintsInvalid => "certificate_basic_constraints_invalid",
@@ -266,6 +274,8 @@ impl Code {
             Code::ReelDiscontinuity => "reel_discontinuity",
             Code::ReelIncoherent => "reel_incoherent",
             Code::ReelTooShort => "reel_too_short",
+            Code::ReelEditRateMismatch => "reel_edit_rate_mismatch",
+            Code::CompositionMetadataAssetMismatch => "composition_metadata_asset_mismatch",
             Code::StereoMismatch => "stereo_mismatch",
             Code::MarkerMissing => "marker_missing",
             Code::MarkerInvalid => "marker_invalid",

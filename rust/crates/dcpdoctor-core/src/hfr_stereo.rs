@@ -80,18 +80,10 @@ pub fn check_hfr_compliance(cpl_path: &Path) -> Vec<Note> {
                     "Frame rate {} fps is HFR but not a BV2.1 approved rate (48 or 60)",
                     fps as u32
                 ),
-                file: path_buf.clone(),
+                file: path_buf,
                 line: 0,
             });
         }
-
-        notes.push(Note {
-            severity: Severity::Info,
-            code: Code::J2kBitrateExceeded,
-            message: "HFR content: DCI maximum bitrate is 500 Mbps for all HFR content".into(),
-            file: path_buf,
-            line: 0,
-        });
     }
 
     notes

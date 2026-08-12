@@ -21,6 +21,12 @@ fn schema_file_for(content: &str) -> Option<&'static str> {
         } else {
             "SMPTE-429-9-2007-AM.xsd"
         })
+    } else if content.contains("KDMRequiredExtensions") {
+        // must precede the CompositionPlaylist arm: a KDM carries a
+        // <CompositionPlaylistId> element, which matches that arm's substring.
+        // The 430-1 schema imports 430-3, so pointing xmllint here loads both
+        // and the strict RequiredExtensions wildcard reaches the KDM body.
+        Some("SMPTE-430-1-2006-KDM.xsd")
     } else if content.contains("<CompositionPlaylist") {
         // The 429-16 metadata schema extends 429-7 and is what ClairMeta uses.
         Some(if interop {
@@ -41,7 +47,7 @@ fn schema_file_for(content: &str) -> Option<&'static str> {
 
 /// Namespace bound to the document's root element, empty when it declares none.
 /// `None` when no element can be read at all.
-fn root_namespace(content: &str) -> Option<String> {
+pub(crate) fn root_namespace(content: &str) -> Option<String> {
     use quick_xml::events::Event;
     use quick_xml::name::ResolveResult;
 

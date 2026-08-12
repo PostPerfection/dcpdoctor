@@ -11,17 +11,31 @@
 - Auxiliary data (ST 429-18): an `aux_data_detected` INFO identifies each AuxData track (Dolby Atmos / IAB), enriched with the probed essence type, and a duration mismatch against the reel's picture errors as `cpl_mismatched_durations` (ST 429-2 §9.4). The aux asset's cross-refs and PKL hashes are covered by the generic asset checks.
 - PKL `Size` is checked against the actual file size (`pkl_size_mismatch`), independent of `--no-hashes`.
 - Leq(m) loudness (ISO 21727, CCIR 468-weighted): reported alongside EBU R128 in the `loudness` command (text + JSON `leq_m_db`) and the qc-report HTML table.
-- `dcp_not_signed` (ClairMeta `check_dcp_signed`): an encrypted package (a CPL declares a `<KeyId>` or carries an `<EncryptedDocumentKey>`) whose CPL or PKL lacks a `<Signature>` now errors instead of only surfacing the milder `kdm_required`. Silent on unencrypted packages.
+- `dcp_not_signed` (ClairMeta `check_dcp_signed`): an encrypted package (a CPL declares a `<KeyId>` or carries an `<EncryptedDocumentKey>`) whose CPL or PKL lacks a `<Signature>` now errors instead of only surfacing the milder `kdm_required`.
+- `unencrypted_dcp_not_signed`: an unsigned unencrypted package warns under its own code. No SMPTE "shall" demands a signature there, so this stays a warning where ClairMeta errors.
+- `assetmap_invalid_name` (ClairMeta `check_am_name`): the asset map file's name is checked against the standard its root namespace declares. ST 429-9:2014 Annex A.4 requires `ASSETMAP.xml` for SMPTE, so a wrong name errors; the Interop name `ASSETMAP` comes from an informative annex of the MPEG Interop asset map spec (§6.2) and warns.
+- `assetmap_size_mismatch` (ClairMeta `check_assets_am_size`): a chunk's `Length`, when present, must equal the asset's size on disk (ST 429-9:2014 §7.4). The element is optional, so an asset map that declares none stays silent.
+- `reel_edit_rate_mismatch`: a reel's MainMarkers, MainSubtitle, MainClosedCaption and AuxData EditRate is compared against the picture's. Warns rather than errors, since ST 429-2 §9.6.1 and §9.7.1 are the only per-asset-class EditRate equality rules and they name picture and sound. Sound and CompositionMetadataAsset have their own "shall" and are not covered here.
+- `composition_metadata_asset_mismatch`: ST 429-16:2014 §4.4.1 binds the CompositionMetadataAsset's `EditRate` to the picture's and its `IntrinsicDuration` to the picture's `Duration`, both "shall", so a disagreement errors.
+- ST 429-2 §9.6.1 also fixes the picture element name and §9.7.1 the sound `Language`, neither of which reel coherence read. Both are now compared across reels as `reel_incoherent`.
+- KDMs are schema-validated against the vendored ST 430-1 / ST 430-3 XSDs, so a KDM missing a required element such as `AuthorizedDeviceInfo` now reports `xml_schema_violation`. Runs on both `validate --kdm` and the `kdm` subcommand, and skips when the schema dir or xmllint is absent.
 
 ### Fixed
+- The vendored `SMPTE-430-3-2006-ETM.xsd` had its UUID pattern facet split across a line, which is not a valid regular expression, so both KDM schemas failed to compile.
+- The IMF PKL `HashAlgorithm` check matched on local name, so an element bound to the xmldsig namespace instead of the PKL one passed. `parse_pkl` now resolves namespaces and the check reports a wrong binding as `missing_required_element`.
 - MCA channel labeling is read from the sound MXF's ST 429-12 subdescriptors (asdcplib `pcm::mca_labels`) instead of grepping the CPL, so `sound_invalid_channel_count` no longer false-fires on correctly labeled DCPs. Falls back to the CPL markers only for XML-only validation.
 - Cross-reference and reel-coherence checks now match the namespaced (`msp-cpl:`, `axd:`) reel-asset forms real DCPs emit, so their asset ids are no longer skipped.
 
 ### Changed
+- The DCI picture bitrate limit is 250 Mbps at every resolution. The 500 previously applied to 4K has no source in DCI, ST 429-4 or ST 429-2: DCSS 4.3.3 caps a 4K frame at the same 1,302,083 bytes as a 24 fps 2K one. A 4K package between 250 and 500 Mbps now errors where it passed. The IMF path's separate hardcoded copy of the old split is gone, and the limit comes from `postkit::j2k::DCI_MAX_BITRATE_MBPS`.
+- Removed the fixed "DCI maximum bitrate is 500 Mbps for all HFR content" INFO, which asserted an unsourced limit from the CPL edit rate with no measurement behind it. The measured check covers this.
+- The SMPTE/Interop standard is derived from the ASSETMAP's root namespace instead of its filename, so a package whose asset map is named for the wrong standard is no longer validated as that standard. `AssetMap.is_smpte`, a substring test over the whole document, is removed in favour of the shared derivation.
+- `cpl_invalid_edit_rate` for the ST 429-2 §8.1 composition edit rate no longer needs `--strict`. It is a plain "shall", and the wasm validator already ran it ungated.
+- Removed `compliance::check_smpte_compliance` and the private helpers only it reached. It had no caller anywhere in the workspace, and its asset-map naming branch could never fire since it keyed off a `Standard` derived from the same file name it was checking. Every code it produced is still produced elsewhere.
 - Schema validation (`xml_schema_violation`) is now on by default: the SMPTE/Interop XSDs are vendored under `schemas/` (from the ClairMeta set, with `catalog.xml`), so `DCPDOCTOR_SCHEMA_DIR` is no longer required. The env var still overrides, and a missing dir degrades to skip.
 - Severity escalated to ERROR where SMPTE text uses "shall": `cpl_mismatched_durations` (ST 429-2 §9.4), `subtitle_font_missing` when the subtitle carries Text (ST 428-7:2014; image-only subs still warn), and a wrong subtitle DCST namespace (`smpte_namespace_wrong` / `interop_namespace_wrong`, ST 428-7).
 - j2k / bitrate / frame comparison / Leq(m) now delegate to the shared `postkit` library; the DCI-validation and note layers stay app-side. The AS-DCP jp2k reader is OP-Atom only, so IMF AS-02 / OP1a picture MXFs fall back to the ffprobe-derived path.
-- Bumped asdcplib pin to `6d7b8ca` (adds `pcm::mca_labels`); postkit vendored at `be89fe0`.
+- Bumped asdcplib pin to `6d7b8ca` (adds `pcm::mca_labels`); postkit pinned at `8b4a034`.
 
 ## [0.1.1] - 2026-07-19
 

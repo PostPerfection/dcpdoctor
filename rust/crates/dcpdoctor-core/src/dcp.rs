@@ -5,12 +5,30 @@ use crate::cpl::Cpl;
 use crate::pkl::Pkl;
 use crate::{Code, Note, Severity, Standard};
 
-/// Detect DCP standard from directory contents.
+/// Detect DCP standard from the asset map's root namespace. Never from the file
+/// name: that is the thing `assetmap_invalid_name` exists to catch, so a package
+/// under the wrong name would otherwise be validated as the wrong standard.
 pub fn detect_standard(dcp_dir: &Path) -> Standard {
-    if dcp_dir.join("ASSETMAP.xml").exists() {
-        Standard::Smpte
-    } else if dcp_dir.join("ASSETMAP").exists() {
+    let Some(am_path) = find_assetmap(dcp_dir) else {
+        return Standard::Unknown;
+    };
+    let Ok(content) = std::fs::read_to_string(&am_path) else {
+        return Standard::Unknown;
+    };
+    standard_of_assetmap(&content)
+}
+
+/// The standard an asset map document declares. Matches on the namespace
+/// authority rather than one exact URI, the same test `schema_file_for` uses, so
+/// the IMF asset map namespace still reads as SMPTE.
+pub fn standard_of_assetmap(xml: &str) -> Standard {
+    let Some(namespace) = crate::schema::root_namespace(xml) else {
+        return Standard::Unknown;
+    };
+    if namespace.contains("digicine.com") {
         Standard::Interop
+    } else if namespace.contains("smpte-ra.org") {
+        Standard::Smpte
     } else {
         Standard::Unknown
     }
@@ -126,4 +144,76 @@ pub fn open_dcp(dcp_dir: &Path) -> Result<Dcp, Vec<Note>> {
         pkls,
         cpls,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package_with(am_name: &str, namespace: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(am_name),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssetMap xmlns="{namespace}">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList/>
+</AssetMap>"#
+            ),
+        )
+        .unwrap();
+        dir
+    }
+
+    const SMPTE_AM: &str = "http://www.smpte-ra.org/schemas/429-9/2007/AM";
+    const INTEROP_AM: &str = "http://www.digicine.com/PROTO-ASDCP-AM-20040311#";
+
+    #[test]
+    fn namespace_beats_the_filename_in_both_directions() {
+        // the two signals disagree on purpose: this is what the filename
+        // derivation used to get wrong
+        let smpte_under_interop_name = package_with("ASSETMAP", SMPTE_AM);
+        assert_eq!(
+            detect_standard(smpte_under_interop_name.path()),
+            Standard::Smpte,
+            "a SMPTE-namespace asset map named ASSETMAP is still SMPTE"
+        );
+
+        let interop_under_smpte_name = package_with("ASSETMAP.xml", INTEROP_AM);
+        assert_eq!(
+            detect_standard(interop_under_smpte_name.path()),
+            Standard::Interop,
+            "an Interop-namespace asset map named ASSETMAP.xml is still Interop"
+        );
+    }
+
+    #[test]
+    fn agreeing_signals_still_resolve() {
+        assert_eq!(
+            detect_standard(package_with("ASSETMAP.xml", SMPTE_AM).path()),
+            Standard::Smpte
+        );
+        assert_eq!(
+            detect_standard(package_with("ASSETMAP", INTEROP_AM).path()),
+            Standard::Interop
+        );
+    }
+
+    #[test]
+    fn imf_assetmap_namespace_still_reads_as_smpte() {
+        let dir = package_with(
+            "ASSETMAP.xml",
+            "http://www.smpte-ra.org/schemas/2067-2/2016/AM",
+        );
+        assert_eq!(detect_standard(dir.path()), Standard::Smpte);
+    }
+
+    #[test]
+    fn missing_or_unrecognised_assetmap_is_unknown() {
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(detect_standard(empty.path()), Standard::Unknown);
+        let odd = package_with("ASSETMAP.xml", "http://example.invalid/AM");
+        assert_eq!(detect_standard(odd.path()), Standard::Unknown);
+    }
 }

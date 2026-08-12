@@ -1,8 +1,18 @@
-use quick_xml::Reader;
+use quick_xml::NsReader;
 use quick_xml::events::Event;
+use quick_xml::name::ResolveResult;
 use serde::{Deserialize, Serialize};
 
 use crate::{local_name, local_name_end, root_is, strip_urn_uuid};
+
+/// The namespace an element resolved to, empty when it is bound to none or to
+/// an undeclared prefix.
+fn resolved_namespace(resolved: ResolveResult) -> String {
+    match resolved {
+        ResolveResult::Bound(ns) => String::from_utf8_lossy(ns.as_ref()).to_string(),
+        _ => String::new(),
+    }
+}
 
 /// A single asset in the PKL.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -17,6 +27,11 @@ pub struct PklAsset {
     /// element is absent, which is required in an IMF PKL and not allowed in a
     /// DCP one. The element itself is empty, so the URI is the whole value.
     pub hash_algorithm: String,
+    /// The namespace the `HashAlgorithm` element itself resolved to. ST 2067-2
+    /// declares the element in the PKL schema, so binding it to the xmldsig
+    /// namespace of its `ds:DigestMethodType` type is wrong even though the
+    /// local name matches.
+    pub hash_algorithm_namespace: String,
     pub size: i64,
 }
 
@@ -24,6 +39,8 @@ pub struct PklAsset {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Pkl {
     pub id: String,
+    /// The namespace of the `PackingList` root element.
+    pub namespace: String,
     pub annotation: String,
     pub creator: String,
     pub issuer: String,
@@ -37,7 +54,7 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
         return None;
     }
 
-    let mut reader = Reader::from_str(xml);
+    let mut reader = NsReader::from_str(xml);
     let mut pkl = Pkl::default();
     let mut in_asset = false;
     let mut current_asset = PklAsset::default();
@@ -46,11 +63,12 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
     let mut depth = 0usize;
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) => {
+        match reader.read_resolved_event() {
+            Ok((ns, Event::Start(e))) => {
                 depth += 1;
                 let name = local_name(&e);
                 match name.as_str() {
+                    "PackingList" if depth == 1 => pkl.namespace = resolved_namespace(ns),
                     "Asset" => {
                         in_asset = true;
                         current_asset = PklAsset::default();
@@ -58,18 +76,20 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
                     "HashAlgorithm" if in_asset => {
                         current_asset.hash_algorithm =
                             crate::attribute(&e, "Algorithm").unwrap_or_default();
+                        current_asset.hash_algorithm_namespace = resolved_namespace(ns);
                         current_tag = name;
                     }
                     _ => current_tag = name,
                 }
             }
-            Ok(Event::Empty(e)) => {
+            Ok((ns, Event::Empty(e))) => {
                 if in_asset && local_name(&e) == "HashAlgorithm" {
                     current_asset.hash_algorithm =
                         crate::attribute(&e, "Algorithm").unwrap_or_default();
+                    current_asset.hash_algorithm_namespace = resolved_namespace(ns);
                 }
             }
-            Ok(Event::End(e)) => {
+            Ok((_, Event::End(e))) => {
                 depth = depth.saturating_sub(1);
                 let name = local_name_end(&e);
                 if name == "Asset" && in_asset {
@@ -80,7 +100,7 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
                 }
                 current_tag.clear();
             }
-            Ok(Event::Text(e)) => {
+            Ok((_, Event::Text(e))) => {
                 let text = crate::text_of(&e);
                 if text.is_empty() {
                     continue;
@@ -107,7 +127,7 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
                     }
                 }
             }
-            Ok(Event::Eof) => break,
+            Ok((_, Event::Eof)) => break,
             Err(_) => return None,
             _ => {}
         }
@@ -170,6 +190,35 @@ mod tests {
         assert_eq!(
             pkl.assets[0].hash_algorithm,
             "http://www.w3.org/2000/09/xmldsig#sha1"
+        );
+    }
+
+    #[test]
+    fn hash_algorithm_namespace_separates_the_pkl_binding_from_xmldsig() {
+        let correct = PKL.replace(
+            "<OriginalFileName>CPL.xml</OriginalFileName>",
+            r#"<OriginalFileName>CPL.xml</OriginalFileName>
+      <HashAlgorithm Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>"#,
+        );
+        let pkl = parse_pkl(&correct).unwrap();
+        assert_eq!(
+            pkl.namespace,
+            "http://www.smpte-ra.org/schemas/429-8/2007/PKL"
+        );
+        assert_eq!(
+            pkl.assets[0].hash_algorithm_namespace,
+            "http://www.smpte-ra.org/schemas/429-8/2007/PKL"
+        );
+
+        let wrong = PKL.replace(
+            "<OriginalFileName>CPL.xml</OriginalFileName>",
+            r#"<OriginalFileName>CPL.xml</OriginalFileName>
+      <ds:HashAlgorithm xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>"#,
+        );
+        let pkl = parse_pkl(&wrong).unwrap();
+        assert_eq!(
+            pkl.assets[0].hash_algorithm_namespace, "http://www.w3.org/2000/09/xmldsig#",
+            "an element bound to xmldsig must not be reported as the PKL one"
         );
     }
 

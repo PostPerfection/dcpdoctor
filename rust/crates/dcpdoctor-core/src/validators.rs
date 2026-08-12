@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::assetmap::AssetMap;
 use crate::{Code, Note, Severity, Standard};
 
 // ─── Native MXF essence probes (asdcplib) ─────────────────────────────────────
@@ -129,6 +130,86 @@ fn probe_picture_is_stereo(path: &Path) -> Option<bool> {
     }
 }
 
+// ─── ASSETMAP File Name (ST 429-9) ────────────────────────────────────────────
+
+const SMPTE_ASSETMAP_NAME: &str = "ASSETMAP.xml";
+const INTEROP_ASSETMAP_NAME: &str = "ASSETMAP";
+
+/// ClairMeta `check_am_name`: the asset map file's own name has to match the
+/// standard the document declares. Takes the standard `dcp::detect_standard`
+/// already derived from the root namespace, so the two can never disagree about
+/// what the package is.
+pub fn check_assetmap_name(assetmap_path: &Path, standard: Standard) -> Vec<Note> {
+    let name = assetmap_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+
+    match standard {
+        // ST 429-9:2014 Annex A.4 (normative): "Each Asset Map document shall be
+        // a file named "ASSETMAP.xml"."
+        Standard::Smpte if name != SMPTE_ASSETMAP_NAME => vec![Note {
+            severity: Severity::Error,
+            code: Code::AssetmapInvalidName,
+            message: format!("SMPTE asset map must be named {SMPTE_ASSETMAP_NAME}, found {name}"),
+            file: Some(assetmap_path.to_path_buf()),
+            line: 0,
+        }],
+        // The Interop name comes from the MPEG Interop asset map spec v3.4 §6.2,
+        // which is an informative annex and not SMPTE text, so this side warns.
+        Standard::Interop if name != INTEROP_ASSETMAP_NAME => vec![Note {
+            severity: Severity::Warning,
+            code: Code::AssetmapInvalidName,
+            message: format!(
+                "Interop asset map should be named {INTEROP_ASSETMAP_NAME}, found {name}"
+            ),
+            file: Some(assetmap_path.to_path_buf()),
+            line: 0,
+        }],
+        // an unrecognised namespace says nothing about which name is right
+        _ => Vec::new(),
+    }
+}
+
+// ─── ASSETMAP Chunk Length (ST 429-9 §7.4) ────────────────────────────────────
+
+/// ClairMeta `check_assets_am_size`: a chunk's declared Length has to match the
+/// asset on disk. ST 429-9:2014 §7.4: "It shall be absent, or equal to the
+/// length in bytes of the asset." Absent is legal, so an asset map that
+/// declares no Length is silent here.
+pub fn check_assetmap_chunk_size(
+    dcp_dir: &Path,
+    assetmap_path: &Path,
+    assetmap: &AssetMap,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    for asset in &assetmap.assets {
+        let Some(declared) = asset.length else {
+            continue;
+        };
+        // a missing file is already asset_not_found, so say nothing more here
+        let Ok(metadata) = std::fs::metadata(dcp_dir.join(&asset.path)) else {
+            continue;
+        };
+        let actual = metadata.len();
+        if actual != declared {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::AssetmapSizeMismatch,
+                message: format!(
+                    "ASSETMAP declares {declared} bytes for {} but the file is {actual} bytes",
+                    asset.path
+                ),
+                file: Some(assetmap_path.to_path_buf()),
+                line: 0,
+            });
+        }
+    }
+
+    notes
+}
+
 // ─── Encryption Detection ─────────────────────────────────────────────────────
 
 /// Check CPLs for encrypted content and whether a KDM is present.
@@ -198,25 +279,37 @@ fn package_is_encrypted(cpl_paths: &[PathBuf]) -> bool {
 /// ClairMeta `check_dcp_signed`: an encrypted DCP must carry a signed CPL and
 /// PKL. The KDM only delivers content keys, so an unsigned CPL/PKL leaves the
 /// package's authenticity unverifiable (SMPTE ST 429-7/-8 require the signature
-/// on encrypted packages). Silent on unencrypted packages, where signing is
-/// optional. Closes the gap where a KDM-present-but-unsigned package slipped
-/// through only as `kdm_required`.
+/// on encrypted packages). Closes the gap where a KDM-present-but-unsigned
+/// package slipped through only as `kdm_required`.
+///
+/// An unencrypted package that is unsigned gets the separate
+/// `unencrypted_dcp_not_signed` at WARNING. No SMPTE "shall" demands a
+/// signature there, so this is a documented divergence from ClairMeta, which
+/// errors on it.
 pub fn check_dcp_signed(cpl_paths: &[PathBuf], pkl_paths: &[PathBuf]) -> Vec<Note> {
     let mut notes = Vec::new();
-    if !package_is_encrypted(cpl_paths) {
-        return notes;
-    }
+    let encrypted = package_is_encrypted(cpl_paths);
+    let (severity, code) = if encrypted {
+        (Severity::Error, Code::DcpNotSigned)
+    } else {
+        (Severity::Warning, Code::UnencryptedDcpNotSigned)
+    };
 
     let mut check = |path: &PathBuf, kind: &str| {
         if let Ok(content) = std::fs::read_to_string(path)
             && !has_signature(&content)
         {
-            notes.push(Note {
-                severity: Severity::Error,
-                code: Code::DcpNotSigned,
-                message: format!(
+            let message = if encrypted {
+                format!(
                     "encrypted DCP has an unsigned {kind}; encrypted packages must have a signed CPL and PKL"
-                ),
+                )
+            } else {
+                format!("DCP has an unsigned {kind}; signing the CPL and PKL is recommended")
+            };
+            notes.push(Note {
+                severity,
+                code,
+                message,
                 file: Some(path.clone()),
                 line: 0,
             });
@@ -361,19 +454,38 @@ pub fn check_reel_coherence(cpl_path: &Path) -> Vec<Note> {
         ("subtitle edit rate", &["MainSubtitle"], |b| {
             extract_tag(b, "EditRate")
         }),
+        // ST 429-2 §9.7.1: "All sound assets in a Composition Playlist shall
+        // have identical values for the following metadata items: EditRate
+        // element, Language element."
+        ("sound language", &["MainSound"], |b| {
+            extract_tag(b, "Language")
+        }),
     ];
 
     let mut established: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     let mut flagged: HashSet<&str> = HashSet::new();
 
     for (i, reel) in reels.iter().enumerate() {
+        let mut values: Vec<(&str, String)> = Vec::new();
         for (label, tags, value_of) in params {
-            let Some(block) = essence_block(reel, tags) else {
-                continue;
-            };
-            let Some(value) = value_of(block) else {
-                continue;
-            };
+            if let Some(block) = essence_block(reel, tags)
+                && let Some(value) = value_of(block)
+            {
+                values.push((label, value));
+            }
+        }
+        // ST 429-2 §9.6.1 fixes the element name itself ("element name (i.e.,
+        // MainPicture or MainStereoscopicPicture)"), which the table cannot see
+        // because essence_block resolves both spellings to one block.
+        if let Some(name) = PICTURE_ASSETS
+            .iter()
+            .copied()
+            .find(|tag| essence_block(reel, &[*tag]).is_some())
+        {
+            values.push(("picture element name", name.to_string()));
+        }
+
+        for (label, value) in values {
             match established.get(label) {
                 None => {
                     established.insert(label, value);
@@ -392,6 +504,125 @@ pub fn check_reel_coherence(cpl_path: &Path) -> Vec<Note> {
                     flagged.insert(label);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    notes
+}
+
+// ─── CompositionMetadataAsset vs the Picture (ST 429-16 §4.4.1) ───────────────
+
+/// ST 429-16:2014 §4.4.1 binds the CompositionMetadataAsset to the picture of
+/// its own reel, in two sentences that are both "shall": "The value of the
+/// `IntrinsicDuration` element of the `CompositionMetadataAsset` instance shall
+/// be equal to the `Duration` element of the `MainPicture` or
+/// `MainStereoscopicPicture` element from the same `Reel` element" and "The
+/// value of the `EditRate` element of the `CompositionMetadataAsset` instance
+/// shall be set to the value of the `EditRate` of the picture essence referenced
+/// by `MainPicture` or `MainStereoscopicPicture` elements".
+pub fn check_composition_metadata_asset(cpl_path: &Path) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    for (index, cap) in reel_re.captures_iter(&content).enumerate() {
+        let reel = cap.get(1).unwrap().as_str();
+        let Some(meta) = essence_block(reel, &["CompositionMetadataAsset"]) else {
+            continue;
+        };
+        let Some(picture) = essence_block(reel, PICTURE_ASSETS) else {
+            continue;
+        };
+
+        let mut compare = |item: &str, expected: Option<String>, actual: Option<String>| {
+            if let (Some(expected), Some(actual)) = (expected, actual)
+                && expected != actual
+            {
+                notes.push(Note {
+                    severity: Severity::Error,
+                    code: Code::CompositionMetadataAssetMismatch,
+                    message: format!(
+                        "Reel {} CompositionMetadataAsset {item} '{actual}' must equal the picture's '{expected}'",
+                        index + 1
+                    ),
+                    file: Some(cpl_path.to_path_buf()),
+                    line: 0,
+                });
+            }
+        };
+
+        compare(
+            "EditRate",
+            extract_tag(picture, "EditRate"),
+            extract_ns_tag(meta, "EditRate"),
+        );
+        compare(
+            "IntrinsicDuration",
+            extract_tag(picture, "Duration"),
+            extract_ns_tag(meta, "IntrinsicDuration"),
+        );
+    }
+
+    notes
+}
+
+// ─── Reel EditRate Beyond the Picture (ST 429-2) ──────────────────────────────
+
+/// Reel asset classes whose EditRate no spec text pins to the picture's. ST
+/// 429-2 §9.6.1 and §9.7.1 are the only per-asset-class EditRate equality rules
+/// and they name picture and sound, and ST 429-16 §4.4.1 covers
+/// CompositionMetadataAsset, so all three are checked elsewhere or not at all
+/// rather than here at this severity.
+const UNRULED_REEL_ASSETS: &[&str] = &[
+    "MainMarkers",
+    "MainSubtitle",
+    "MainClosedCaption",
+    "AuxData",
+];
+
+const PICTURE_ASSETS: &[&str] = &["MainPicture", "MainStereoscopicPicture"];
+
+/// Every reel asset carries its own EditRate and only the picture's was ever
+/// read, so a MainMarkers asset at 13 1 against a 24 1 picture passed clean.
+/// Warning, not error: no "shall" makes these rates equal. ST 429-2 §9.9 is why
+/// it matters anyway, since a marker Offset is compared against the reel
+/// duration and that comparison only means anything if the two rates agree.
+pub fn check_reel_edit_rates(cpl_path: &Path) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    for (index, cap) in reel_re.captures_iter(&content).enumerate() {
+        let reel = cap.get(1).unwrap().as_str();
+        let Some(picture_rate) =
+            essence_block(reel, PICTURE_ASSETS).and_then(|b| extract_tag(b, "EditRate"))
+        else {
+            continue;
+        };
+
+        for tag in UNRULED_REEL_ASSETS {
+            let Some(rate) = essence_block(reel, &[tag]).and_then(|b| extract_tag(b, "EditRate"))
+            else {
+                continue;
+            };
+            if rate != picture_rate {
+                notes.push(Note {
+                    severity: Severity::Warning,
+                    code: Code::ReelEditRateMismatch,
+                    message: format!(
+                        "Reel {} {tag} EditRate '{rate}' differs from the picture EditRate '{picture_rate}'",
+                        index + 1
+                    ),
+                    file: Some(cpl_path.to_path_buf()),
+                    line: 0,
+                });
             }
         }
     }
@@ -2154,12 +2385,362 @@ mod tests {
     }
 
     #[test]
-    fn unencrypted_unsigned_package_silent() {
+    fn unencrypted_unsigned_package_warns_under_its_own_code() {
         let cpl = write_cpl("<CompositionPlaylist></CompositionPlaylist>");
         let pkl = write_cpl("<PackingList></PackingList>");
+        let notes = check_dcp_signed(&[cpl.path().to_path_buf()], &[pkl.path().to_path_buf()]);
+        assert_eq!(
+            notes
+                .iter()
+                .filter(
+                    |n| n.code == Code::UnencryptedDcpNotSigned && n.severity == Severity::Warning
+                )
+                .count(),
+            2,
+            "unsigned CPL and PKL of an unencrypted package must warn, got {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.code == Code::DcpNotSigned),
+            "dcp_not_signed stays reserved for encrypted packages, got {notes:?}"
+        );
+    }
+
+    #[test]
+    fn unencrypted_signed_package_silent() {
+        let cpl = write_cpl("<CompositionPlaylist><Signature>x</Signature></CompositionPlaylist>");
+        let pkl = write_cpl("<PackingList><ds:Signature>x</ds:Signature></PackingList>");
         assert!(
             check_dcp_signed(&[cpl.path().to_path_buf()], &[pkl.path().to_path_buf()]).is_empty(),
-            "an unencrypted package need not be signed"
+            "a signed unencrypted package must be clean"
+        );
+    }
+
+    // ─── Reel EditRate beyond the picture (ST 429-2) ───────────────────────
+
+    /// One reel with a 24 1 picture and a MainMarkers asset at `marker_rate`,
+    /// the DCP-o-matic shape that went unreported.
+    fn marker_reel_cpl(marker_rate: &str) -> String {
+        format!(
+            r#"<CompositionPlaylist><ReelList><Reel><Id>urn:uuid:00000000-0000-0000-0000-000000000001</Id><AssetList>
+  <MainMarkers>
+    <Id>urn:uuid:00000000-0000-0000-0000-000000000002</Id>
+    <EditRate>{marker_rate}</EditRate>
+    <IntrinsicDuration>48</IntrinsicDuration>
+  </MainMarkers>
+  <MainPicture>
+    <Id>urn:uuid:00000000-0000-0000-0000-000000000003</Id>
+    <EditRate>24 1</EditRate>
+    <Duration>48</Duration>
+  </MainPicture>
+</AssetList></Reel></ReelList></CompositionPlaylist>"#
+        )
+    }
+
+    #[test]
+    fn marker_edit_rate_differing_from_the_picture_warns() {
+        let f = write_cpl(&marker_reel_cpl("13 1"));
+        let notes = check_reel_edit_rates(f.path());
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::ReelEditRateMismatch);
+        assert_eq!(notes[0].severity, Severity::Warning);
+        assert!(
+            notes[0].message.contains("MainMarkers")
+                && notes[0].message.contains("13 1")
+                && notes[0].message.contains("24 1"),
+            "{}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn marker_edit_rate_matching_the_picture_is_silent() {
+        let f = write_cpl(&marker_reel_cpl("24 1"));
+        assert!(
+            check_reel_edit_rates(f.path()).is_empty(),
+            "a marker asset at the picture rate must stay clean"
+        );
+    }
+
+    #[test]
+    fn subtitle_edit_rate_differing_from_the_picture_warns() {
+        let xml = marker_reel_cpl("24 1").replace(
+            "</AssetList>",
+            r#"<MainSubtitle><Id>urn:uuid:00000000-0000-0000-0000-000000000004</Id><EditRate>25 1</EditRate></MainSubtitle></AssetList>"#,
+        );
+        let f = write_cpl(&xml);
+        let notes = check_reel_edit_rates(f.path());
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].message.contains("MainSubtitle"),
+            "{}",
+            notes[0].message
+        );
+    }
+
+    // Sound and CompositionMetadataAsset carry their own "shall" and are handled
+    // at ERROR by check_reel_coherence and check_composition_metadata_asset. The
+    // warning check must not also claim them, or the same defect gets two
+    // severities.
+    #[test]
+    fn sound_and_metadata_asset_are_left_to_their_own_rules() {
+        let xml = marker_reel_cpl("24 1").replace(
+            "</AssetList>",
+            r#"<MainSound><Id>urn:uuid:00000000-0000-0000-0000-000000000005</Id><EditRate>48 1</EditRate></MainSound>
+  <meta:CompositionMetadataAsset xmlns:meta="http://www.smpte-ra.org/schemas/429-16/2014/CPL-Metadata"><meta:EditRate>25 1</meta:EditRate></meta:CompositionMetadataAsset></AssetList>"#,
+        );
+        let f = write_cpl(&xml);
+        assert!(
+            check_reel_edit_rates(f.path()).is_empty(),
+            "neither sound nor the metadata asset may be reported by this check"
+        );
+        assert!(
+            check_composition_metadata_asset(f.path())
+                .iter()
+                .any(|n| n.code == Code::CompositionMetadataAssetMismatch
+                    && n.severity == Severity::Error),
+            "the metadata asset rate must be caught by its own ERROR check"
+        );
+    }
+
+    // ─── CompositionMetadataAsset vs the picture (ST 429-16 §4.4.1) ────────
+
+    /// One reel with a 24 1 / 48-frame picture and a metadata asset declaring
+    /// `edit_rate` and `intrinsic_duration`.
+    fn metadata_asset_cpl(edit_rate: &str, intrinsic_duration: &str) -> String {
+        format!(
+            r#"<CompositionPlaylist><ReelList><Reel><AssetList>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-000000000003</Id><EditRate>24 1</EditRate><Duration>48</Duration></MainPicture>
+  <meta:CompositionMetadataAsset xmlns:meta="http://www.smpte-ra.org/schemas/429-16/2014/CPL-Metadata">
+    <meta:EditRate>{edit_rate}</meta:EditRate>
+    <meta:IntrinsicDuration>{intrinsic_duration}</meta:IntrinsicDuration>
+  </meta:CompositionMetadataAsset>
+</AssetList></Reel></ReelList></CompositionPlaylist>"#
+        )
+    }
+
+    #[test]
+    fn metadata_asset_matching_the_picture_is_silent() {
+        let f = write_cpl(&metadata_asset_cpl("24 1", "48"));
+        assert!(
+            check_composition_metadata_asset(f.path()).is_empty(),
+            "a metadata asset mirroring the picture must stay clean"
+        );
+    }
+
+    #[test]
+    fn metadata_asset_edit_rate_mismatch_is_an_error() {
+        let f = write_cpl(&metadata_asset_cpl("25 1", "48"));
+        let notes = check_composition_metadata_asset(f.path());
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].severity, Severity::Error);
+        assert!(
+            notes[0].message.contains("EditRate") && notes[0].message.contains("25 1"),
+            "{}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn metadata_asset_intrinsic_duration_mismatch_is_an_error() {
+        let f = write_cpl(&metadata_asset_cpl("24 1", "47"));
+        let notes = check_composition_metadata_asset(f.path());
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].severity, Severity::Error);
+        assert!(
+            notes[0].message.contains("IntrinsicDuration") && notes[0].message.contains("47"),
+            "{}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn reel_without_a_metadata_asset_is_silent() {
+        let f = write_cpl(&marker_reel_cpl("24 1"));
+        assert!(
+            check_composition_metadata_asset(f.path()).is_empty(),
+            "the metadata asset is optional, so its absence says nothing"
+        );
+    }
+
+    // ─── ST 429-2 §9.6.1 / §9.7.1 gaps in reel coherence ───────────────────
+
+    /// Two reels carrying only the asset blocks under test.
+    fn paired_reel_cpl(first: &str, second: &str) -> String {
+        format!(
+            "<CompositionPlaylist><ReelList><Reel><AssetList>{first}</AssetList></Reel><Reel><AssetList>{second}</AssetList></Reel></ReelList></CompositionPlaylist>"
+        )
+    }
+
+    #[test]
+    fn picture_element_name_changing_between_reels_is_incoherent() {
+        // §9.6.1 lists the element name itself among the values that must be
+        // identical, and the two spellings resolve to the same block otherwise
+        let f = write_cpl(&paired_reel_cpl(
+            "<MainPicture><EditRate>24 1</EditRate></MainPicture>",
+            "<MainStereoscopicPicture><EditRate>24 1</EditRate></MainStereoscopicPicture>",
+        ));
+        let notes = check_reel_coherence(f.path());
+        assert!(
+            notes.iter().any(|n| n.code == Code::ReelIncoherent
+                && n.severity == Severity::Error
+                && n.message.contains("picture element name")),
+            "mixing MainPicture and MainStereoscopicPicture must be incoherent, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn sound_language_changing_between_reels_is_incoherent() {
+        let f = write_cpl(&paired_reel_cpl(
+            "<MainPicture><EditRate>24 1</EditRate></MainPicture><MainSound><EditRate>24 1</EditRate><Language>en</Language></MainSound>",
+            "<MainPicture><EditRate>24 1</EditRate></MainPicture><MainSound><EditRate>24 1</EditRate><Language>fr</Language></MainSound>",
+        ));
+        let notes = check_reel_coherence(f.path());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::ReelIncoherent && n.message.contains("sound language")),
+            "§9.7.1 makes Language identical across sound assets, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn consistent_reels_stay_coherent() {
+        let reel = "<MainPicture><EditRate>24 1</EditRate></MainPicture><MainSound><EditRate>24 1</EditRate><Language>en</Language></MainSound>";
+        let f = write_cpl(&paired_reel_cpl(reel, reel));
+        assert!(
+            check_reel_coherence(f.path()).is_empty(),
+            "two identical reels must draw no coherence note"
+        );
+    }
+
+    #[test]
+    fn reel_without_a_picture_asset_is_silent() {
+        let xml = r#"<CompositionPlaylist><ReelList><Reel><AssetList>
+  <MainMarkers><Id>urn:uuid:00000000-0000-0000-0000-000000000002</Id><EditRate>13 1</EditRate></MainMarkers>
+</AssetList></Reel></ReelList></CompositionPlaylist>"#;
+        let f = write_cpl(xml);
+        assert!(
+            check_reel_edit_rates(f.path()).is_empty(),
+            "with no picture rate to compare against there is nothing to say"
+        );
+    }
+
+    // ─── ASSETMAP file name and chunk Length (ST 429-9) ────────────────────
+
+    const SMPTE_AM_NAMESPACE: &str = "http://www.smpte-ra.org/schemas/429-9/2007/AM";
+    const INTEROP_AM_NAMESPACE: &str = "http://www.digicine.com/PROTO-ASDCP-AM-20040311#";
+
+    /// Write a package holding one asset file of `asset_bytes` bytes, with the
+    /// asset map under `am_name` and declaring `length` for that asset.
+    fn assetmap_package(
+        am_name: &str,
+        namespace: &str,
+        length: Option<u64>,
+        asset_bytes: usize,
+    ) -> (tempfile::TempDir, PathBuf, AssetMap) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("asset.mxf"), vec![0u8; asset_bytes]).unwrap();
+        let length_element = length
+            .map(|n| format!("<Length>{n}</Length>"))
+            .unwrap_or_default();
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssetMap xmlns="{namespace}">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:11111111-2222-3333-4444-555555555555</Id>
+      <ChunkList>
+        <Chunk><Path>asset.mxf</Path>{length_element}</Chunk>
+      </ChunkList>
+    </Asset>
+  </AssetList>
+</AssetMap>"#
+        );
+        let am_path = dir.path().join(am_name);
+        std::fs::write(&am_path, &xml).unwrap();
+        let assetmap = dcpdoctor_parse::parse_assetmap(&xml).unwrap();
+        (dir, am_path, assetmap)
+    }
+
+    /// Runs the real derivation over the package rather than asserting against a
+    /// hand-picked Standard, so the name check and detect_standard are exercised
+    /// as the pair they are.
+    fn assetmap_name_notes(am_name: &str, namespace: &str) -> Vec<Note> {
+        let (dir, am_path, _) = assetmap_package(am_name, namespace, None, 16);
+        check_assetmap_name(&am_path, crate::dcp::detect_standard(dir.path()))
+    }
+
+    #[test]
+    fn smpte_assetmap_named_without_the_extension_is_an_error() {
+        let notes = assetmap_name_notes("ASSETMAP", SMPTE_AM_NAMESPACE);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::AssetmapInvalidName);
+        assert_eq!(notes[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn smpte_assetmap_with_the_right_name_is_silent() {
+        assert!(
+            assetmap_name_notes("ASSETMAP.xml", SMPTE_AM_NAMESPACE).is_empty(),
+            "a SMPTE package named ASSETMAP.xml must stay clean"
+        );
+    }
+
+    #[test]
+    fn interop_assetmap_with_the_smpte_name_warns() {
+        let notes = assetmap_name_notes("ASSETMAP.xml", INTEROP_AM_NAMESPACE);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::AssetmapInvalidName);
+        assert_eq!(notes[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn interop_assetmap_with_the_right_name_is_silent() {
+        assert!(
+            assetmap_name_notes("ASSETMAP", INTEROP_AM_NAMESPACE).is_empty(),
+            "an Interop package named ASSETMAP must stay clean"
+        );
+    }
+
+    #[test]
+    fn assetmap_of_an_unrecognised_namespace_says_nothing_about_the_name() {
+        assert!(
+            assetmap_name_notes("ASSETMAP.xml", "http://example.invalid/AM").is_empty(),
+            "with no standard established there is no right name to demand"
+        );
+    }
+
+    #[test]
+    fn assetmap_length_disagreeing_with_the_file_is_an_error() {
+        let (dir, am_path, am) = assetmap_package("ASSETMAP.xml", SMPTE_AM_NAMESPACE, Some(99), 16);
+        let notes = check_assetmap_chunk_size(dir.path(), &am_path, &am);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::AssetmapSizeMismatch);
+        assert_eq!(notes[0].severity, Severity::Error);
+        assert!(
+            notes[0].message.contains("99") && notes[0].message.contains("16"),
+            "{}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn assetmap_length_matching_the_file_is_silent() {
+        let (dir, am_path, am) = assetmap_package("ASSETMAP.xml", SMPTE_AM_NAMESPACE, Some(16), 16);
+        assert!(
+            check_assetmap_chunk_size(dir.path(), &am_path, &am).is_empty(),
+            "a Length equal to the file size must stay clean"
+        );
+    }
+
+    #[test]
+    fn assetmap_without_a_length_element_is_silent() {
+        // Length is minOccurs="0" in ST 429-9, and dcpwizard writes none at all
+        let (dir, am_path, am) = assetmap_package("ASSETMAP.xml", SMPTE_AM_NAMESPACE, None, 16);
+        assert!(
+            check_assetmap_chunk_size(dir.path(), &am_path, &am).is_empty(),
+            "an absent Length must never be reported"
         );
     }
 
