@@ -67,7 +67,14 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           $env:VCPKG_BUILD_TYPE="release"
-          vcpkg install libxml2 openssl xerces-c --triplet x64-windows
+          # vcpkg reads curl 56 and 503 off github's archive host as permanent and
+          # refuses to retry the source download, so retry the whole install
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            vcpkg install libxml2 openssl xerces-c --triplet x64-windows
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 5) { throw "vcpkg install failed after $attempt attempts" }
+            Start-Sleep -Seconds (30 * $attempt)
+          }
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
 
       - name: Build release
