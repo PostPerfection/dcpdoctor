@@ -7,30 +7,36 @@ policy plus the measurement gaps listed below.
 
 ## Checks ClairMeta has and this does not
 
-From the 2026-08-12 differential over 99 packages (dci-ctp `diff/report.md`,
-regenerate before trusting the list). Two ClairMeta ERROR checks have no
-equivalent here, each firing on 2 packages:
+From the 2026-08-12 differential over 155 packages (dci-ctp `diff/report.md`,
+regenerate before trusting the list). Three ClairMeta ERROR checks have no
+equivalent here:
 
-- `check_am_name`: the ASSETMAP filename itself is never checked.
+- `check_am_name`: the ASSETMAP filename itself is never checked. 4 packages.
+- `check_assets_am_size`: each ASSETMAP chunk carries a Length, and ClairMeta
+  compares it to the file on disk. Nothing here reads that element. 4 packages,
+  all of them DCP-o-matic fixtures that skip the reseal on purpose. dcpwizard
+  writes no Length at all, so this gap was invisible until the corpus gained a
+  second mastering tool.
 - `check_dcp_signed`: ClairMeta errors on an unsigned non-encrypted package.
   `dcp_not_signed` only fires for encrypted ones here, which is the deliberate
   reading of the "encrypted packages shall be signed" requirement, so closing
-  this needs a decision rather than code.
+  this needs a decision rather than code. 2 packages.
 
 Everything else the differential once listed as a gap is closed. The list in
 dci-ctp's DESIGN.md had gone stale claiming XSD validation was unwired and the
 deep certificate rules had no equivalent, when both run and the six certificate
 codes are ones ClairMeta misses.
 
-## Sound essence read through ffprobe
+## Reel EditRate is only checked on the picture
 
-`read_mxf_info` probes cleartext essence with ffprobe, which does not report
-every WaveAudioDescriptor field. BlockAlign is now read from the descriptor
-through asdcplib when ffprobe omits it (see Done, 2026-08-12), but that is a
-patch on one field. Any other descriptor field ffprobe drops is silently 0 and
-its check skips itself rather than failing loud, which is how the block-align
-check went unexercised on every cleartext DCP. Reading the descriptor directly
-for all PCM would remove the class.
+`cpl_invalid_edit_rate` reads the picture track's EditRate and nothing else. A
+DCP-o-matic package whose MainMarkers asset carries EditRate 13 1 against a 24 1
+picture is reported clean, no note at any severity. Found by running the dci-ctp
+mutations on a second vendor's package (dci-ctp DESIGN_TODO, two-vendor section).
+DoM writes MainMarkers ahead of MainPicture and dcpwizard writes no marker asset
+at all, so nothing here had ever seen one. ST 429-2 §9.4 covers durations within
+a reel rather than edit rates, so closing this needs a spec citation first, the
+same shape as the HFR bitrate item below.
 
 ## Picture bitrate: what is still not measured
 
@@ -74,6 +80,21 @@ Escalate only if a spec citation forces it, as with the four codes already moved
 to ERROR (see "Severity escalations to spec" under Done).
 
 # Done
+
+## Sound essence read from the descriptor, not ffprobe (2026-08-12)
+
+`read_mxf_info` built its SoundDescriptor from ffprobe, which reports only some
+WaveAudioDescriptor fields for an MXF. Anything it dropped arrived as 0 and the
+check for that field skipped itself instead of running, which is how the
+block-align check went unexercised on every cleartext DCP until BlockAlign got a
+one-field fallback. `wave_sound_descriptor` now reads the whole descriptor
+through asdcplib and ffprobe is the fallback, so the class is gone rather than
+patched per field. Verified by hiding ffprobe from PATH: the block-align fixture
+still fires and the 5.1 baseline stays silent, so the descriptor path carries the
+sound checks on its own. Returns None for anything that is not a cleartext PCM
+OP-Atom file (picture, aux data, IMF OP1a, encrypted), each of which falls back
+to ffprobe as before. Encrypted essence stays with `check_sound_essence_mxf` so
+neither reports twice.
 
 ## postkit resolves once across the workspaces (2026-08-12)
 

@@ -177,7 +177,7 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
         .arg(path)
         .output();
 
-    let (picture, sound, essence_type) = match output {
+    let (picture, sound) = match output {
         Ok(o) if o.status.success() => {
             let json: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
 
@@ -233,27 +233,24 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
                 }
             }
 
-            let etype = if pic.is_some() && snd.is_some() {
-                "picture+sound"
-            } else if pic.is_some() {
-                "picture"
-            } else if snd.is_some() {
-                "sound"
-            } else {
-                "unknown"
-            };
-
-            (pic, snd, etype.to_string())
+            (pic, snd)
         }
-        _ => (None, None, "unknown".to_string()),
+        _ => (None, None),
     };
 
     let file_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
-    let mut sound = sound;
-    if let Some(snd) = sound.as_mut().filter(|s| s.block_align == 0) {
-        snd.block_align = wave_block_align(path).unwrap_or(0);
+    // ffprobe reports only some WaveAudioDescriptor fields for an MXF and the
+    // rest arrive as 0, which makes the check for that field skip itself
+    let sound = wave_sound_descriptor(path).or(sound);
+
+    let essence_type = match (picture.is_some(), sound.is_some()) {
+        (true, true) => "picture+sound",
+        (true, false) => "picture",
+        (false, true) => "sound",
+        (false, false) => "unknown",
     }
+    .to_string();
 
     MxfInfo {
         valid: true,
@@ -265,18 +262,25 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
     }
 }
 
-/// BlockAlign from the WaveAudioDescriptor. ffprobe never reports the field for
-/// an MXF, so without this the cleartext block-align check reads 0 and skips.
-/// Encrypted essence is `check_sound_essence_mxf`'s job, and answering here too
-/// would report the same defect twice.
-fn wave_block_align(path: &Path) -> Option<u32> {
+/// The WaveAudioDescriptor of a cleartext PCM MXF, read through asdcplib.
+/// Returns None for anything that is not one: a picture or aux-data MXF fails to
+/// open, an IMF audio track file is AS-02 and this reader is OP-Atom, and encrypted
+/// essence is `check_sound_essence_mxf`'s job, so answering here too would report
+/// the same defect twice. Each of those falls back to ffprobe.
+fn wave_sound_descriptor(path: &Path) -> Option<SoundDescriptor> {
     let mut reader = asdcplib::pcm::MxfReader::new();
     reader.open_read(path.to_str()?).ok()?;
     if reader.writer_info().ok()?.encrypted_essence {
         return None;
     }
-    let block_align = reader.audio_descriptor().ok()?.block_align;
-    (block_align != 0).then_some(block_align)
+    let desc = reader.audio_descriptor().ok()?;
+    Some(SoundDescriptor {
+        sample_rate: desc.audio_sampling_rate.quotient().round() as u32,
+        channels: desc.channel_count,
+        bit_depth: desc.quantization_bits,
+        block_align: desc.block_align,
+        duration: desc.container_duration as u64,
+    })
 }
 
 fn parse_fraction(s: &str) -> (u32, u32) {
