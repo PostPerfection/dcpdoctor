@@ -62,7 +62,18 @@ pub fn check_isdcf_naming(content_title: &str, cpl_path: &Path) -> Vec<Note> {
         const VALID_TYPES: &[&str] = &[
             "FTR", "TLR", "TSR", "PRO", "TST", "RTG", "SHR", "ADV", "XSN", "PSA", "POL", "CLT",
         ];
-        if !VALID_TYPES.contains(&fields[1]) {
+        // ISDCF Doc 1 allows a version number after the type, as in FTR-2. Only
+        // digits: ECL packages write things like TST-3D-48 in this field, which
+        // is not a version and stays a violation.
+        let content_type = match fields[1].split_once('-') {
+            Some((base, version))
+                if !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                base
+            }
+            _ => fields[1],
+        };
+        if !VALID_TYPES.contains(&content_type) {
             notes.push(Note {
                 severity: Severity::Warning,
                 code: Code::IsdcfNamingViolation,
@@ -268,6 +279,33 @@ mod tests {
                 .iter()
                 .any(|n| n.message.contains("Non-standard content type"))
         );
+    }
+
+    #[test]
+    fn versioned_content_type_is_accepted() {
+        for name in ["Movie_TST-1_F", "Movie_FTR-2_F", "Movie_TLR-10_F"] {
+            let notes = check_isdcf_naming(name, &PathBuf::from("CPL.xml"));
+            assert!(
+                !notes
+                    .iter()
+                    .any(|n| n.message.contains("Non-standard content type")),
+                "{name} carries an ISDCF version suffix and should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_suffix_that_is_not_a_version_stays_a_violation() {
+        // XXX is not a type, and the ECL corpus writes 3D and frame rate here
+        for name in ["Movie_XXX-1_F", "Movie_TST-3D-48_S", "Movie_TST-48-600_S"] {
+            let notes = check_isdcf_naming(name, &PathBuf::from("CPL.xml"));
+            assert!(
+                notes
+                    .iter()
+                    .any(|n| n.message.contains("Non-standard content type")),
+                "{name} should still be flagged"
+            );
+        }
     }
 
     #[test]
