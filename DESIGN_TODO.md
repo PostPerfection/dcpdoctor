@@ -5,6 +5,33 @@ README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N 
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
 policy plus the measurement gaps listed below.
 
+## Checks ClairMeta has and this does not
+
+From the 2026-08-12 differential over 99 packages (dci-ctp `diff/report.md`,
+regenerate before trusting the list). Two ClairMeta ERROR checks have no
+equivalent here, each firing on 2 packages:
+
+- `check_am_name`: the ASSETMAP filename itself is never checked.
+- `check_dcp_signed`: ClairMeta errors on an unsigned non-encrypted package.
+  `dcp_not_signed` only fires for encrypted ones here, which is the deliberate
+  reading of the "encrypted packages shall be signed" requirement, so closing
+  this needs a decision rather than code.
+
+Everything else the differential once listed as a gap is closed. The list in
+dci-ctp's DESIGN.md had gone stale claiming XSD validation was unwired and the
+deep certificate rules had no equivalent, when both run and the six certificate
+codes are ones ClairMeta misses.
+
+## Sound essence read through ffprobe
+
+`read_mxf_info` probes cleartext essence with ffprobe, which does not report
+every WaveAudioDescriptor field. BlockAlign is now read from the descriptor
+through asdcplib when ffprobe omits it (see Done, 2026-08-12), but that is a
+patch on one field. Any other descriptor field ffprobe drops is silently 0 and
+its check skips itself rather than failing loud, which is how the block-align
+check went unexercised on every cleartext DCP. Reading the descriptor directly
+for all PCM would remove the class.
+
 ## Picture bitrate: what is still not measured
 
 Peak bitrate is now read frame by frame for AS-DCP picture essence, mono and 3D
