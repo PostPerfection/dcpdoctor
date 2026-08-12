@@ -12,7 +12,7 @@ version = "0.1.1"
 clap = { version = "4", features = ["derive"] }
 dcpdoctor-imf = { path = "crates/dcpdoctor-imf" }
 dcpdoctor-parse = { path = "crates/dcpdoctor-parse" }
-postkit = { path = "../extern/postkit" }
+postkit = { git = "https://github.com/PostPerfection/postkit.git", rev = "d8d97cf" }
 quick-xml = "0.41"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -20,3 +20,8 @@ sha1 = "0.10"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# consumers redirect this at their own postkit checkout so only one is compiled.
+# the rev above must match the extern/postkit gitlink, and CI asserts it.
+[patch."https://github.com/PostPerfection/postkit.git"]
+postkit = { path = "../extern/postkit" }

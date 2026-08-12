@@ -75,6 +75,27 @@ to ERROR (see "Severity escalations to spec" under Done).
 
 # Done
 
+## postkit resolves once across the workspaces (2026-08-12)
+
+`postkit` was a path dep here on `extern/postkit`, and dcpwizard and imfwizard
+pull `dcpdoctor-core` by git, which carries its own path dep on the postkit
+inside that checkout. Cargo saw two source ids and compiled postkit twice in both
+apps, which cost build time and left a latent hazard: `dcpdoctor_core::loudness`
+re-exports postkit types, so the day an app used that re-export alongside its own
+`postkit::loudness` the two would not unify.
+
+postkit is a git dep here now, pinned at the same rev as the `extern/postkit`
+gitlink, with a `[patch]` in `rust/Cargo.toml` redirecting it back at the
+submodule. Local builds still use the submodule, so the edit-and-rebuild loop is
+unchanged, and consumers add the same patch pointing at their own checkout, which
+collapses both references to one crate. `cargo tree -d` reports no postkit
+duplicate in dcpwizard and its 267 tests pass against the single copy.
+
+A dependency's own `[patch]` is ignored when it is consumed, so only the
+top-level workspace's redirect applies, and nothing local ever fetches the pinned
+rev. That means the pin and the gitlink could drift unnoticed, so CI asserts they
+match before building.
+
 ## Asset identity, IMF PKL digest, Photon bootstrap (2026-08-12)
 
 Three findings from diffing against ClairMeta and Photon, each a defect real
