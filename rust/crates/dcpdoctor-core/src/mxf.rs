@@ -250,6 +250,11 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
 
     let file_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
+    let mut sound = sound;
+    if let Some(snd) = sound.as_mut().filter(|s| s.block_align == 0) {
+        snd.block_align = wave_block_align(path).unwrap_or(0);
+    }
+
     MxfInfo {
         valid: true,
         error: String::new(),
@@ -258,6 +263,20 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
         sound,
         file_size_bytes,
     }
+}
+
+/// BlockAlign from the WaveAudioDescriptor. ffprobe never reports the field for
+/// an MXF, so without this the cleartext block-align check reads 0 and skips.
+/// Encrypted essence is `check_sound_essence_mxf`'s job, and answering here too
+/// would report the same defect twice.
+fn wave_block_align(path: &Path) -> Option<u32> {
+    let mut reader = asdcplib::pcm::MxfReader::new();
+    reader.open_read(path.to_str()?).ok()?;
+    if reader.writer_info().ok()?.encrypted_essence {
+        return None;
+    }
+    let block_align = reader.audio_descriptor().ok()?.block_align;
+    (block_align != 0).then_some(block_align)
 }
 
 fn parse_fraction(s: &str) -> (u32, u32) {
