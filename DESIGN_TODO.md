@@ -7,8 +7,8 @@ policy plus the measurement gap listed below.
 
 ## P-HFR gets no bitrate limit of its own
 
-Peak bitrate is now read frame by frame for every picture essence dcpdoctor can
-open, AS-DCP mono and 3D and AS-02 (see Done, 2026-08-12). What is left out is
+Peak bitrate is read frame by frame for every picture essence dcpdoctor can
+open, AS-DCP mono and 3D and AS-02 (see DESIGN.md). What is left out is
 P-HFR, deliberately. ISDCF's P-HFR paper (v005, 2012) sets 500 Mb/s for the total
 codestream of 2K stereoscopic HFR, keyed on a P-HFR-2K essence label, and calls
 itself a proposal for experimental use. asdcplib applies 400 to that same label
@@ -35,50 +35,6 @@ the four codes already moved to ERROR (see "Severity escalations to spec" under
 Done).
 
 # Done
-
-## 4K frame rate against ST 429-2 Table 1 (2026-08-12)
-
-`mxf::check_picture_frame_rate_mxf` runs under `check_picture_details`
-(`--check-mxf` or `--deep-j2k`), beside the other checks that open the essence,
-because deciding 2K from 4K means reading the pixel array off the picture
-descriptor. A 4K essence at a rate Table 1 gives only to the 2K formats is an
-ERROR. No new code: `picture_invalid_frame_rate` already meant exactly this and
-already had a producer in the IMF path.
-
-- The rate comes from the asdcplib descriptor's edit rate, which §8.2 makes equal
-  to the frame rate for monoscopic essence, not from ffprobe. Stored width above
-  2048 is the 4K row of the table.
-- Monoscopic only, which is the scope of the "shall", and the reader enforces it:
-  3D essence needs asdcplib's stereoscopic reader and fails to open in the mono
-  one, so a 3D track file yields nothing here.
-- Tests write picture MXFs at the two formats. 4K at 48/1 fires, 4K at 24/1 and
-  2K at 48/1 stay silent.
-
-## AS-02 picture bitrate is measured (2026-08-12)
-
-An IMP picture track file used to get no bitrate note at all, because both
-asdcplib JP2K readers postkit reached for are OP-Atom. postkit now has an AS-02
-reader as well and the IMF path measures with it. One new code,
-`picture_bitrate_measured`, so dci-ctp's `ALL_CODES` denominator goes 86 -> 87
-and a corpus fixture is owed there.
-
-- `j2k::analyse_as02_mxf_bitrate` is a sibling of `analyse_mxf_bitrate`, not a
-  fallback chained inside it. asdcplib's AS-02 reader also opens stereoscopic
-  AS-DCP essence and reports one eye per frame, so chaining halves the 3D
-  measurement that landed earlier today. `bitrate::analyze_picture_bitrate` orders
-  the readers AS-DCP, then 3D, then AS-02.
-- INFO, not a verdict: the 250 Mb/s ceiling is DCI's and applies to a DCP, and no
-  IMF specification sets a peak for App 2E picture essence, so there is nothing
-  to pass or fail against. Nothing was borrowed from the DCP side to fill that.
-- The IMF path measures under the same `check_picture_details` gate the DCP path
-  uses, since it reads every frame of the track file, so `validate_imp` takes that
-  flag. It measures through asdcplib before the ffprobe descriptor is consulted,
-  so a picture stream ffprobe cannot see is still measured.
-- Tests write an AS-02 picture MXF of known frame size and assert the measured
-  peak, and an IMP carrying one asserts the note appears with the gate on and not
-  with it off.
-- postkit's own DESIGN_TODO still lists this as an open gap; that copy belongs to
-  the postkit repo.
 
 ## One DCI bitrate limit at every resolution (2026-08-12)
 
