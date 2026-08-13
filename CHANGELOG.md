@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-08-13
 
 ### Added
 - 4K frame rate (ST 429-2 §8.2 Table 1): picture essence wider than 2K must run at 24/1, 25/1 or 30/1, so a 4K track file at 48/1 errors as `picture_invalid_frame_rate` under `--check-mxf`. Monoscopic essence only, which is the scope of the requirement.
