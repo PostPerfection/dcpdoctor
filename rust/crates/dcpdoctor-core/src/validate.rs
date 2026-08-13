@@ -8,7 +8,7 @@ use crate::{Code, Note, Severity, VerifyOptions, VerifyResult};
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
-        return verify_imp(dcp_dir, opts.ov.as_deref());
+        return verify_imp(dcp_dir, opts.ov.as_deref(), opts.check_picture_details);
     }
 
     let mut result = VerifyResult::default();
@@ -512,6 +512,10 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 for note in crate::bitrate::check_bitrate_compliance(&bitrate, &full_path) {
                     result.add(note);
                 }
+
+                for note in crate::mxf::check_picture_frame_rate_mxf(&full_path) {
+                    result.add(note);
+                }
             }
 
             // Encrypted sound essence: ffprobe can't read it, so read the
@@ -671,14 +675,14 @@ fn dcp_asset_ids(dir: &Path) -> HashSet<String> {
     }
 }
 
-fn verify_imp(imp_dir: &Path, ov_dir: Option<&Path>) -> VerifyResult {
+fn verify_imp(imp_dir: &Path, ov_dir: Option<&Path>, check_picture_details: bool) -> VerifyResult {
     let mut result = VerifyResult {
         standard: crate::Standard::Smpte,
         ..Default::default()
     };
 
     // Native IMF validation works everywhere including WASM.
-    for note in crate::imf::validate_imp(imp_dir, ov_dir) {
+    for note in crate::imf::validate_imp(imp_dir, ov_dir, check_picture_details) {
         result.add(note);
     }
 

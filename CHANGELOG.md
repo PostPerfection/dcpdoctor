@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- 4K frame rate (ST 429-2 §8.2 Table 1): picture essence wider than 2K must run at 24/1, 25/1 or 30/1, so a 4K track file at 48/1 errors as `picture_invalid_frame_rate` under `--check-mxf`. Monoscopic essence only, which is the scope of the requirement.
+- IMF picture bitrate: an IMP's AS-02 picture track files are measured frame by frame like a DCP's, and the peak and average are reported as a `picture_bitrate_measured` info note under `--check-mxf`. No pass/fail: the 250 Mbps ceiling is DCI's and no IMF specification sets one.
 - MainSoundConfiguration (ST 429-16): SMPTE CPLs are checked for the tag in CompositionMetadataAsset, its `<soundfield>/<channels>` value is parsed against the MCA/ISDCF label set (garbage like `None` errors as `main_sound_config_invalid`), and the declared channel count is cross-checked against the sound MXF's ChannelCount (`sound_invalid_channel_count`).
 - FFOC/LFOC marker offsets: FFOC in the first reel must be 1 and LFOC in the last reel must be one less than that reel's duration, warned per libdcp wording (`marker_invalid`).
 - First-subtitle timing (Bv2.1): warns (`subtitle_first_event_early`) when the first reel's first displayable timed-text event starts under 4s in. Only the first reel counts and empty placeholder subtitle assets are ignored, avoiding DCP-o-matic bug #2757. Reads MXF-wrapped ST 428-7 XML and handles both SMPTE tick and Interop editable-unit TimeIn forms.

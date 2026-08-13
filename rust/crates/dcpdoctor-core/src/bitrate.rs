@@ -1,6 +1,7 @@
 //! Per-frame bitrate analysis of J2K MXF picture tracks.
 //!
-//! The mono per-frame reader lives in postkit (`j2k::analyse_mxf_bitrate`).
+//! The monoscopic per-frame readers live in postkit: `j2k::analyse_mxf_bitrate`
+//! for a DCP's AS-DCP essence, `j2k::analyse_as02_mxf_bitrate` for an IMP's.
 //! Stereoscopic essence needs asdcplib's 3D reader, and one edit unit there
 //! carries a left and a right codestream that share the frame's time slot, so
 //! the pair counts as one frame. The Note-producing compliance check stays here.
@@ -21,13 +22,19 @@ const NEAR_LIMIT_FRACTION: f64 = 0.95;
 pub type FrameBitrateStats = postkit::j2k::MxfBitrateStats;
 
 /// Measure per-frame bitrate of a picture MXF by reading every frame. Falls back
-/// to the stereoscopic reader for 3D essence, which the mono reader rejects.
+/// to the stereoscopic reader for 3D essence, which the mono reader rejects, and
+/// then to AS-02 for an IMP track file. Stereoscopic comes first because the
+/// AS-02 reader also opens 3D AS-DCP essence and sees one eye per frame.
 pub fn analyze_picture_bitrate(mxf_path: &Path) -> FrameBitrateStats {
-    let mono = postkit::j2k::analyse_mxf_bitrate(mxf_path);
-    if mono.valid {
-        return mono;
+    let as_dcp = postkit::j2k::analyse_mxf_bitrate(mxf_path);
+    if as_dcp.valid {
+        return as_dcp;
     }
-    analyze_stereoscopic_bitrate(mxf_path).unwrap_or(mono)
+    if let Some(stereoscopic) = analyze_stereoscopic_bitrate(mxf_path) {
+        return stereoscopic;
+    }
+    let as02 = postkit::j2k::analyse_as02_mxf_bitrate(mxf_path);
+    if as02.valid { as02 } else { as_dcp }
 }
 
 fn analyze_stereoscopic_bitrate(mxf_path: &Path) -> Option<FrameBitrateStats> {
@@ -130,6 +137,26 @@ pub fn check_bitrate_compliance(stats: &FrameBitrateStats, mxf_path: &Path) -> V
     notes
 }
 
+/// Report the measured peak for IMF picture essence as INFO. The DCI limit is a
+/// DCP rule and no IMF specification sets a peak bitrate for App 2E picture
+/// essence, so there is nothing here to pass or fail against.
+pub fn report_measured_bitrate(stats: &FrameBitrateStats, mxf_path: &Path) -> Vec<Note> {
+    if !stats.valid {
+        return Vec::new();
+    }
+
+    vec![
+        Note::info(
+            Code::PictureBitrateMeasured,
+            format!(
+                "Peak picture bitrate {:.1} Mbps, average {:.1} Mbps over {} frames",
+                stats.max_bitrate_mbps, stats.avg_bitrate_mbps, stats.frame_count
+            ),
+        )
+        .with_file(mxf_path),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +192,24 @@ mod tests {
     /// asdcp-info reports the same rate for every file these tests write.
     fn write_mono_mxf(path: &Path, width: u32, height: u32, frame_bytes: usize) {
         let mut writer = MxfWriter::new();
+        writer
+            .open_write(
+                path.to_str().unwrap(),
+                &writer_info(),
+                &descriptor(width, height),
+                16384,
+            )
+            .unwrap();
+        let frame = vec![0u8; frame_bytes];
+        for _ in 0..FRAMES {
+            writer.write_frame(&frame, None, None).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    /// Same, AS-02 wrapped: what an IMP carries instead of OP-Atom.
+    fn write_as02_mxf(path: &Path, width: u32, height: u32, frame_bytes: usize) {
+        let mut writer = asdcplib::as02::jp2k::MxfWriter::new();
         writer
             .open_write(
                 path.to_str().unwrap(),
@@ -278,6 +323,42 @@ mod tests {
             "{}",
             notes[0].message
         );
+    }
+
+    // 1_100_000 bytes per frame at 24 fps is 211.2 Mb/s. An IMP wraps picture in
+    // AS-02, which the OP-Atom reader cannot open.
+    #[test]
+    fn as02_essence_reports_the_measured_peak() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_as02.mxf");
+        write_as02_mxf(&path, 2048, 1080, 1_100_000);
+
+        let stats = measure(&path);
+        assert_eq!(stats.frame_count, FRAMES);
+        assert_eq!(stats.max_frame_bytes, 1_100_000);
+        assert!((stats.max_bitrate_mbps - 211.2).abs() < 0.05);
+
+        let notes = report_measured_bitrate(&stats, &path);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].severity, crate::Severity::Info);
+        assert_eq!(notes[0].code, Code::PictureBitrateMeasured);
+        assert!(notes[0].message.contains("211.2"), "{}", notes[0].message);
+    }
+
+    // An AS-02 peak above the DCI limit is still only a measurement: the DCI
+    // limit is a DCP rule, so the IMF report never fails against it.
+    #[test]
+    fn as02_essence_over_the_dci_limit_is_still_a_measurement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_as02_fat.mxf");
+        write_as02_mxf(&path, 4096, 2160, 1_600_000);
+
+        let stats = measure(&path);
+        assert!((stats.max_bitrate_mbps - 307.2).abs() < 0.05);
+
+        let notes = report_measured_bitrate(&stats, &path);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].severity, crate::Severity::Info);
     }
 
     // 1_000_000 bytes per frame at 24 fps is 192 Mb/s, under the limit at any

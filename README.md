@@ -32,8 +32,9 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **ISDCF Naming**: Content title naming convention validation
 
 ### Picture Validation
-- **J2K bitrate analysis**: Per-frame bitrate statistics (min/max/avg)
-- **DCI bitrate limits**: 250 Mbps (2K) / 500 Mbps (4K) enforcement
+- **J2K bitrate analysis**: Per-frame bitrate statistics (min/max/avg), AS-DCP and AS-02 essence (`--check-mxf`)
+- **DCI bitrate limit**: 250 Mbps at every resolution. IMF has no such limit, so an IMP's measured peak is reported as an info note
+- **4K frame rate (ST 429-2 Table 1)**: 4K picture essence must run at 24/1, 25/1 or 30/1 (`--check-mxf`)
 - **Deep J2K codestream**: Profile (RSIZ), decomposition levels, code-block sizes, wavelet type, component validation
 - **4K/2K detection**: Resolution and aspect ratio verification
 

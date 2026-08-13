@@ -113,7 +113,14 @@ fn is_imf_composition_playlist(xml: &str) -> bool {
 /// is a real break. When unset, references missing locally are reported as
 /// [`Code::SupplementalOvNotProvided`] instead of hard errors, since we cannot
 /// tell a legitimate supplemental reference from a corrupt one without the OV.
-pub fn validate_imp(imp_dir: &Path, ov_dir: Option<&Path>) -> Vec<Note> {
+///
+/// `check_picture_details` turns on the checks that read every picture frame,
+/// the same gate the DCP path puts them behind.
+pub fn validate_imp(
+    imp_dir: &Path,
+    ov_dir: Option<&Path>,
+    check_picture_details: bool,
+) -> Vec<Note> {
     let mut notes = Vec::new();
 
     // Asset ids available in the OV package (its ASSETMAP is authoritative for
@@ -175,7 +182,7 @@ pub fn validate_imp(imp_dir: &Path, ov_dir: Option<&Path>) -> Vec<Note> {
         validate_track_file_refs(&cpl, imp_dir, &ov_ids, ov_provided, cpl_path, &mut notes);
 
         // MXF essence validation (filesystem)
-        validate_essence_descriptors(&cpl, imp_dir, cpl_path, &mut notes);
+        validate_essence_descriptors(&cpl, imp_dir, cpl_path, check_picture_details, &mut notes);
 
         // TTML subtitle tracks (filesystem)
         validate_ttml_tracks(&cpl, imp_dir, cpl_path, &mut notes);
@@ -255,6 +262,7 @@ fn validate_essence_descriptors(
     cpl: &ImfCpl,
     imp_dir: &Path,
     cpl_path: &Path,
+    check_picture_details: bool,
     notes: &mut Vec<Note>,
 ) {
     let assetmap_path = imp_dir.join("ASSETMAP.xml");
@@ -304,7 +312,14 @@ fn validate_essence_descriptors(
 
             match vt.track_type {
                 TrackType::MainImage => {
-                    validate_picture_essence(&mxf_info, cpl, &full_path, cpl_path, notes);
+                    validate_picture_essence(
+                        &mxf_info,
+                        cpl,
+                        &full_path,
+                        cpl_path,
+                        check_picture_details,
+                        notes,
+                    );
                 }
                 TrackType::MainAudio => {
                     validate_audio_essence(&mxf_info, cpl, &full_path, cpl_path, notes);
@@ -320,8 +335,15 @@ fn validate_picture_essence(
     cpl: &ImfCpl,
     mxf_path: &Path,
     _cpl_path: &Path,
+    check_picture_details: bool,
     notes: &mut Vec<Note>,
 ) {
+    // measured through asdcplib, so it runs even when ffprobe gave no descriptor
+    if check_picture_details {
+        let bitrate = crate::bitrate::analyze_picture_bitrate(mxf_path);
+        notes.extend(crate::bitrate::report_measured_bitrate(&bitrate, mxf_path));
+    }
+
     let pic = match &mxf.picture {
         Some(p) => p,
         None => {
@@ -1121,7 +1143,7 @@ mod tests {
             &[VIDEO_ID, AUDIO_ID],
         );
 
-        let notes = validate_imp(supp.path(), Some(ov.path()));
+        let notes = validate_imp(supp.path(), Some(ov.path()), false);
         assert!(
             !notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "OV must satisfy the video ref, got: {notes:?}"
@@ -1144,7 +1166,7 @@ mod tests {
             &[VIDEO_ID, AUDIO_ID],
         );
 
-        let notes = validate_imp(supp.path(), None);
+        let notes = validate_imp(supp.path(), None, false);
         assert!(
             !notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "no OV -> must not hard-fail as broken, got: {notes:?}"
@@ -1175,10 +1197,71 @@ mod tests {
             &["deadbeef-0000-0000-0000-000000000000", AUDIO_ID],
         );
 
-        let notes = validate_imp(supp.path(), Some(ov.path()));
+        let notes = validate_imp(supp.path(), Some(ov.path()), false);
         assert!(
             notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "a ref in neither package is a real break even with --ov, got: {notes:?}"
+        );
+    }
+
+    /// Write an AS-02 picture track file of `frames` frames of `frame_bytes`
+    /// each, the wrapping an IMP uses for picture essence.
+    fn write_as02_picture(path: &Path, frames: u32, frame_bytes: usize) {
+        use asdcplib::jp2k::PictureDescriptor;
+        use asdcplib::{LabelSet, Rational, WriterInfo};
+
+        let info = WriterInfo {
+            asset_uuid: *uuid::Uuid::new_v4().as_bytes(),
+            context_id: *uuid::Uuid::new_v4().as_bytes(),
+            label_set: LabelSet::Smpte,
+            ..Default::default()
+        };
+        let descriptor = PictureDescriptor {
+            edit_rate: Rational::new(24, 1),
+            sample_rate: Rational::new(24, 1),
+            stored_width: 2048,
+            stored_height: 1080,
+            aspect_ratio: Rational::new(2048, 1080),
+            container_duration: frames,
+            component_count: 3,
+        };
+        let mut writer = asdcplib::as02::jp2k::MxfWriter::new();
+        writer
+            .open_write(path.to_str().unwrap(), &info, &descriptor, 16384)
+            .unwrap();
+        let frame = vec![0u8; frame_bytes];
+        for _ in 0..frames {
+            writer.write_frame(&frame, None, None).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    // 500_000 bytes per frame at 24 fps is 96.0 Mb/s.
+    #[test]
+    fn imp_picture_track_reports_its_measured_peak() {
+        let imp = tempfile::tempdir().unwrap();
+        write_imp(
+            imp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[VIDEO_ID, AUDIO_ID],
+            &[VIDEO_ID, AUDIO_ID],
+        );
+        write_as02_picture(&imp.path().join(format!("{VIDEO_ID}.mxf")), 3, 500_000);
+
+        let measured = validate_imp(imp.path(), None, true);
+        let note = measured
+            .iter()
+            .find(|n| n.code == Code::PictureBitrateMeasured)
+            .unwrap_or_else(|| panic!("expected a measured bitrate note, got: {measured:?}"));
+        assert_eq!(note.severity, Severity::Info);
+        assert!(note.message.contains("96.0"), "{}", note.message);
+
+        let unmeasured = validate_imp(imp.path(), None, false);
+        assert!(
+            !unmeasured
+                .iter()
+                .any(|n| n.code == Code::PictureBitrateMeasured),
+            "reading every frame stays behind the picture-details gate"
         );
     }
 

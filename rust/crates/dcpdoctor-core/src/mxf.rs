@@ -127,6 +127,52 @@ pub fn check_sound_essence_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> V
     notes
 }
 
+/// Stored width above which ST 429-2 Table 1 calls a picture format 4K.
+const TWO_K_MAX_STORED_WIDTH: u32 = 2048;
+
+/// Frame rates Table 1 allows for the 4K formats, as numerator over 1.
+const FOUR_K_FRAME_RATES: [i32; 3] = [24, 25, 30];
+
+/// ST 429-2 §8.2 Table 1: the 4K picture formats carry a frame rate of 24/1,
+/// 25/1 or 30/1, where the 2K formats also allow 48/1, 50/1 and 60/1. §8.2 has a
+/// monoscopic picture track's frame rate equal its edit rate, so the descriptor's
+/// edit rate is the rate Table 1 constrains. The requirement is monoscopic only,
+/// which this reader enforces by construction: 3D essence needs asdcplib's
+/// stereoscopic reader and fails to open here.
+pub fn check_picture_frame_rate_mxf(path: &Path) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let Some(path_str) = path.to_str() else {
+        return notes;
+    };
+    let mut reader = asdcplib::jp2k::MxfReader::new();
+    if reader.open_read(path_str).is_err() {
+        return notes; // not monoscopic JP2K picture essence
+    }
+    let Ok(desc) = reader.picture_descriptor() else {
+        return notes;
+    };
+
+    let (numerator, denominator) = (desc.edit_rate.numerator, desc.edit_rate.denominator);
+    if desc.stored_width <= TWO_K_MAX_STORED_WIDTH || numerator <= 0 || denominator <= 0 {
+        return notes;
+    }
+    if denominator == 1 && FOUR_K_FRAME_RATES.contains(&numerator) {
+        return notes;
+    }
+
+    notes.push(
+        Note::error(
+            Code::PictureInvalidFrameRate,
+            format!(
+                "4K picture essence ({}x{}) at {numerator}/{denominator} fps: ST 429-2 Table 1 allows 24/1, 25/1 or 30/1 above 2K",
+                desc.stored_width, desc.stored_height
+            ),
+        )
+        .with_file(path),
+    );
+    notes
+}
+
 /// MXF file information.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MxfInfo {
@@ -346,5 +392,68 @@ mod tests {
     fn unknown_fields_skip_checks() {
         let snd = SoundDescriptor::default(); // all zero
         assert!(check_sound_descriptor(&snd, Path::new("a.mxf")).is_empty());
+    }
+
+    /// Write a one-frame monoscopic picture MXF of the given format and rate.
+    fn write_picture_mxf(path: &Path, width: u32, height: u32, frame_rate: i32) {
+        use asdcplib::jp2k::{MxfWriter, PictureDescriptor};
+        use asdcplib::{LabelSet, Rational, WriterInfo};
+
+        let info = WriterInfo {
+            asset_uuid: *uuid::Uuid::new_v4().as_bytes(),
+            context_id: *uuid::Uuid::new_v4().as_bytes(),
+            label_set: LabelSet::Smpte,
+            ..Default::default()
+        };
+        let descriptor = PictureDescriptor {
+            edit_rate: Rational::new(frame_rate, 1),
+            sample_rate: Rational::new(frame_rate, 1),
+            stored_width: width,
+            stored_height: height,
+            aspect_ratio: Rational::new(width as i32, height as i32),
+            container_duration: 1,
+            component_count: 3,
+        };
+        let mut writer = MxfWriter::new();
+        writer
+            .open_write(path.to_str().unwrap(), &info, &descriptor, 16384)
+            .unwrap();
+        writer.write_frame(&vec![0u8; 1024], None, None).unwrap();
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn four_k_above_thirty_fps_violates_table_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_4k_48.mxf");
+        write_picture_mxf(&path, 4096, 2160, 48);
+
+        let notes = check_picture_frame_rate_mxf(&path);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::PictureInvalidFrameRate);
+        assert_eq!(notes[0].severity, crate::Severity::Error);
+        assert!(
+            notes[0].message.contains("48/1") && notes[0].message.contains("4096x2160"),
+            "{}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn four_k_at_twenty_four_fps_is_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_4k_24.mxf");
+        write_picture_mxf(&path, 4096, 2160, 24);
+
+        assert!(check_picture_frame_rate_mxf(&path).is_empty());
+    }
+
+    #[test]
+    fn two_k_at_forty_eight_fps_is_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_2k_48.mxf");
+        write_picture_mxf(&path, 2048, 1080, 48);
+
+        assert!(check_picture_frame_rate_mxf(&path).is_empty());
     }
 }
