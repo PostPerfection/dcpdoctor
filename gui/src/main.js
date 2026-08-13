@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { initShortcuts, getBinding } from "./shortcuts.js";
 
 // ── DOM Elements ──────────────────────────────────
 const dropZone = document.getElementById("drop-zone");
@@ -21,6 +22,8 @@ const statInfo = document.getElementById("stat-info");
 const resultsBody = document.getElementById("results-body");
 const noResults = document.getElementById("no-results");
 const versionLabel = document.getElementById("version-label");
+const prefsToggle = document.getElementById("prefs-toggle");
+const preferencesSection = document.getElementById("preferences-section");
 
 // ── Version ───────────────────────────────────────
 async function loadVersion() {
@@ -34,12 +37,14 @@ async function loadVersion() {
 loadVersion();
 
 // ── Drop Zone ─────────────────────────────────────
-dropZone.addEventListener("click", async () => {
+async function selectDcpFolder() {
   const selected = await open({ directory: true, title: "Select DCP folder" });
   if (selected) {
     dcpPath.value = selected;
   }
-});
+}
+
+dropZone.addEventListener("click", selectDcpFolder);
 
 dropZone.addEventListener("dragover", (e) => {
   e.preventDefault();
@@ -268,15 +273,14 @@ function savePreferences() {
   localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
 }
 
-document.getElementById("prefs-toggle")?.addEventListener("click", () => {
-  const section = document.getElementById("preferences-section");
-  section.classList.toggle("hidden");
+prefsToggle?.addEventListener("click", () => {
+  preferencesSection.classList.toggle("hidden");
 });
 
 document.getElementById("preferences-form")?.addEventListener("submit", (e) => {
   e.preventDefault();
   savePreferences();
-  document.getElementById("preferences-section").classList.add("hidden");
+  preferencesSection.classList.add("hidden");
 });
 
 document.getElementById("pref-reset")?.addEventListener("click", () => {
@@ -286,3 +290,50 @@ document.getElementById("pref-reset")?.addEventListener("click", () => {
 });
 
 loadPreferences();
+
+// ── Keyboard Shortcuts ────────────────────────────
+const SHORTCUTS_KEY = "dcpdoctor-shortcuts";
+
+const resultsVisible = () => !resultsSection.classList.contains("hidden");
+
+const BUTTON_SHORTCUTS = [
+  { id: "validate", label: "Validate DCP", category: "Validation", binding: "Ctrl+Enter", element: btnValidate },
+  ...Array.from(document.querySelectorAll(".filter-tab")).map((tab, index) => ({
+    id: `filter-${tab.dataset.filter}`,
+    label: `Show ${tab.textContent.toLowerCase()}`,
+    category: "Results",
+    binding: `Ctrl+${index + 1}`,
+    element: tab,
+    when: resultsVisible,
+  })),
+  { id: "toggle-preferences", label: "Toggle preferences", category: "Preferences", binding: "Ctrl+,", element: prefsToggle },
+];
+
+function clickAction({ id, label, category, binding, element, when }) {
+  return { id, label, category, binding, when, handler: () => element.click() };
+}
+
+function refreshButtonTooltips() {
+  for (const { id, label, element } of BUTTON_SHORTCUTS) {
+    const binding = getBinding(id);
+    element.title = binding ? `${label} (${binding})` : label;
+  }
+}
+
+initShortcuts({
+  storageKey: SHORTCUTS_KEY,
+  onChange: refreshButtonTooltips,
+  actions: [
+    { id: "open-dcp", label: "Open DCP folder", category: "Validation", binding: "Ctrl+O", handler: selectDcpFolder },
+    ...BUTTON_SHORTCUTS.map(clickAction),
+    {
+      id: "close-preferences",
+      label: "Close preferences",
+      category: "Preferences",
+      binding: "Escape",
+      when: () => !preferencesSection.classList.contains("hidden"),
+      handler: () => preferencesSection.classList.add("hidden"),
+    },
+  ],
+});
+refreshButtonTooltips();

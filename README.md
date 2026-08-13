@@ -544,8 +544,22 @@ DcpDoctor includes an optional desktop GUI built with [Tauri](https://tauri.app)
 - **Visual results**: Color-coded severity badges (error/warning/info)
 - **Filterable table**: Filter results by severity
 - **Option chips**: Toggle Studio, Deep, Netflix, HDR, Atmos, IMF, Accessibility checks
+- **Keyboard shortcuts**: Rebindable, listed under Ctrl+K
 - **Cross-platform**: Builds for Linux (.deb, .rpm, AppImage), macOS (.dmg), Windows (.msi)
 - **Sidecar architecture**: Bundles the `dcpdoctor` CLI binary, no separate install needed
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+O` | Open DCP folder |
+| `Ctrl+Enter` | Validate |
+| `Ctrl+1` to `Ctrl+4` | Filter results: all, errors, warnings, info |
+| `Ctrl+,` | Toggle preferences |
+| `Escape` | Close preferences |
+| `Ctrl+K` | Show the shortcut list |
+
+`Ctrl+K` opens the list. Click a shortcut there to rebind it: press the new combination, Backspace clears it, Escape cancels. A combination already in use is refused and names its owner. Reset buttons restore one shortcut or all of them, and the rebindings are saved across restarts. `Ctrl+K` itself is fixed.
 
 ### GUI Prerequisites
 

@@ -3,6 +3,7 @@
 ## [0.2.0] - 2026-08-13
 
 ### Added
+- GUI keyboard shortcuts: Ctrl+O opens a DCP folder, Ctrl+Enter validates, Ctrl+1 to Ctrl+4 pick a results severity filter, Ctrl+, toggles preferences and Escape closes them. Ctrl+K opens an overlay listing them by category, where clicking a shortcut captures a new key combination (Backspace or Delete unbinds, Escape cancels, a combination already in use is refused and names its owner). Per-shortcut and global reset buttons restore the defaults, and changes persist across restarts.
 - 4K frame rate (ST 429-2 §8.2 Table 1): picture essence wider than 2K must run at 24/1, 25/1 or 30/1, so a 4K track file at 48/1 errors as `picture_invalid_frame_rate` under `--check-mxf`. Monoscopic essence only, which is the scope of the requirement.
 - IMF picture bitrate: an IMP's AS-02 picture track files are measured frame by frame like a DCP's, and the peak and average are reported as a `picture_bitrate_measured` info note under `--check-mxf`. No pass/fail: the 250 Mbps ceiling is DCI's and no IMF specification sets one.
 - MainSoundConfiguration (ST 429-16): SMPTE CPLs are checked for the tag in CompositionMetadataAsset, its `<soundfield>/<channels>` value is parsed against the MCA/ISDCF label set (garbage like `None` errors as `main_sound_config_invalid`), and the declared channel count is cross-checked against the sound MXF's ChannelCount (`sound_invalid_channel_count`).
