@@ -543,7 +543,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 } else {
                     // one trip through the MXF feeds the schema, structural and
                     // glyph passes (decrypting with the KDM where one was supplied)
-                    match crate::subtitle::read_wrapped_timed_text(&full_path, &content_keys) {
+                    match crate::subtitle::read_wrapped_timed_text(
+                        &full_path,
+                        &content_keys,
+                        crate::subtitle::FontData::Include,
+                    ) {
                         Some(asset) => {
                             for note in asset.notes.iter().cloned() {
                                 result.add(note);
@@ -663,13 +667,20 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         ) {
             result.add(note);
         }
-        for note in
-            crate::validators::check_first_subtitle_timing(cpl_path, dcp.standard, &id_to_file)
-        {
+        for note in crate::validators::check_first_subtitle_timing(
+            cpl_path,
+            dcp.standard,
+            &id_to_file,
+            &content_keys,
+        ) {
             result.add(note);
         }
-        for note in crate::validators::check_timed_text_content(cpl_path, dcp.standard, &id_to_file)
-        {
+        for note in crate::validators::check_timed_text_content(
+            cpl_path,
+            dcp.standard,
+            &id_to_file,
+            &content_keys,
+        ) {
             result.add(note);
         }
         for note in crate::validators::check_reel_continuity(cpl_path) {
@@ -703,7 +714,9 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         ) {
             result.add(note);
         }
-        for note in crate::validators::check_subtitle_frame_rate(cpl_path, &id_to_file) {
+        for note in
+            crate::validators::check_subtitle_frame_rate(cpl_path, &id_to_file, &content_keys)
+        {
             result.add(note);
         }
         for note in crate::validators::check_stereo(cpl_path, &id_to_file) {

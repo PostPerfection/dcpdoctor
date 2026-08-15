@@ -496,15 +496,26 @@ impl WrappedTimedText {
     }
 }
 
-/// Read a timed-text MXF: its document, embedded OpenType fonts, identity fields
-/// and duration, decrypting with `keys` when the essence is encrypted. `None`
-/// when the MXF can't be opened or its document can't be read. An asset encrypted
-/// with no covering key comes back readable-but-empty, carrying only the skip
-/// note (and only when a KDM was supplied). Non-font resources (Png, Binary) are
-/// ignored for glyph coverage but still count toward the font byte total.
+/// Whether a read needs the embedded fonts, which are the bulk of a timed-text
+/// MXF. The document alone answers every rule except glyph coverage and the font
+/// size cap, so the reel-level checks omit them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontData {
+    Include,
+    Omit,
+}
+
+/// Read a timed-text MXF: its document, identity fields, duration and (when
+/// asked) its embedded OpenType fonts, decrypting with `keys` where the essence
+/// is encrypted. `None` when the MXF can't be opened or its document can't be
+/// read. An asset encrypted with no covering key comes back with its identity
+/// fields but an empty document, so callers can tell "unreadable" from "absent".
+/// Non-font resources (Png, Binary) are ignored for glyph coverage but still
+/// count toward the font byte total.
 pub fn read_wrapped_timed_text(
     mxf_path: &Path,
     keys: &crate::kdm::ContentKeys,
+    fonts: FontData,
 ) -> Option<WrappedTimedText> {
     let s = mxf_path.to_str()?;
     let mut reader = asdcplib::timed_text::MxfReader::new();
@@ -544,9 +555,13 @@ pub fn read_wrapped_timed_text(
         Err(_) => return None,
     };
 
-    let mut fonts: HashMap<[u8; 16], Vec<u8>> = HashMap::new();
+    let mut font_data: HashMap<[u8; 16], Vec<u8>> = HashMap::new();
     let mut font_bytes = 0usize;
-    let count = reader.ancillary_resource_count().ok()?;
+    let count = if fonts == FontData::Include {
+        reader.ancillary_resource_count().ok()?
+    } else {
+        0
+    };
     for i in 0..count {
         let Ok(info) = reader.ancillary_resource_info(i) else {
             continue;
@@ -570,11 +585,11 @@ pub fn read_wrapped_timed_text(
             continue; // Png bitmap subs / Binary are not fonts
         }
         font_bytes += bytes.len();
-        fonts.insert(info.uuid, bytes);
+        font_data.insert(info.uuid, bytes);
     }
     Some(WrappedTimedText {
         xml,
-        fonts,
+        fonts: font_data,
         font_bytes,
         ..identity
     })
@@ -980,8 +995,9 @@ pub(crate) mod tests {
         let doc = mxf_doc("Hi", &uuid_urn(&uuid));
         let path = write_mxf(dir.path(), &doc, Some((&make_font(&['H', 'i']), uuid)));
 
-        let asset = read_wrapped_timed_text(&path, &crate::kdm::ContentKeys::none())
-            .expect("the wrapped asset must be readable");
+        let asset =
+            read_wrapped_timed_text(&path, &crate::kdm::ContentKeys::none(), FontData::Include)
+                .expect("the wrapped asset must be readable");
         let xml = asset.xml;
         assert!(xml.contains("SubtitleReel"), "got: {xml}");
 
@@ -999,7 +1015,7 @@ pub(crate) mod tests {
 
     /// Glyph coverage for a wrapped asset, read straight off disk.
     fn wrapped_glyph_notes(path: &Path) -> Vec<Note> {
-        match read_wrapped_timed_text(path, &crate::kdm::ContentKeys::none()) {
+        match read_wrapped_timed_text(path, &crate::kdm::ContentKeys::none(), FontData::Include) {
             Some(asset) => check_glyph_coverage_wrapped(&asset, path),
             None => Vec::new(),
         }
@@ -1080,8 +1096,9 @@ pub(crate) mod tests {
             &mxf_doc("Hi", &uuid_urn(&uuid)),
             Some((&make_font(&['H', 'i']), uuid)),
         );
-        let asset = read_wrapped_timed_text(&path, &crate::kdm::ContentKeys::none())
-            .expect("the wrapped asset must be readable");
+        let asset =
+            read_wrapped_timed_text(&path, &crate::kdm::ContentKeys::none(), FontData::Include)
+                .expect("the wrapped asset must be readable");
         let notes = validate_subtitle_xml(&asset.xml, &path, Standard::Smpte);
         for missing in ["ReelNumber", "Language"] {
             assert!(

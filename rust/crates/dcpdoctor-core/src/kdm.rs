@@ -999,6 +999,178 @@ mod decrypt_tests {
         (kdm_path, signer_key, root_key, dir)
     }
 
+    /// A subtitle document that breaks two structural rules: no ReelNumber and no
+    /// Language. Wrapped and encrypted below, it proves the rules only see it
+    /// when a key is available.
+    const NONCONFORMANT_SUBTITLE: &str = r#"<?xml version="1.0"?>
+<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:Id>urn:uuid:11111111-2222-3333-4444-555555555555</dcst:Id>
+  <dcst:LoadFont ID="f1">urn:uuid:abababab-abab-abab-abab-abababababab</dcst:LoadFont>
+  <dcst:SubtitleList>
+    <dcst:Font ID="f1">
+      <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
+        <dcst:Text>Hi</dcst:Text>
+      </dcst:Subtitle>
+    </dcst:Font>
+  </dcst:SubtitleList>
+</dcst:SubtitleReel>"#;
+
+    /// Write an encrypted timed-text MXF carrying `doc`, HMAC-guarded the way
+    /// asdcplib wraps a real subtitle asset.
+    fn write_encrypted_subtitle_mxf(path: &Path, key_id: uuid::Uuid, content_key: [u8; 16]) {
+        use asdcplib::crypto::{AesEncContext, HmacContext};
+        use asdcplib::timed_text::{MxfWriter, TimedTextDescriptor};
+        use asdcplib::{EDIT_RATE_24, LabelSet, WriterInfo};
+
+        let info = WriterInfo {
+            asset_uuid: *uuid::Uuid::new_v4().as_bytes(),
+            context_id: *uuid::Uuid::new_v4().as_bytes(),
+            cryptographic_key_id: *key_id.as_bytes(),
+            encrypted_essence: true,
+            uses_hmac: true,
+            label_set: LabelSet::Smpte,
+            ..Default::default()
+        };
+        let desc = TimedTextDescriptor {
+            edit_rate: EDIT_RATE_24,
+            container_duration: 96,
+            asset_id: [6; 16],
+        };
+        let mut enc = AesEncContext::new();
+        enc.init_key(&content_key).unwrap();
+        let mut hmac = HmacContext::new();
+        hmac.init_key(&content_key, LabelSet::Smpte).unwrap();
+
+        let mut w = MxfWriter::new();
+        w.open_write(path.to_str().unwrap(), &info, &desc, 16_384)
+            .unwrap();
+        w.write_timed_text_resource(NONCONFORMANT_SUBTITLE, Some(&mut enc), Some(&mut hmac))
+            .unwrap();
+        w.finalize().unwrap();
+    }
+
+    // KDM-aware subtitle validation is the thing this tool does that a validator
+    // without keys cannot: holding the key and still skipping the rules would be
+    // a silent pass on content nobody checked.
+    #[test]
+    fn encrypted_subtitles_are_checked_when_the_kdm_covers_them() {
+        use crate::subtitle::{FontData, read_wrapped_timed_text, validate_subtitle_xml};
+
+        let key_id = uuid::Uuid::new_v4();
+        let content_key = [0x44; 16];
+        let cpl_id = "8a2b1c3d-4e5f-6071-8293-a4b5c6d7e8f9";
+        let (kdm_path, recipient_key, _wrong, _certs) = make_kdm(key_id, content_key, cpl_id);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mxf = dir.path().join("sub.mxf");
+        write_encrypted_subtitle_mxf(&mxf, key_id, content_key);
+
+        // without keys the document is unreadable, so the rules must not pretend
+        let without = read_wrapped_timed_text(&mxf, &ContentKeys::none(), FontData::Omit)
+            .expect("the MXF header is readable even when the essence is not");
+        assert!(
+            without.is_unreadable(),
+            "encrypted essence must not come back as a document without a key"
+        );
+
+        // with the KDM the document decrypts and the structural rules apply
+        let keys = ContentKeys::from_kdm(&kdm_path, &recipient_key).expect("unwrap kdm");
+        let with = read_wrapped_timed_text(&mxf, &keys, FontData::Omit)
+            .expect("the asset must be readable with its key");
+        assert!(
+            !with.is_unreadable(),
+            "a covered KeyId must yield the document"
+        );
+        let notes = validate_subtitle_xml(&with.xml, &mxf, crate::Standard::Smpte);
+        for missing in ["ReelNumber", "Language"] {
+            assert!(
+                notes
+                    .iter()
+                    .any(|n| n.code == Code::MissingRequiredElement && n.message.contains(missing)),
+                "the decrypted document must reach the structural rules ({missing}), got: {notes:?}"
+            );
+        }
+    }
+
+    /// A one-reel SMPTE CPL whose MainSubtitle points at `sub.mxf`, plus the
+    /// id -> file map the reel-level rules resolve assets through.
+    fn package_with_encrypted_subtitle(
+        dir: &Path,
+        key_id: uuid::Uuid,
+        content_key: [u8; 16],
+    ) -> (PathBuf, std::collections::HashMap<String, PathBuf>) {
+        const SUBTITLE_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+        let mxf = dir.join("sub.mxf");
+        write_encrypted_subtitle_mxf(&mxf, key_id, content_key);
+
+        let cpl = dir.join("cpl.xml");
+        std::fs::write(
+            &cpl,
+            format!(
+                r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><EditRate>24 1</EditRate><Duration>96</Duration></MainPicture>
+      <MainSubtitle><Id>urn:uuid:{SUBTITLE_ID}</Id><EditRate>24 1</EditRate><Duration>96</Duration></MainSubtitle>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+
+        let map = std::collections::HashMap::from([(SUBTITLE_ID.to_string(), mxf)]);
+        (cpl, map)
+    }
+
+    // an encrypted package validated without its keys used to skip the timed-text
+    // rules in silence, which reads as a pass on content nobody examined.
+    #[test]
+    fn skipped_encrypted_timed_text_is_reported_not_silent() {
+        let key_id = uuid::Uuid::new_v4();
+        let content_key = [0x55; 16];
+        let cpl_id = "8a2b1c3d-4e5f-6071-8293-a4b5c6d7e8f9";
+        let (kdm_path, recipient_key, _wrong, _certs) = make_kdm(key_id, content_key, cpl_id);
+
+        let dir = tempfile::tempdir().unwrap();
+        let (cpl, map) = package_with_encrypted_subtitle(dir.path(), key_id, content_key);
+
+        // no KDM: the rules cannot run, and the report must say so
+        let notes = crate::validators::check_timed_text_content(
+            &cpl,
+            crate::Standard::Smpte,
+            &map,
+            &ContentKeys::none(),
+        );
+        let skip = notes
+            .iter()
+            .find(|n| n.code == Code::KdmRequired)
+            .expect("a skipped encrypted asset must be reported");
+        assert!(
+            skip.message.contains("timed-text rules did not run"),
+            "got: {}",
+            skip.message
+        );
+        assert_eq!(
+            skip.severity,
+            crate::Severity::Info,
+            "validating an encrypted package without its KDM is a normal thing to do"
+        );
+
+        // with the KDM the rules run, so nothing is skipped
+        let keys = ContentKeys::from_kdm(&kdm_path, &recipient_key).expect("unwrap kdm");
+        let notes =
+            crate::validators::check_timed_text_content(&cpl, crate::Standard::Smpte, &map, &keys);
+        assert!(
+            !notes.iter().any(|n| n.code == Code::KdmRequired),
+            "nothing is skipped once the key is available, got: {notes:?}"
+        );
+    }
+
     #[test]
     fn encrypted_essence_skips_without_a_kdm() {
         let dir = tempfile::tempdir().unwrap();

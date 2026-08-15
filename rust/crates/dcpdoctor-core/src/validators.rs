@@ -1615,6 +1615,7 @@ pub fn check_first_subtitle_timing(
     cpl_path: &Path,
     standard: Standard,
     id_to_file: &HashMap<String, PathBuf>,
+    keys: &crate::kdm::ContentKeys,
 ) -> Vec<Note> {
     let mut notes = Vec::new();
     let Ok(content) = std::fs::read_to_string(cpl_path) else {
@@ -1640,8 +1641,10 @@ pub fn check_first_subtitle_timing(
         return notes; // no subtitle in the first reel
     };
 
-    let Some(xml) = subtitle_xml(sub, id_to_file) else {
-        return notes; // essence missing/encrypted/unreadable, so can't tell
+    let TimedTextSource::Document(xml) = timed_text_source(sub, id_to_file, keys) else {
+        // essence absent or unreadable; check_timed_text_content reports the
+        // encrypted case once for the whole CPL rather than each rule saying it
+        return notes;
     };
 
     // reel edit rate converts frame-based times / the entry point to seconds
@@ -1683,29 +1686,45 @@ pub fn check_first_subtitle_timing(
     notes
 }
 
-/// Subtitle XML for a reel's MainSubtitle: the plain-XML asset, or the MXF-wrapped
-/// ST 428-7 resource. `None` when the essence is missing, encrypted, or unreadable.
-fn subtitle_xml(sub_block: &str, id_to_file: &HashMap<String, PathBuf>) -> Option<String> {
-    let path = asset_file(sub_block, id_to_file)?;
+/// A reel's timed-text document, or why the rules could not see one.
+enum TimedTextSource {
+    /// the document, whether it was a loose XML asset or wrapped essence
+    Document(String),
+    /// encrypted essence with no usable content key, so the rules skip. `had_kdm`
+    /// separates "no KDM was supplied" from "the KDM does not cover this asset".
+    Encrypted { had_kdm: bool },
+    /// no such asset, or a file that is not readable timed text
+    Unavailable,
+}
+
+/// The timed-text document a reel asset block points at: the plain-XML asset, or
+/// the ST 428-7 resource inside the MXF, decrypted with `keys` where they cover
+/// it. Fonts are not read: no rule here needs them, and they are the bulk of the
+/// essence.
+fn timed_text_source(
+    block: &str,
+    id_to_file: &HashMap<String, PathBuf>,
+    keys: &crate::kdm::ContentKeys,
+) -> TimedTextSource {
+    let Some(path) = asset_file(block, id_to_file) else {
+        return TimedTextSource::Unavailable;
+    };
     let is_xml = path
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("xml"));
     if is_xml {
-        return std::fs::read_to_string(&path).ok();
+        return match std::fs::read_to_string(&path) {
+            Ok(xml) => TimedTextSource::Document(xml),
+            Err(_) => TimedTextSource::Unavailable,
+        };
     }
-    let s = path.to_str()?;
-    let mut reader = asdcplib::timed_text::MxfReader::new();
-    reader.open_read(s).ok()?;
-    let mut buf: Vec<u8> = Vec::new();
-    match reader.read_timed_text_resource(&mut buf, None, None) {
-        Ok(n) => Some(String::from_utf8_lossy(&buf[..n]).into_owned()),
-        Err(asdcplib::Error::BufferTooSmall { needed, .. }) => {
-            buf = vec![0u8; needed];
-            let n = reader.read_timed_text_resource(&mut buf, None, None).ok()?;
-            Some(String::from_utf8_lossy(&buf[..n]).into_owned())
-        }
-        Err(_) => None,
+    match crate::subtitle::read_wrapped_timed_text(&path, keys, crate::subtitle::FontData::Omit) {
+        Some(asset) if !asset.is_unreadable() => TimedTextSource::Document(asset.xml),
+        Some(_) => TimedTextSource::Encrypted {
+            had_kdm: keys.has_kdm(),
+        },
+        None => TimedTextSource::Unavailable,
     }
 }
 
@@ -1782,6 +1801,7 @@ pub fn check_timed_text_content(
     cpl_path: &Path,
     standard: Standard,
     id_to_file: &HashMap<String, PathBuf>,
+    keys: &crate::kdm::ContentKeys,
 ) -> Vec<Note> {
     let mut notes = Vec::new();
     let Ok(content) = std::fs::read_to_string(cpl_path) else {
@@ -1800,34 +1820,71 @@ pub fn check_timed_text_content(
     )
     .unwrap();
 
+    let mut skipped = SkippedEssence::default();
     for reel_cap in reel_re.captures_iter(&content) {
         let reel = reel_cap.get(1).unwrap().as_str();
-        for cap in sub_re.captures_iter(reel) {
-            let block = cap.get(1).unwrap().as_str();
-            content_notes(
-                block,
-                reel,
-                TimedTextKind::Subtitle,
-                standard,
-                id_to_file,
-                cpl_path,
-                &mut notes,
+        let blocks = sub_re
+            .captures_iter(reel)
+            .map(|cap| (TimedTextKind::Subtitle, cap))
+            .chain(
+                ccap_re
+                    .captures_iter(reel)
+                    .map(|cap| (TimedTextKind::ClosedCaption, cap)),
             );
-        }
-        for cap in ccap_re.captures_iter(reel) {
+        for (kind, cap) in blocks {
             let block = cap.get(1).unwrap().as_str();
             content_notes(
                 block,
                 reel,
-                TimedTextKind::ClosedCaption,
+                kind,
                 standard,
                 id_to_file,
+                keys,
                 cpl_path,
+                &mut skipped,
                 &mut notes,
             );
         }
     }
+    notes.extend(skipped.note(cpl_path));
     notes
+}
+
+/// Timed-text assets whose essence could not be read, so the rules below never
+/// saw them. Counted per CPL and reported once: saying it per rule per asset
+/// would bury the findings that did run.
+#[derive(Default)]
+struct SkippedEssence {
+    assets: u32,
+    /// true when a KDM was supplied but did not carry the asset's content key,
+    /// which is an operator error rather than the ordinary no-keys case.
+    had_kdm: bool,
+}
+
+impl SkippedEssence {
+    /// One note stating which assets the timed-text rules could not examine.
+    /// A package validated without its KDM is a normal thing to do, so that case
+    /// is informational; a KDM that does not cover the essence is a warning.
+    fn note(&self, cpl_path: &Path) -> Option<Note> {
+        if self.assets == 0 {
+            return None;
+        }
+        let message = format!(
+            "timed-text rules did not run on {} encrypted asset(s): {}",
+            self.assets,
+            if self.had_kdm {
+                "the KDM does not carry their content keys"
+            } else {
+                "no KDM and recipient key were supplied"
+            }
+        );
+        let note = if self.had_kdm {
+            Note::warning(Code::KdmRequired, message)
+        } else {
+            Note::info(Code::KdmRequired, message)
+        };
+        Some(note.with_file(cpl_path))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1837,11 +1894,19 @@ fn content_notes(
     kind: TimedTextKind,
     standard: Standard,
     id_to_file: &HashMap<String, PathBuf>,
+    keys: &crate::kdm::ContentKeys,
     cpl_path: &Path,
+    skipped: &mut SkippedEssence,
     notes: &mut Vec<Note>,
 ) {
-    let Some(xml) = subtitle_xml(block, id_to_file) else {
-        return; // essence missing/encrypted/unreadable
+    let xml = match timed_text_source(block, id_to_file, keys) {
+        TimedTextSource::Document(xml) => xml,
+        TimedTextSource::Encrypted { had_kdm } => {
+            skipped.assets += 1;
+            skipped.had_kdm |= had_kdm;
+            return;
+        }
+        TimedTextSource::Unavailable => return,
     };
     let fps = extract_rate(block, "EditRate")
         .or_else(|| reel_picture_edit_rate(reel))
@@ -2225,6 +2290,7 @@ fn subtitle_time_code_rate(xml: &str) -> Option<u64> {
 pub fn check_subtitle_frame_rate(
     cpl_path: &Path,
     id_to_file: &HashMap<String, PathBuf>,
+    keys: &crate::kdm::ContentKeys,
 ) -> Vec<Note> {
     let mut notes = Vec::new();
     let Ok(content) = std::fs::read_to_string(cpl_path) else {
@@ -2247,7 +2313,7 @@ pub fn check_subtitle_frame_rate(
         let expected = (n as f64 / d as f64).round() as u64;
         for cap in sub_re.captures_iter(reel) {
             let block = cap.get(1).unwrap().as_str();
-            let Some(xml) = subtitle_xml(block, id_to_file) else {
+            let TimedTextSource::Document(xml) = timed_text_source(block, id_to_file, keys) else {
                 continue;
             };
             let Some(rate) = subtitle_time_code_rate(&xml) else {
@@ -2564,6 +2630,12 @@ mod tests {
             r#"<CompositionPlaylist><MainSound><Id>urn:uuid:00000000-0000-0000-0000-000000000002</Id><MCALabelDictionaryId>urn:smpte:ul:x</MCALabelDictionaryId></MainSound></CompositionPlaylist>"#,
         );
         assert!(check_audio_channels(labeled.path(), &HashMap::new()).is_empty());
+    }
+
+    /// No KDM: the cases below use cleartext fixtures, so key resolution never
+    /// comes into it.
+    fn no_keys() -> crate::kdm::ContentKeys {
+        crate::kdm::ContentKeys::none()
     }
 
     fn write_cpl(xml: &str) -> tempfile::NamedTempFile {
@@ -3199,7 +3271,8 @@ mod tests {
     #[test]
     fn first_subtitle_too_early_warns() {
         let (cpl, _dir, id_to_file) = subtitle_case(&smpte_sub("00:00:01:000"), None);
-        let notes = check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file);
+        let notes =
+            check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file, &no_keys());
         assert!(
             notes
                 .iter()
@@ -3212,7 +3285,8 @@ mod tests {
     fn first_subtitle_after_four_seconds_passes() {
         let (cpl, _dir, id_to_file) = subtitle_case(&smpte_sub("00:00:05:000"), None);
         assert!(
-            check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file).is_empty(),
+            check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file, &no_keys())
+                .is_empty(),
             "5s subtitle must be clean"
         );
     }
@@ -3223,7 +3297,8 @@ mod tests {
         // bug #2757: only the first reel matters, empty placeholders are ignored.
         let (cpl, _dir, id_to_file) = subtitle_case(EMPTY_SUB, Some(&smpte_sub("00:00:00:000")));
         assert!(
-            check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file).is_empty(),
+            check_first_subtitle_timing(cpl.path(), Standard::Smpte, &id_to_file, &no_keys())
+                .is_empty(),
             "empty first-reel subtitle must not warn regardless of later reels"
         );
     }
@@ -3273,7 +3348,7 @@ mod tests {
     }
 
     fn content(cpl: &Path, id_to_file: &HashMap<String, PathBuf>) -> Vec<Note> {
-        check_timed_text_content(cpl, Standard::Smpte, id_to_file)
+        check_timed_text_content(cpl, Standard::Smpte, id_to_file, &no_keys())
     }
 
     #[test]
@@ -3587,7 +3662,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            check_subtitle_frame_rate(cpl.path(), &map)
+            check_subtitle_frame_rate(cpl.path(), &map, &no_keys())
                 .iter()
                 .any(|n| n.code == Code::SubtitleFrameRateMismatch),
             "25 vs 24 must be flagged"
@@ -3600,7 +3675,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            check_subtitle_frame_rate(cpl.path(), &map).is_empty(),
+            check_subtitle_frame_rate(cpl.path(), &map, &no_keys()).is_empty(),
             "24 vs 24 must be clean"
         );
     }
