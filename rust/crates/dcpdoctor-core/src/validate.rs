@@ -500,21 +500,18 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             }
             if let Some(&asset_path) = id_to_path.get(reel.subtitle.id.as_str()) {
                 let full_path = dcp_dir.join(asset_path);
-                // plain-XML subs get the full structural + glyph check; MXF-wrapped
-                // SMPTE subs get the glyph check straight from the essence below
+                if !full_path.exists() {
+                    continue;
+                }
+                // A loose XML asset is read from disk, a SMPTE ST 429-5 asset is
+                // unwrapped from its MXF; from there both take the same path, so a
+                // wrapped subtitle gets the structural rules and not only glyphs.
                 let is_xml = full_path
                     .extension()
                     .and_then(|e| e.to_str())
                     .is_some_and(|e| e.eq_ignore_ascii_case("xml"));
-                if is_xml && full_path.exists() {
-                    if let Some(schema_dir) = schema_dir.as_deref() {
-                        for note in crate::schema::check_schema(&full_path, schema_dir) {
-                            result.add(note);
-                        }
-                    }
-                    for note in crate::subtitle::validate_subtitle(&full_path, dcp.standard) {
-                        result.add(note);
-                    }
+
+                let (xml, glyph_notes) = if is_xml {
                     // glyph coverage: resolve each LoadFont to a font file and
                     // check every used code point against its cmap.
                     let sub_dir = full_path.parent().unwrap_or(dcp_dir).to_path_buf();
@@ -539,25 +536,45 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                         }
                         None
                     };
-                    for note in crate::subtitle::check_glyph_coverage(&full_path, resolve) {
-                        result.add(note);
+                    (
+                        std::fs::read_to_string(&full_path).ok(),
+                        crate::subtitle::check_glyph_coverage(&full_path, resolve),
+                    )
+                } else {
+                    // one trip through the MXF feeds the schema, structural and
+                    // glyph passes (decrypting with the KDM where one was supplied)
+                    match crate::subtitle::read_wrapped_timed_text(&full_path, &content_keys) {
+                        Some(asset) => {
+                            for note in asset.notes.iter().cloned() {
+                                result.add(note);
+                            }
+                            if asset.is_unreadable() {
+                                (None, Vec::new())
+                            } else {
+                                let glyphs = crate::subtitle::check_glyph_coverage_wrapped(
+                                    &asset, &full_path,
+                                );
+                                (Some(asset.xml), glyphs)
+                            }
+                        }
+                        None => (None, Vec::new()),
                     }
-                } else if full_path.exists() {
-                    // SMPTE ST 429-5 MXF-wrapped timed text: the document and its
-                    // fonts are inside the essence, so unwrap both from the MXF
-                    // (decrypting with the KDM when the essence is encrypted).
-                    if let Some(schema_dir) = schema_dir.as_deref()
-                        && let Some(xml) =
-                            crate::subtitle::timed_text_xml(&full_path, &content_keys)
-                    {
+                };
+
+                if let Some(xml) = xml {
+                    if let Some(schema_dir) = schema_dir.as_deref() {
                         for note in crate::schema::check_schema_xml(&xml, &full_path, schema_dir) {
                             result.add(note);
                         }
                     }
-                    for note in crate::subtitle::check_glyph_coverage_mxf(&full_path, &content_keys)
+                    for note in
+                        crate::subtitle::validate_subtitle_xml(&xml, &full_path, dcp.standard)
                     {
                         result.add(note);
                     }
+                }
+                for note in glyph_notes {
+                    result.add(note);
                 }
             }
         }
@@ -1549,6 +1566,79 @@ mod tests {
             "xmllint and the schemas are both present here, got: {:?}",
             result.notes
         );
+    }
+
+    // A SMPTE package's subtitles are MXF-wrapped, and the structural rules used
+    // to run only on loose .xml assets, so none of them fired on a real package.
+    #[test]
+    fn a_wrapped_subtitle_reaches_the_structural_rules_through_the_pipeline() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub_id = "11111111-2222-3333-4444-555555555555";
+        let font_uuid = [0xCD; 16];
+
+        // this document has an Id and a font but no ReelNumber and no Language
+        let document = r#"<?xml version="1.0"?>
+<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:Id>urn:uuid:22222222-2222-3333-4444-555555555555</dcst:Id>
+  <dcst:LoadFont ID="f1">urn:uuid:cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd</dcst:LoadFont>
+  <dcst:SubtitleList>
+    <dcst:Font ID="f1">
+      <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
+        <dcst:Text>Hi</dcst:Text>
+      </dcst:Subtitle>
+    </dcst:Font>
+  </dcst:SubtitleList>
+</dcst:SubtitleReel>"#;
+        let mxf = crate::subtitle::tests::write_mxf(
+            dir.path(),
+            document,
+            Some((&crate::subtitle::tests::make_font(&['H', 'i']), font_uuid)),
+        );
+        let mxf_name = mxf.file_name().unwrap().to_string_lossy().to_string();
+
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+    <Asset><Id>urn:uuid:{sub_id}</Id>
+      <ChunkList><Chunk><Path>{mxf_name}</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><Duration>48</Duration></MainPicture>
+      <MainSubtitle><Id>urn:uuid:{sub_id}</Id><Duration>48</Duration></MainSubtitle>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+
+        let notes = verify_dcp(dir.path(), &VerifyOptions::default()).notes;
+        for missing in ["ReelNumber", "Language"] {
+            assert!(
+                notes.iter().any(|n| n.code == Code::MissingRequiredElement
+                    && n.message.contains(missing)
+                    && n.file.as_deref() == Some(&*mxf)),
+                "a wrapped subtitle missing {missing} must fire from verify_dcp, got: {notes:?}"
+            );
+        }
     }
 
     // SMPTE ST 428-7 carries the font asset id as the LoadFont element text, and

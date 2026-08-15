@@ -5,7 +5,7 @@ use quick_xml::events::{BytesStart, Event};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Validate a subtitle/timed text XML file.
+/// Validate a subtitle/timed text XML file held on disk.
 pub fn validate_subtitle(file: &Path, standard: Standard) -> Vec<Note> {
     let xml = match std::fs::read_to_string(file) {
         Ok(s) => s,
@@ -19,7 +19,13 @@ pub fn validate_subtitle(file: &Path, standard: Standard) -> Vec<Note> {
             }];
         }
     };
+    validate_subtitle_xml(&xml, file, standard)
+}
 
+/// The same structural rules against a document already in memory, so an
+/// MXF-wrapped ST 429-5 asset gets everything a loose XML one does. `file` is
+/// the path findings name: the XML asset, or the MXF it was unwrapped from.
+pub fn validate_subtitle_xml(xml: &str, file: &Path, standard: Standard) -> Vec<Note> {
     let mut notes = Vec::new();
 
     // Check if the namespace matches the standard. ST 428-7 §6.1: the DCST
@@ -27,10 +33,13 @@ pub fn validate_subtitle(file: &Path, standard: Standard) -> Vec<Note> {
     // document non-conformant and unparseable by a compliant player (ERROR).
     match standard {
         Standard::Smpte => {
-            if !xml.contains("http://www.smpte-ra.org/schemas/428-7/2010/DCST") {
+            // ST 428-7 has three published namespaces and a package may use any
+            // of them; accepting only one would reject a conformant 2007 or 2014
+            // document, which nothing caught while this ran on loose XML only.
+            if !crate::schema::smpte_subtitle_namespaces().any(|ns| xml.contains(ns)) {
                 notes.push(err(
                     Code::SmpteNamespaceWrong,
-                    "Subtitle file does not use SMPTE namespace".into(),
+                    "Subtitle file does not use a SMPTE ST 428-7 namespace".into(),
                     file,
                 ));
             }
@@ -51,7 +60,7 @@ pub fn validate_subtitle(file: &Path, standard: Standard) -> Vec<Note> {
         Standard::Unknown => {}
     }
 
-    check_structure(&xml, file, &mut notes);
+    check_structure(xml, file, &mut notes);
 
     notes
 }
@@ -447,59 +456,78 @@ pub fn check_glyph_coverage(
     })
 }
 
-/// Same glyph-coverage check for a SMPTE MXF-wrapped ST 429-5 subtitle asset:
-/// read the timed-text document from the MXF, pull its embedded OpenType fonts
-/// (ancillary resources), and check every used code point against the font a
-/// LoadFont urn resolves to. Encrypted essence is decrypted with `keys`; without
-/// a covering key it skips (with a note when a KDM was supplied but lacks the
-/// KeyId). Any unreadable MXF is skipped silently.
-pub fn check_glyph_coverage_mxf(mxf_path: &Path, keys: &crate::kdm::ContentKeys) -> Vec<Note> {
-    let (xml, fonts, mut notes) = match read_mxf_timed_text(mxf_path, keys) {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-    notes.extend(glyph_notes(&xml, mxf_path, |decl| {
+/// Glyph coverage for a wrapped asset already read out of its MXF: check every
+/// used code point against the embedded font a LoadFont urn resolves to.
+pub fn check_glyph_coverage_wrapped(asset: &WrappedTimedText, source: &Path) -> Vec<Note> {
+    glyph_notes(&asset.xml, source, |decl| {
         decl.urn
             .as_deref()
             .and_then(parse_urn_uuid)
-            .and_then(|u| fonts.get(&u).cloned())
-    }));
-    notes
+            .and_then(|u| asset.fonts.get(&u).cloned())
+    })
 }
 
-/// The ST 429-5 timed-text document inside a subtitle MXF, for callers that want
-/// the XML itself (the XSD pass) rather than its fonts. `None` when the MXF can't
-/// be read or is encrypted with no covering key.
-pub fn timed_text_xml(mxf_path: &Path, keys: &crate::kdm::ContentKeys) -> Option<String> {
-    read_mxf_timed_text(mxf_path, keys)
-        .map(|(xml, _, _)| xml)
-        .filter(|xml| !xml.is_empty())
+/// Everything a SMPTE ST 429-5 wrapped timed-text asset holds: the document, its
+/// embedded OpenType fonts keyed by resource uuid, the ResourceID the descriptor
+/// declares and the duration the essence carries. Read once so the structural,
+/// schema, identity and glyph passes share one trip through the MXF.
+#[derive(Debug, Default)]
+pub struct WrappedTimedText {
+    pub xml: String,
+    pub fonts: HashMap<[u8; 16], Vec<u8>>,
+    /// Total bytes of the embedded fonts, which Bv2.1 caps.
+    pub font_bytes: usize,
+    /// `AssetID` of the timed-text descriptor, which ST 429-5 calls the
+    /// ResourceID and requires to equal the document's own `<Id>`.
+    pub resource_id: [u8; 16],
+    /// `AssetUUID` from the MXF header, the id the CPL and PKL reference.
+    pub asset_id: [u8; 16],
+    /// Frames of essence the container declares.
+    pub container_duration: u32,
+    /// Decryption or skip notes produced while reading.
+    pub notes: Vec<Note>,
 }
 
-/// A timed-text document, its embedded OpenType fonts keyed by resource uuid, and
-/// any decryption/skip notes produced while reading.
-type MxfTimedText = (String, HashMap<[u8; 16], Vec<u8>>, Vec<Note>);
+impl WrappedTimedText {
+    /// True when the essence could not be read (encrypted with no covering key),
+    /// so callers skip the document-level rules rather than reporting on nothing.
+    pub fn is_unreadable(&self) -> bool {
+        self.xml.is_empty()
+    }
+}
 
-/// Read the timed-text document and every embedded OpenType font from a
-/// timed-text MXF, decrypting with `keys` when the essence is encrypted. Returns
-/// `None` if the MXF can't be opened, its document can't be read, or it is
-/// encrypted with no covering key (a skip note is emitted in the returned Vec
-/// only when a KDM was supplied). Non-font resources (Png, Binary) are ignored.
-fn read_mxf_timed_text(mxf_path: &Path, keys: &crate::kdm::ContentKeys) -> Option<MxfTimedText> {
+/// Read a timed-text MXF: its document, embedded OpenType fonts, identity fields
+/// and duration, decrypting with `keys` when the essence is encrypted. `None`
+/// when the MXF can't be opened or its document can't be read. An asset encrypted
+/// with no covering key comes back readable-but-empty, carrying only the skip
+/// note (and only when a KDM was supplied). Non-font resources (Png, Binary) are
+/// ignored for glyph coverage but still count toward the font byte total.
+pub fn read_wrapped_timed_text(
+    mxf_path: &Path,
+    keys: &crate::kdm::ContentKeys,
+) -> Option<WrappedTimedText> {
     let s = mxf_path.to_str()?;
     let mut reader = asdcplib::timed_text::MxfReader::new();
     reader.open_read(s).ok()?;
 
     let info = reader.writer_info().ok()?;
+    let descriptor = reader.descriptor().ok()?;
+    let identity = WrappedTimedText {
+        resource_id: descriptor.asset_id,
+        asset_id: info.asset_uuid,
+        container_duration: descriptor.container_duration,
+        ..Default::default()
+    };
+
     let essence = keys.resolve(&info);
     if essence.is_missing() {
-        // encrypted with no key: skip (with a note only when a KDM was supplied).
-        // caller drops the whole asset when None comes back, so surface the note
-        // through a one-off Vec here.
-        if let Some(note) = essence.skip_note(mxf_path) {
-            return Some((String::new(), HashMap::new(), vec![note]));
-        }
-        return None;
+        // encrypted with no key: the identity fields are still readable, but the
+        // document is not, so hand back what we have plus the skip note (which
+        // only exists when a KDM was supplied).
+        return Some(WrappedTimedText {
+            notes: essence.skip_note(mxf_path).into_iter().collect(),
+            ..identity
+        });
     }
     let mut ctx = essence.contexts().ok()?;
 
@@ -517,14 +545,13 @@ fn read_mxf_timed_text(mxf_path: &Path, keys: &crate::kdm::ContentKeys) -> Optio
     };
 
     let mut fonts: HashMap<[u8; 16], Vec<u8>> = HashMap::new();
+    let mut font_bytes = 0usize;
     let count = reader.ancillary_resource_count().ok()?;
     for i in 0..count {
         let Ok(info) = reader.ancillary_resource_info(i) else {
             continue;
         };
-        if info.mime_type != asdcplib::timed_text::MimeType::OpenType {
-            continue; // Png bitmap subs / Binary are not fonts
-        }
+        let is_font = info.mime_type == asdcplib::timed_text::MimeType::OpenType;
         let mut fbuf: Vec<u8> = Vec::new();
         let (dec, hmac) = split_ctx(ctx.as_mut());
         let bytes = match reader.read_ancillary_resource(&info.uuid, &mut fbuf, dec, hmac) {
@@ -534,14 +561,23 @@ fn read_mxf_timed_text(mxf_path: &Path, keys: &crate::kdm::ContentKeys) -> Optio
                 let (dec, hmac) = split_ctx(ctx.as_mut());
                 match reader.read_ancillary_resource(&info.uuid, &mut fbuf, dec, hmac) {
                     Ok(n) => fbuf[..n].to_vec(),
-                    Err(_) => continue, // unreadable font: skip
+                    Err(_) => continue, // unreadable resource: skip
                 }
             }
             Err(_) => continue,
         };
+        if !is_font {
+            continue; // Png bitmap subs / Binary are not fonts
+        }
+        font_bytes += bytes.len();
         fonts.insert(info.uuid, bytes);
     }
-    Some((xml, fonts, Vec::new()))
+    Some(WrappedTimedText {
+        xml,
+        fonts,
+        font_bytes,
+        ..identity
+    })
 }
 
 /// Split optional decrypt contexts into the (dec, hmac) pair the readers take.
@@ -882,7 +918,7 @@ pub(crate) mod tests {
 
     /// Build a timed-text MXF at `dir/sub.mxf` carrying `doc`, optionally embedding
     /// `font` as an OpenType ancillary resource keyed by `font_uuid`.
-    fn write_mxf(dir: &Path, doc: &str, font: Option<(&[u8], [u8; 16])>) -> PathBuf {
+    pub(crate) fn write_mxf(dir: &Path, doc: &str, font: Option<(&[u8], [u8; 16])>) -> PathBuf {
         use asdcplib::timed_text::*;
         use asdcplib::{EDIT_RATE_24, WriterInfo};
 
@@ -944,8 +980,9 @@ pub(crate) mod tests {
         let doc = mxf_doc("Hi", &uuid_urn(&uuid));
         let path = write_mxf(dir.path(), &doc, Some((&make_font(&['H', 'i']), uuid)));
 
-        let xml = timed_text_xml(&path, &crate::kdm::ContentKeys::none())
-            .expect("the wrapped document must come back out of the MXF");
+        let asset = read_wrapped_timed_text(&path, &crate::kdm::ContentKeys::none())
+            .expect("the wrapped asset must be readable");
+        let xml = asset.xml;
         assert!(xml.contains("SubtitleReel"), "got: {xml}");
 
         // that document omits required ST 428-7 elements, so the XSD must object,
@@ -960,13 +997,21 @@ pub(crate) mod tests {
         );
     }
 
+    /// Glyph coverage for a wrapped asset, read straight off disk.
+    fn wrapped_glyph_notes(path: &Path) -> Vec<Note> {
+        match read_wrapped_timed_text(path, &crate::kdm::ContentKeys::none()) {
+            Some(asset) => check_glyph_coverage_wrapped(&asset, path),
+            None => Vec::new(),
+        }
+    }
+
     #[test]
     fn mxf_missing_glyph_fires() {
         let dir = tempfile::tempdir().unwrap();
         let uuid = [0xAB; 16];
         let doc = mxf_doc("Hé", &uuid_urn(&uuid)); // 'é' absent from the embedded font
         let path = write_mxf(dir.path(), &doc, Some((&make_font(&['H', 'i']), uuid)));
-        let notes = check_glyph_coverage_mxf(&path, &crate::kdm::ContentKeys::none());
+        let notes = wrapped_glyph_notes(&path);
         assert_eq!(notes.len(), 1, "got: {notes:?}");
         assert_eq!(notes[0].code, Code::SubtitleGlyphMissing);
         assert!(
@@ -983,8 +1028,73 @@ pub(crate) mod tests {
         let uuid = [0xCD; 16];
         let doc = mxf_doc("Hi", &uuid_urn(&uuid));
         let path = write_mxf(dir.path(), &doc, Some((&make_font(&['H', 'i']), uuid)));
-        let notes = check_glyph_coverage_mxf(&path, &crate::kdm::ContentKeys::none());
+        let notes = wrapped_glyph_notes(&path);
         assert!(notes.is_empty(), "expected clean, got: {notes:?}");
+    }
+
+    // every published ST 428-7 namespace is conformant, and the structural rules
+    // now run on every SMPTE package, so accepting only 2010 would have turned a
+    // valid 2007 or 2014 document into an error on real packages.
+    #[test]
+    fn all_three_st_428_7_namespaces_are_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        for namespace in crate::schema::smpte_subtitle_namespaces() {
+            let doc =
+                VALID_SMPTE.replace("http://www.smpte-ra.org/schemas/428-7/2010/DCST", namespace);
+            let path = dir.path().join("sub.xml");
+            std::fs::write(&path, &doc).unwrap();
+            let notes = validate_subtitle(&path, Standard::Smpte);
+            assert!(
+                !notes.iter().any(|n| n.code == Code::SmpteNamespaceWrong),
+                "{namespace} is a published ST 428-7 namespace, got: {notes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_document_in_no_st_428_7_namespace_still_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = VALID_SMPTE.replace(
+            "http://www.smpte-ra.org/schemas/428-7/2010/DCST",
+            "http://example.invalid/DCST",
+        );
+        let path = dir.path().join("sub.xml");
+        std::fs::write(&path, &doc).unwrap();
+        assert!(
+            validate_subtitle(&path, Standard::Smpte)
+                .iter()
+                .any(|n| n.code == Code::SmpteNamespaceWrong),
+            "an unpublished namespace must still be rejected"
+        );
+    }
+
+    // the structural rule set used to run only on loose .xml assets, so a SMPTE
+    // package (whose subtitles are always wrapped) got none of it.
+    #[test]
+    fn wrapped_documents_reach_the_structural_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid = [0xCD; 16];
+        // mxf_doc omits ReelNumber and Language, which the structural rules want
+        let path = write_mxf(
+            dir.path(),
+            &mxf_doc("Hi", &uuid_urn(&uuid)),
+            Some((&make_font(&['H', 'i']), uuid)),
+        );
+        let asset = read_wrapped_timed_text(&path, &crate::kdm::ContentKeys::none())
+            .expect("the wrapped asset must be readable");
+        let notes = validate_subtitle_xml(&asset.xml, &path, Standard::Smpte);
+        for missing in ["ReelNumber", "Language"] {
+            assert!(
+                notes
+                    .iter()
+                    .any(|n| n.code == Code::MissingRequiredElement && n.message.contains(missing)),
+                "a wrapped document missing {missing} must fire, got: {notes:?}"
+            );
+        }
+        assert!(
+            notes.iter().all(|n| n.file.as_deref() == Some(&*path)),
+            "findings must name the MXF the document came from, got: {notes:?}"
+        );
     }
 
     #[test]
@@ -993,7 +1103,7 @@ pub(crate) mod tests {
         // urn points at a font that isn't embedded: no OpenType resource to check
         let doc = mxf_doc("Hé", &uuid_urn(&[0xEF; 16]));
         let path = write_mxf(dir.path(), &doc, None);
-        let notes = check_glyph_coverage_mxf(&path, &crate::kdm::ContentKeys::none());
+        let notes = wrapped_glyph_notes(&path);
         assert!(notes.is_empty(), "expected silent skip, got: {notes:?}");
     }
 }

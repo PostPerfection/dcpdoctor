@@ -31,6 +31,15 @@ const SMPTE_SUBTITLE_SCHEMAS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The ST 428-7 timed-text namespaces, newest publication last. One list, so the
+/// schema router and the structural namespace check cannot disagree about which
+/// versions of the format exist.
+pub(crate) fn smpte_subtitle_namespaces() -> impl Iterator<Item = &'static str> {
+    SMPTE_SUBTITLE_SCHEMAS
+        .iter()
+        .map(|(namespace, _)| *namespace)
+}
+
 /// Interop subtitles are a DCSubtitle document in no namespace at all, so the
 /// root element name is the only signal and the vendored XSD carries no
 /// targetNamespace to match against.
