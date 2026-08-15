@@ -4,13 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{local_name, local_name_end, root_is, strip_urn_uuid};
 
-/// A reel essence reference (picture, sound or subtitle).
+/// A reel essence reference (picture, sound, subtitle or closed caption).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReelAsset {
     pub id: String,
     pub edit_rate: String,
     pub duration: i64,
-    pub entry_point: i64,
+    /// `None` when the element is absent, which ST 429-2 treats differently from
+    /// an explicit 0: timed text must carry one and it must be 0.
+    pub entry_point: Option<i64>,
     /// Base64 SHA-1 of the referenced file, from the asset's `Hash` element.
     /// Empty when the element is absent: ST 429-7 makes it optional in the CPL
     /// schema, so absence is a finding rather than a parse failure.
@@ -24,6 +26,9 @@ pub struct Reel {
     pub picture: ReelAsset,
     pub sound: ReelAsset,
     pub subtitle: ReelAsset,
+    /// A reel may carry several caption tracks, one per language, and Bv2.1
+    /// requires every reel to carry the same number of them.
+    pub closed_captions: Vec<ReelAsset>,
     pub stereoscopic: bool,
 }
 
@@ -56,6 +61,8 @@ pub fn parse_cpl(xml: &str) -> Option<Cpl> {
     let mut in_main_picture = false;
     let mut in_main_sound = false;
     let mut in_main_subtitle = false;
+    let mut in_closed_caption = false;
+    let mut current_caption = ReelAsset::default();
     let mut current_reel = Reel::default();
     let mut current_tag = String::new();
     // number of open elements, so top-level fields sit at depth 2
@@ -79,6 +86,12 @@ pub fn parse_cpl(xml: &str) -> Option<Cpl> {
                     }
                     "MainSound" if in_reel => in_main_sound = true,
                     "MainSubtitle" if in_reel => in_main_subtitle = true,
+                    // SMPTE Bv2.1 names it MainClosedCaption; the Interop
+                    // digicine CC-CPL extension names it ClosedCaption
+                    "MainClosedCaption" | "ClosedCaption" if in_reel => {
+                        in_closed_caption = true;
+                        current_caption = ReelAsset::default();
+                    }
                     _ => current_tag = name,
                 }
             }
@@ -95,6 +108,14 @@ pub fn parse_cpl(xml: &str) -> Option<Cpl> {
                     "MainPicture" | "MainStereoscopicPicture" => in_main_picture = false,
                     "MainSound" => in_main_sound = false,
                     "MainSubtitle" => in_main_subtitle = false,
+                    "MainClosedCaption" | "ClosedCaption" => {
+                        if in_closed_caption {
+                            current_reel
+                                .closed_captions
+                                .push(std::mem::take(&mut current_caption));
+                        }
+                        in_closed_caption = false;
+                    }
                     _ => {}
                 }
                 current_tag.clear();
@@ -105,7 +126,9 @@ pub fn parse_cpl(xml: &str) -> Option<Cpl> {
                     continue;
                 }
 
-                if in_main_picture {
+                if in_closed_caption {
+                    fill_reel_asset(&mut current_caption, &current_tag, text);
+                } else if in_main_picture {
                     fill_reel_asset(&mut current_reel.picture, &current_tag, text);
                 } else if in_main_sound {
                     fill_reel_asset(&mut current_reel.sound, &current_tag, text);
@@ -143,7 +166,7 @@ fn fill_reel_asset(asset: &mut ReelAsset, tag: &str, text: String) {
         "Id" => asset.id = strip_urn_uuid(&text),
         "EditRate" => asset.edit_rate = text,
         "Duration" | "IntrinsicDuration" => asset.duration = text.parse().unwrap_or(0),
-        "EntryPoint" => asset.entry_point = text.parse().unwrap_or(0),
+        "EntryPoint" => asset.entry_point = Some(text.parse().unwrap_or(0)),
         "Hash" => asset.hash = text,
         _ => {}
     }
@@ -207,7 +230,11 @@ mod tests {
         assert_eq!(reel.picture.edit_rate, "24 1");
         // Duration comes last and wins over IntrinsicDuration
         assert_eq!(reel.picture.duration, 48);
-        assert_eq!(reel.picture.entry_point, 12);
+        assert_eq!(reel.picture.entry_point, Some(12));
+        assert_eq!(
+            reel.sound.entry_point, None,
+            "an absent EntryPoint must not read back as 0"
+        );
         assert_eq!(reel.picture.hash, "Q0lqBCWQW113PAgvQLJhCKV49Z4=");
         assert_eq!(reel.sound.id, "6b6673ae-d44d-4153-93ad-5333d7af01fb");
         assert!(
@@ -216,6 +243,36 @@ mod tests {
         );
         assert_eq!(reel.subtitle.id, "11111111-2222-3333-4444-555555555555");
         assert!(!reel.stereoscopic);
+    }
+
+    // a reel carries one caption track per language, and the Bv2.1 rule that
+    // every reel have the same number of them needs all of them, not the first
+    #[test]
+    fn every_closed_caption_track_in_a_reel_is_parsed() {
+        let xml = CPL.replace(
+            "</MainSubtitle>",
+            r#"</MainSubtitle>
+        <MainClosedCaption>
+          <Id>urn:uuid:aaaaaaaa-0000-0000-0000-000000000001</Id>
+          <EntryPoint>0</EntryPoint>
+          <Duration>48</Duration>
+        </MainClosedCaption>
+        <MainClosedCaption>
+          <Id>urn:uuid:aaaaaaaa-0000-0000-0000-000000000002</Id>
+          <Duration>48</Duration>
+        </MainClosedCaption>"#,
+        );
+        let cpl = parse_cpl(&xml).unwrap();
+        let captions = &cpl.reels[0].closed_captions;
+        assert_eq!(captions.len(), 2, "both caption tracks must be parsed");
+        assert_eq!(captions[0].id, "aaaaaaaa-0000-0000-0000-000000000001");
+        assert_eq!(captions[0].entry_point, Some(0));
+        assert_eq!(captions[1].id, "aaaaaaaa-0000-0000-0000-000000000002");
+        assert_eq!(captions[1].entry_point, None);
+        assert_eq!(
+            cpl.reels[0].subtitle.id, "11111111-2222-3333-4444-555555555555",
+            "the subtitle track must not be clobbered by the caption tracks"
+        );
     }
 
     #[test]

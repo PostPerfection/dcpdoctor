@@ -608,10 +608,36 @@ fn split_ctx(
     }
 }
 
+/// The `<Id>` a timed-text document declares, as raw uuid bytes. ST 429-5 calls
+/// this the resource id and requires the MXF descriptor to repeat it. Reads the
+/// first `Id` element, which in both DCST and DCSubtitle is the document's own.
+pub fn document_id(xml: &str) -> Option<[u8; 16]> {
+    let mut reader = Reader::from_str(xml);
+    let mut in_id = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => {
+                let name = String::from_utf8_lossy(e.name().local_name().as_ref()).into_owned();
+                in_id = name == "Id" || name == "SubtitleID";
+            }
+            Ok(Event::Text(e)) if in_id => {
+                return parse_urn_uuid(&dcpdoctor_parse::text_of(&e));
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+    }
+}
+
 /// Parse `urn:uuid:xxxxxxxx-xxxx-...` into its 16 raw bytes. Returns `None` on a
-/// urn that isn't a well-formed uuid.
+/// urn that isn't a well-formed uuid. An Interop `SubtitleID` carries the bare
+/// uuid with no urn prefix, so that form is accepted too.
 fn parse_urn_uuid(urn: &str) -> Option<[u8; 16]> {
-    let hex = urn.trim().strip_prefix("urn:uuid:")?.replace('-', "");
+    let trimmed = urn.trim();
+    let hex = trimmed
+        .strip_prefix("urn:uuid:")
+        .unwrap_or(trimmed)
+        .replace('-', "");
     if hex.len() != 32 {
         return None;
     }
@@ -931,22 +957,45 @@ pub(crate) mod tests {
         )
     }
 
+    /// AssetUUID of the fixture track file. ST 429-5 wants it distinct from both
+    /// the ResourceID and the document's own Id, so the fixtures below are
+    /// conformant unless a case deliberately breaks that.
+    pub(crate) const FIXTURE_ASSET_UUID: [u8; 16] = [4; 16];
+
+    /// Frames of essence the fixture declares, which the reel Duration must match.
+    pub(crate) const FIXTURE_CONTAINER_DURATION: u32 = 96;
+
     /// Build a timed-text MXF at `dir/sub.mxf` carrying `doc`, optionally embedding
-    /// `font` as an OpenType ancillary resource keyed by `font_uuid`.
+    /// `font` as an OpenType ancillary resource keyed by `font_uuid`. The
+    /// descriptor's ResourceID is taken from the document's own Id, which is what
+    /// ST 429-5 requires.
     pub(crate) fn write_mxf(dir: &Path, doc: &str, font: Option<(&[u8], [u8; 16])>) -> PathBuf {
+        let resource_id = document_id(doc).unwrap_or([5; 16]);
+        write_mxf_with_ids(dir, doc, font, FIXTURE_ASSET_UUID, resource_id)
+    }
+
+    /// Same, with the two MXF-level ids given explicitly so a case can break the
+    /// ST 429-5 identity relationships on purpose.
+    pub(crate) fn write_mxf_with_ids(
+        dir: &Path,
+        doc: &str,
+        font: Option<(&[u8], [u8; 16])>,
+        asset_uuid: [u8; 16],
+        resource_id: [u8; 16],
+    ) -> PathBuf {
         use asdcplib::timed_text::*;
         use asdcplib::{EDIT_RATE_24, WriterInfo};
 
         let path = dir.join("sub.mxf");
         let ps = path.to_string_lossy().to_string();
         let info = WriterInfo {
-            asset_uuid: [4; 16],
+            asset_uuid,
             ..Default::default()
         };
         let desc = TimedTextDescriptor {
             edit_rate: EDIT_RATE_24,
-            container_duration: 96,
-            asset_id: [5; 16],
+            container_duration: FIXTURE_CONTAINER_DURATION,
+            asset_id: resource_id,
         };
         let mut writer = MxfWriter::new();
         match font {

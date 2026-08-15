@@ -193,6 +193,236 @@ fn check_pkl_duplicate_asset_ids(pkl_path: &Path, pkl: &crate::pkl::Pkl) -> Vec<
         .collect()
 }
 
+/// Bv2.1 §7.2.1 caps a timed-text track file at 115 MB, and the fonts inside it
+/// at 10 MB. libdcp reads the font limit as the total across every font in the
+/// asset rather than each one alone, and notes the wording is ambiguous.
+const MAX_TIMED_TEXT_ASSET_BYTES: u64 = 115 * 1024 * 1024;
+const MAX_TIMED_TEXT_FONT_BYTES: usize = 10 * 1024 * 1024;
+
+/// Bv2.1 §7.2.3 caps a closed-caption XML document at 256 kB. Subtitles have no
+/// equivalent cap, so this applies to caption tracks only.
+const MAX_CLOSED_CAPTION_XML_BYTES: usize = 256 * 1024;
+
+/// Which timed-text track class an asset is, since several limits differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimedTextKind {
+    Subtitle,
+    ClosedCaption,
+}
+
+impl TimedTextKind {
+    fn label(self) -> &'static str {
+        match self {
+            TimedTextKind::Subtitle => "subtitle",
+            TimedTextKind::ClosedCaption => "closed caption",
+        }
+    }
+}
+
+/// Shared inputs for the per-asset timed-text checks.
+struct TimedTextContext<'a> {
+    dcp_dir: &'a Path,
+    id_to_path: &'a HashMap<&'a str, &'a str>,
+    schema_dir: Option<&'a Path>,
+    keys: &'a crate::kdm::ContentKeys,
+    standard: crate::Standard,
+}
+
+impl TimedTextContext<'_> {
+    /// Every rule that applies to one timed-text asset. Reads the essence once:
+    /// a loose XML asset from disk, a wrapped one out of its MXF.
+    fn check_asset(&self, asset: &crate::cpl::ReelAsset, kind: TimedTextKind) -> Vec<Note> {
+        let mut notes = Vec::new();
+        if asset.id.is_empty() {
+            return notes;
+        }
+        let Some(&asset_path) = self.id_to_path.get(asset.id.as_str()) else {
+            return notes;
+        };
+        let path = self.dcp_dir.join(asset_path);
+        if !path.exists() {
+            return notes;
+        }
+
+        let is_xml = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("xml"));
+
+        // Bv2.1 caps the track file itself, whichever form it takes
+        if let Ok(size) = std::fs::metadata(&path).map(|m| m.len())
+            && size > MAX_TIMED_TEXT_ASSET_BYTES
+        {
+            notes.push(
+                Note::error(
+                    Code::TimedTextSizeExceeded,
+                    format!(
+                        "{} asset is {size} bytes, over the Bv2.1 maximum {MAX_TIMED_TEXT_ASSET_BYTES}",
+                        kind.label()
+                    ),
+                )
+                .with_file(&path),
+            );
+        }
+
+        let (xml, glyph_notes) = if is_xml {
+            (
+                std::fs::read_to_string(&path).ok(),
+                crate::subtitle::check_glyph_coverage(&path, |decl| self.resolve_font(&path, decl)),
+            )
+        } else {
+            match crate::subtitle::read_wrapped_timed_text(
+                &path,
+                self.keys,
+                crate::subtitle::FontData::Include,
+            ) {
+                Some(wrapped) => {
+                    notes.extend(wrapped.notes.iter().cloned());
+                    if wrapped.is_unreadable() {
+                        (None, Vec::new())
+                    } else {
+                        notes.extend(self.wrapped_asset_notes(&wrapped, asset, kind, &path));
+                        let glyphs = crate::subtitle::check_glyph_coverage_wrapped(&wrapped, &path);
+                        (Some(wrapped.xml), glyphs)
+                    }
+                }
+                None => (None, Vec::new()),
+            }
+        };
+
+        if let Some(xml) = xml {
+            if kind == TimedTextKind::ClosedCaption && xml.len() > MAX_CLOSED_CAPTION_XML_BYTES {
+                notes.push(
+                    Note::error(
+                        Code::TimedTextSizeExceeded,
+                        format!(
+                            "closed caption XML is {} bytes, over the Bv2.1 maximum {MAX_CLOSED_CAPTION_XML_BYTES}",
+                            xml.len()
+                        ),
+                    )
+                    .with_file(&path),
+                );
+            }
+            if let Some(schema_dir) = self.schema_dir {
+                notes.extend(crate::schema::check_schema_xml(&xml, &path, schema_dir));
+            }
+            notes.extend(crate::subtitle::validate_subtitle_xml(
+                &xml,
+                &path,
+                self.standard,
+            ));
+        }
+        notes.extend(glyph_notes);
+        notes
+    }
+
+    /// Rules that need the MXF wrapper rather than the document: the font size
+    /// cap and the ST 429-5 identity and duration relationships.
+    fn wrapped_asset_notes(
+        &self,
+        wrapped: &crate::subtitle::WrappedTimedText,
+        asset: &crate::cpl::ReelAsset,
+        kind: TimedTextKind,
+        path: &Path,
+    ) -> Vec<Note> {
+        let mut notes = Vec::new();
+
+        if wrapped.font_bytes > MAX_TIMED_TEXT_FONT_BYTES {
+            notes.push(
+                Note::error(
+                    Code::TimedTextSizeExceeded,
+                    format!(
+                        "embedded fonts total {} bytes, over the Bv2.1 maximum {MAX_TIMED_TEXT_FONT_BYTES}",
+                        wrapped.font_bytes
+                    ),
+                )
+                .with_file(path),
+            );
+        }
+
+        // ST 429-5: the descriptor's ResourceID names the document inside, and
+        // the AssetUUID names the track file. Reusing one as the other leaves two
+        // different things sharing an id, which is what libdcp rejects.
+        let document_id = crate::subtitle::document_id(&wrapped.xml);
+        if let Some(document_id) = document_id
+            && wrapped.resource_id != document_id
+        {
+            notes.push(
+                Note::error(
+                    Code::TimedTextIdMismatch,
+                    format!(
+                        "MXF ResourceID {} does not match the document's Id {}",
+                        format_uuid(&wrapped.resource_id),
+                        format_uuid(&document_id)
+                    ),
+                )
+                .with_file(path),
+            );
+        }
+        if wrapped.asset_id == wrapped.resource_id
+            || document_id.is_some_and(|id| wrapped.asset_id == id)
+        {
+            notes.push(
+                Note::error(
+                    Code::TimedTextIdMismatch,
+                    format!(
+                        "MXF AssetID {} is reused as the ResourceID or the document Id; ST 429-5 wants three distinct ids",
+                        format_uuid(&wrapped.asset_id)
+                    ),
+                )
+                .with_file(path),
+            );
+        }
+
+        // ST 429-2 §9.4: the reel's Duration is what the essence actually carries
+        if asset.duration > 0 && i64::from(wrapped.container_duration) != asset.duration {
+            notes.push(
+                Note::error(
+                    Code::CplMismatchedDurations,
+                    format!(
+                        "{} essence carries {} frames but the reel declares Duration {}",
+                        kind.label(),
+                        wrapped.container_duration,
+                        asset.duration
+                    ),
+                )
+                .with_file(path),
+            );
+        }
+
+        notes
+    }
+
+    /// Resolve a LoadFont declaration to a font file in the package. Interop
+    /// names a file by URI; SMPTE ST 428-7 names an asset by urn.
+    fn resolve_font(
+        &self,
+        subtitle_path: &Path,
+        decl: &crate::subtitle::FontDecl,
+    ) -> Option<std::path::PathBuf> {
+        if let Some(uri) = &decl.uri {
+            let beside = subtitle_path.parent().unwrap_or(self.dcp_dir).join(uri);
+            if beside.exists() {
+                return Some(beside);
+            }
+            let at_root = self.dcp_dir.join(uri);
+            return at_root.exists().then_some(at_root);
+        }
+        // ASSETMAP ids are stored with urn:uuid: stripped
+        let urn = decl.urn.as_ref()?;
+        let &path = self
+            .id_to_path
+            .get(crate::assetmap::strip_urn_uuid(urn).as_str())?;
+        let path = self.dcp_dir.join(path);
+        path.exists().then_some(path)
+    }
+}
+
+/// Render raw uuid bytes the way findings and CPLs write them.
+fn format_uuid(bytes: &[u8; 16]) -> String {
+    uuid::Uuid::from_bytes(*bytes).to_string()
+}
+
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
@@ -492,92 +722,25 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         }
     }
 
-    // 4b. Validate subtitle assets referenced by CPL reels
+    // 4b. Every timed-text asset a CPL reel references: the XSD pass, the
+    // structural rules, glyph coverage, the Bv2.1 size caps and the ST 429-5
+    // identity rules, all from one read of each asset.
+    let timed_text = TimedTextContext {
+        dcp_dir,
+        id_to_path: &id_to_path,
+        schema_dir: schema_dir.as_deref(),
+        keys: &content_keys,
+        standard: dcp.standard,
+    };
     for (_cpl_path, cpl) in &dcp.cpls {
         for reel in &cpl.reels {
-            if reel.subtitle.id.is_empty() {
-                continue;
-            }
-            if let Some(&asset_path) = id_to_path.get(reel.subtitle.id.as_str()) {
-                let full_path = dcp_dir.join(asset_path);
-                if !full_path.exists() {
-                    continue;
-                }
-                // A loose XML asset is read from disk, a SMPTE ST 429-5 asset is
-                // unwrapped from its MXF; from there both take the same path, so a
-                // wrapped subtitle gets the structural rules and not only glyphs.
-                let is_xml = full_path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("xml"));
-
-                let (xml, glyph_notes) = if is_xml {
-                    // glyph coverage: resolve each LoadFont to a font file and
-                    // check every used code point against its cmap.
-                    let sub_dir = full_path.parent().unwrap_or(dcp_dir).to_path_buf();
-                    let resolve = |decl: &crate::subtitle::FontDecl| -> Option<std::path::PathBuf> {
-                        // Interop DCSubtitle: font is a file referenced by URI
-                        if let Some(uri) = &decl.uri {
-                            let rel = sub_dir.join(uri);
-                            if rel.exists() {
-                                return Some(rel);
-                            }
-                            let abs = dcp_dir.join(uri);
-                            return abs.exists().then_some(abs);
-                        }
-                        // SMPTE ST 428-7: font is an asset addressed by urn.
-                        // ASSETMAP ids are stored with urn:uuid: stripped.
-                        if let Some(urn) = &decl.urn
-                            && let Some(&ap) =
-                                id_to_path.get(crate::assetmap::strip_urn_uuid(urn).as_str())
-                        {
-                            let p = dcp_dir.join(ap);
-                            return p.exists().then_some(p);
-                        }
-                        None
-                    };
-                    (
-                        std::fs::read_to_string(&full_path).ok(),
-                        crate::subtitle::check_glyph_coverage(&full_path, resolve),
-                    )
-                } else {
-                    // one trip through the MXF feeds the schema, structural and
-                    // glyph passes (decrypting with the KDM where one was supplied)
-                    match crate::subtitle::read_wrapped_timed_text(
-                        &full_path,
-                        &content_keys,
-                        crate::subtitle::FontData::Include,
-                    ) {
-                        Some(asset) => {
-                            for note in asset.notes.iter().cloned() {
-                                result.add(note);
-                            }
-                            if asset.is_unreadable() {
-                                (None, Vec::new())
-                            } else {
-                                let glyphs = crate::subtitle::check_glyph_coverage_wrapped(
-                                    &asset, &full_path,
-                                );
-                                (Some(asset.xml), glyphs)
-                            }
-                        }
-                        None => (None, Vec::new()),
-                    }
-                };
-
-                if let Some(xml) = xml {
-                    if let Some(schema_dir) = schema_dir.as_deref() {
-                        for note in crate::schema::check_schema_xml(&xml, &full_path, schema_dir) {
-                            result.add(note);
-                        }
-                    }
-                    for note in
-                        crate::subtitle::validate_subtitle_xml(&xml, &full_path, dcp.standard)
-                    {
-                        result.add(note);
-                    }
-                }
-                for note in glyph_notes {
+            let tracks = std::iter::once((TimedTextKind::Subtitle, &reel.subtitle)).chain(
+                reel.closed_captions
+                    .iter()
+                    .map(|caption| (TimedTextKind::ClosedCaption, caption)),
+            );
+            for (kind, asset) in tracks {
+                for note in timed_text.check_asset(asset, kind) {
                     result.add(note);
                 }
             }
@@ -1652,6 +1815,287 @@ mod tests {
                 "a wrapped subtitle missing {missing} must fire from verify_dcp, got: {notes:?}"
             );
         }
+    }
+
+    // ─── timed-text sizes and ST 429-5 identity ───────────────────────────
+
+    /// The per-asset rules below look only at one asset, so the package around it
+    /// can be empty. Owns the borrows the context needs.
+    struct LoneAsset {
+        paths: HashMap<&'static str, &'static str>,
+        keys: crate::kdm::ContentKeys,
+    }
+
+    impl LoneAsset {
+        fn new() -> Self {
+            Self {
+                paths: HashMap::new(),
+                keys: crate::kdm::ContentKeys::none(),
+            }
+        }
+
+        fn context<'a>(&'a self, dir: &'a Path) -> TimedTextContext<'a> {
+            TimedTextContext {
+                dcp_dir: dir,
+                id_to_path: &self.paths,
+                schema_dir: None,
+                keys: &self.keys,
+                standard: crate::Standard::Smpte,
+            }
+        }
+    }
+
+    fn read_fixture(path: &Path) -> crate::subtitle::WrappedTimedText {
+        crate::subtitle::read_wrapped_timed_text(
+            path,
+            &crate::kdm::ContentKeys::none(),
+            crate::subtitle::FontData::Include,
+        )
+        .expect("fixture is readable")
+    }
+
+    /// The document the fixtures wrap, whose Id the ResourceID must repeat.
+    const FIXTURE_DOCUMENT: &str = r#"<?xml version="1.0"?>
+<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:Id>urn:uuid:11111111-2222-3333-4444-555555555555</dcst:Id>
+  <dcst:ReelNumber>1</dcst:ReelNumber>
+  <dcst:Language>en</dcst:Language>
+  <dcst:LoadFont ID="f1">urn:uuid:abababab-abab-abab-abab-abababababab</dcst:LoadFont>
+  <dcst:SubtitleList>
+    <dcst:Font ID="f1">
+      <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
+        <dcst:Text>Hi</dcst:Text>
+      </dcst:Subtitle>
+    </dcst:Font>
+  </dcst:SubtitleList>
+</dcst:SubtitleReel>"#;
+
+    /// A reel asset declaring the duration the fixture essence actually carries.
+    fn matching_reel_asset() -> crate::cpl::ReelAsset {
+        crate::cpl::ReelAsset {
+            duration: i64::from(crate::subtitle::tests::FIXTURE_CONTAINER_DURATION),
+            ..Default::default()
+        }
+    }
+
+    fn wrapped_notes(path: &Path, dir: &Path, asset: &crate::cpl::ReelAsset) -> Vec<Note> {
+        let package = LoneAsset::new();
+        package.context(dir).wrapped_asset_notes(
+            &read_fixture(path),
+            asset,
+            TimedTextKind::Subtitle,
+            path,
+        )
+    }
+
+    #[test]
+    fn a_conformant_wrapped_asset_draws_no_identity_or_duration_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::subtitle::tests::write_mxf(dir.path(), FIXTURE_DOCUMENT, None);
+        let notes = wrapped_notes(&path, dir.path(), &matching_reel_asset());
+        assert!(
+            notes.is_empty(),
+            "distinct ids, matching ResourceID and matching duration must be clean, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_resource_id_that_is_not_the_document_id_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::subtitle::tests::write_mxf_with_ids(
+            dir.path(),
+            FIXTURE_DOCUMENT,
+            None,
+            crate::subtitle::tests::FIXTURE_ASSET_UUID,
+            [0x99; 16], // a ResourceID naming nothing in the document
+        );
+        let notes = wrapped_notes(&path, dir.path(), &matching_reel_asset());
+        assert!(
+            notes.iter().any(|n| n.code == Code::TimedTextIdMismatch
+                && n.message.contains("does not match the document")),
+            "a ResourceID unequal to the document Id must fire, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn reusing_the_asset_id_as_the_resource_id_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = [0x77; 16];
+        let path = crate::subtitle::tests::write_mxf_with_ids(
+            dir.path(),
+            FIXTURE_DOCUMENT,
+            None,
+            shared,
+            shared,
+        );
+        let notes = wrapped_notes(&path, dir.path(), &matching_reel_asset());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::TimedTextIdMismatch && n.message.contains("reused")),
+            "one id serving as both AssetID and ResourceID must fire, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn essence_duration_disagreeing_with_the_reel_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::subtitle::tests::write_mxf(dir.path(), FIXTURE_DOCUMENT, None);
+
+        let mut wrong = matching_reel_asset();
+        wrong.duration += 1;
+        let notes = wrapped_notes(&path, dir.path(), &wrong);
+        assert!(
+            notes.iter().any(|n| n.code == Code::CplMismatchedDurations),
+            "a reel Duration unequal to the essence duration must fire, got: {notes:?}"
+        );
+
+        // a reel that declares no Duration has nothing to disagree with
+        let mut absent = matching_reel_asset();
+        absent.duration = 0;
+        assert!(
+            !wrapped_notes(&path, dir.path(), &absent)
+                .iter()
+                .any(|n| n.code == Code::CplMismatchedDurations),
+            "an undeclared reel Duration must stay silent"
+        );
+    }
+
+    /// Ids and file names the size cases register in the package map.
+    const TIMED_TEXT_ASSET_ID: &str = "11111111-2222-3333-4444-555555555555";
+    const OVERSIZE_ASSET_FILE: &str = "sub.mxf";
+    const CAPTION_FILE: &str = "ccap.xml";
+
+    /// A package holding exactly one timed-text asset at `file`.
+    struct OneAssetPackage {
+        paths: HashMap<&'static str, &'static str>,
+        keys: crate::kdm::ContentKeys,
+    }
+
+    impl OneAssetPackage {
+        fn new(file: &'static str) -> Self {
+            Self {
+                paths: HashMap::from([(TIMED_TEXT_ASSET_ID, file)]),
+                keys: crate::kdm::ContentKeys::none(),
+            }
+        }
+
+        fn notes(&self, dir: &Path, kind: TimedTextKind) -> Vec<Note> {
+            let context = TimedTextContext {
+                dcp_dir: dir,
+                id_to_path: &self.paths,
+                schema_dir: None,
+                keys: &self.keys,
+                standard: crate::Standard::Smpte,
+            };
+            let asset = crate::cpl::ReelAsset {
+                id: TIMED_TEXT_ASSET_ID.to_string(),
+                ..Default::default()
+            };
+            context.check_asset(&asset, kind)
+        }
+    }
+
+    // a track file over the Bv2.1 ceiling is rejected before anyone tries to
+    // play it, so the size is checked whether or not the essence parses.
+    #[test]
+    fn a_track_file_over_the_bv21_size_limit_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = OneAssetPackage::new(OVERSIZE_ASSET_FILE);
+        let path = dir.path().join(OVERSIZE_ASSET_FILE);
+
+        // sparse, so the case costs no disk: the rule reads the declared length
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_TIMED_TEXT_ASSET_BYTES + 1).unwrap();
+        drop(file);
+        assert!(
+            package
+                .notes(dir.path(), TimedTextKind::Subtitle)
+                .iter()
+                .any(|n| n.code == Code::TimedTextSizeExceeded),
+            "a track file over 115 MB must fire"
+        );
+
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_TIMED_TEXT_ASSET_BYTES).unwrap();
+        drop(file);
+        assert!(
+            !package
+                .notes(dir.path(), TimedTextKind::Subtitle)
+                .iter()
+                .any(|n| n.code == Code::TimedTextSizeExceeded),
+            "a track file exactly at the limit is within it"
+        );
+    }
+
+    // the 256 kB cap is a caption rule; subtitles have no equivalent, so applying
+    // it to both would reject conformant subtitle assets.
+    #[test]
+    fn an_oversize_caption_document_fires_but_the_same_subtitle_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = OneAssetPackage::new(CAPTION_FILE);
+        let path = dir.path().join(CAPTION_FILE);
+
+        let padding = "x".repeat(MAX_CLOSED_CAPTION_XML_BYTES);
+        let document = CONFORMANT_SUBTITLE.replace(
+            "<dcst:Text>Hi</dcst:Text>",
+            &format!("<dcst:Text>{padding}</dcst:Text>"),
+        );
+        assert!(document.len() > MAX_CLOSED_CAPTION_XML_BYTES);
+        std::fs::write(&path, &document).unwrap();
+
+        assert!(
+            package
+                .notes(dir.path(), TimedTextKind::ClosedCaption)
+                .iter()
+                .any(|n| n.code == Code::TimedTextSizeExceeded),
+            "a caption document over 256 kB must fire"
+        );
+        assert!(
+            !package
+                .notes(dir.path(), TimedTextKind::Subtitle)
+                .iter()
+                .any(|n| n.code == Code::TimedTextSizeExceeded),
+            "the same size as a subtitle is not a finding: the cap is caption-only"
+        );
+    }
+
+    #[test]
+    fn embedded_fonts_over_the_bv21_limit_fire() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::subtitle::tests::write_mxf(dir.path(), FIXTURE_DOCUMENT, None);
+        let wrapped = read_fixture(&path);
+        let package = LoneAsset::new();
+        let context = package.context(dir.path());
+        let asset = matching_reel_asset();
+
+        let over = crate::subtitle::WrappedTimedText {
+            font_bytes: MAX_TIMED_TEXT_FONT_BYTES + 1,
+            xml: wrapped.xml.clone(),
+            resource_id: wrapped.resource_id,
+            asset_id: wrapped.asset_id,
+            container_duration: wrapped.container_duration,
+            ..Default::default()
+        };
+        assert!(
+            context
+                .wrapped_asset_notes(&over, &asset, TimedTextKind::Subtitle, &path)
+                .iter()
+                .any(|n| n.code == Code::TimedTextSizeExceeded),
+            "fonts over 10 MB must fire"
+        );
+
+        let at_limit = crate::subtitle::WrappedTimedText {
+            font_bytes: MAX_TIMED_TEXT_FONT_BYTES,
+            ..over
+        };
+        assert!(
+            !context
+                .wrapped_asset_notes(&at_limit, &asset, TimedTextKind::Subtitle, &path)
+                .iter()
+                .any(|n| n.code == Code::TimedTextSizeExceeded),
+            "fonts exactly at the limit are within it"
+        );
     }
 
     // SMPTE ST 428-7 carries the font asset id as the LoadFont element text, and
