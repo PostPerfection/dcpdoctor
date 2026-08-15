@@ -167,6 +167,9 @@ pub enum Code {
     KdmRequired,
     KdmExpired,
     KdmNotYetValid,
+    KdmThumbprintInvalid,
+    KdmContentAuthenticatorInvalid,
+    KdmAssumeTrustConflict,
 
     // Reel continuity
     ReelDiscontinuity,
@@ -273,6 +276,9 @@ impl Code {
             Code::KdmRequired => "kdm_required",
             Code::KdmExpired => "kdm_expired",
             Code::KdmNotYetValid => "kdm_not_yet_valid",
+            Code::KdmThumbprintInvalid => "kdm_thumbprint_invalid",
+            Code::KdmContentAuthenticatorInvalid => "kdm_content_authenticator_invalid",
+            Code::KdmAssumeTrustConflict => "kdm_assume_trust_conflict",
             Code::ReelDiscontinuity => "reel_discontinuity",
             Code::ReelIncoherent => "reel_incoherent",
             Code::ReelTooShort => "reel_too_short",

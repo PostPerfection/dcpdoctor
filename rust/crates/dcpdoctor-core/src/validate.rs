@@ -5,6 +5,23 @@ use crate::dcp;
 use crate::hash::sha1_base64;
 use crate::{Code, Note, Severity, VerifyOptions, VerifyResult};
 
+/// Picture sizes a DCP may carry, as (width, height). The coded sizes are the
+/// DCI/ST 428-1 flat and scope images (what libdcp's verify accepts); the full
+/// containers are the 2K and 4K frames themselves, which a picture asset is
+/// allowed to fill.
+const STANDARD_PICTURE_SIZES: &[(u32, u32)] = &[
+    (1998, 1080), // 2K flat, coded
+    (2048, 858),  // 2K scope, coded
+    (2048, 1080), // 2K full container
+    (3996, 2160), // 4K flat, coded
+    (4096, 1716), // 4K scope, coded
+    (4096, 2160), // 4K full container
+];
+
+fn is_standard_picture_size(width: u32, height: u32) -> bool {
+    STANDARD_PICTURE_SIZES.contains(&(width, height))
+}
+
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
@@ -530,23 +547,18 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 && pic.width > 0
                 && pic.height > 0
                 && opts.strict_smpte
+                && !is_standard_picture_size(pic.width, pic.height)
             {
-                let valid_res = matches!(
-                    (pic.width, pic.height),
-                    (2048, 1080) | (1998, 1080) | (4096, 2160) | (3996, 2160)
-                );
-                if !valid_res {
-                    result.add(Note {
-                        severity: Severity::Warning,
-                        code: Code::PictureInvalidResolution,
-                        message: format!(
-                            "Non-standard picture resolution: {}x{}",
-                            pic.width, pic.height
-                        ),
-                        file: Some(full_path.clone()),
-                        line: 0,
-                    });
-                }
+                result.add(Note {
+                    severity: Severity::Warning,
+                    code: Code::PictureInvalidResolution,
+                    message: format!(
+                        "Non-standard picture resolution: {}x{}",
+                        pic.width, pic.height
+                    ),
+                    file: Some(full_path.clone()),
+                    line: 0,
+                });
             }
 
             // J2K bitrate validation
@@ -1345,5 +1357,26 @@ mod tests {
             "a ref in neither package is a real break even with --ov, got: {:?}",
             result.notes
         );
+    }
+
+    // A normal scope DCP codes 2048x858 (2K) or 4096x1716 (4K), not the full
+    // container, so those sizes must not draw picture_invalid_resolution.
+    #[test]
+    fn scope_coded_sizes_are_standard() {
+        assert!(is_standard_picture_size(2048, 858));
+        assert!(is_standard_picture_size(4096, 1716));
+    }
+
+    #[test]
+    fn container_and_flat_sizes_stay_standard() {
+        assert!(is_standard_picture_size(2048, 1080));
+        assert!(is_standard_picture_size(1998, 1080));
+        assert!(is_standard_picture_size(4096, 2160));
+        assert!(is_standard_picture_size(3996, 2160));
+    }
+
+    #[test]
+    fn a_broadcast_size_is_not_standard() {
+        assert!(!is_standard_picture_size(1920, 1080));
     }
 }

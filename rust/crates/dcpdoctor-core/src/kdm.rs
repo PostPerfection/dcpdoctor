@@ -2,6 +2,7 @@
 use crate::{Code, Note};
 use asdcplib::WriterInfo;
 use asdcplib::crypto::{AesDecContext, HmacContext};
+use base64::Engine;
 use postkit::certificate::{UnwrappedKdm, unwrap_kdm};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -136,27 +137,33 @@ pub struct KdmInfo {
 
 /// Parse a KDM XML file and extract key information.
 pub fn parse_kdm(kdm_path: &Path) -> Result<KdmInfo, String> {
-    let xml =
-        std::fs::read_to_string(kdm_path).map_err(|e| format!("Failed to read KDM file: {e}"))?;
+    let xml = read_kdm(kdm_path)?;
+    parse_kdm_xml(&xml)
+}
 
+fn read_kdm(kdm_path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(kdm_path).map_err(|e| format!("Failed to read KDM file: {e}"))
+}
+
+fn parse_kdm_xml(xml: &str) -> Result<KdmInfo, String> {
     if !xml.contains("KeyDeliveryMessage") && !xml.contains("KDM") {
         return Err("File does not appear to be a KDM".into());
     }
 
-    let cpl_id = extract_element(&xml, "CompositionPlaylistId")
+    let cpl_id = extract_element(xml, "CompositionPlaylistId")
         .unwrap_or_default()
         .replace("urn:uuid:", "");
 
-    let content_title = extract_element(&xml, "ContentTitleText").unwrap_or_default();
+    let content_title = extract_element(xml, "ContentTitleText").unwrap_or_default();
 
-    let not_valid_before = extract_element(&xml, "ContentKeysNotValidBefore")
-        .or_else(|| extract_element(&xml, "NotValidBefore"))
+    let not_valid_before = extract_element(xml, "ContentKeysNotValidBefore")
+        .or_else(|| extract_element(xml, "NotValidBefore"))
         .unwrap_or_default();
-    let not_valid_after = extract_element(&xml, "ContentKeysNotValidAfter")
-        .or_else(|| extract_element(&xml, "NotValidAfter"))
+    let not_valid_after = extract_element(xml, "ContentKeysNotValidAfter")
+        .or_else(|| extract_element(xml, "NotValidAfter"))
         .unwrap_or_default();
 
-    let recipient_cn = extract_element(&xml, "X509SubjectName")
+    let recipient_cn = extract_element(xml, "X509SubjectName")
         .and_then(|s| {
             s.split(',')
                 .find(|part| part.trim().starts_with("CN="))
@@ -164,7 +171,7 @@ pub fn parse_kdm(kdm_path: &Path) -> Result<KdmInfo, String> {
         })
         .unwrap_or_default();
 
-    let issuer = extract_element(&xml, "X509IssuerName")
+    let issuer = extract_element(xml, "X509IssuerName")
         .and_then(|s| {
             s.split(',')
                 .find(|part| part.trim().starts_with("O="))
@@ -200,13 +207,23 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
         notes.extend(crate::schema::check_schema(kdm_path, &schema_dir));
     }
 
-    let info = match parse_kdm(kdm_path) {
+    let xml = match read_kdm(kdm_path) {
+        Ok(x) => x,
+        Err(e) => {
+            notes.push(Note::error(Code::XmlParseError, e).with_file(kdm_path));
+            return notes;
+        }
+    };
+
+    let info = match parse_kdm_xml(&xml) {
         Ok(i) => i,
         Err(e) => {
             notes.push(Note::error(Code::XmlParseError, e).with_file(kdm_path));
             return notes;
         }
     };
+
+    notes.extend(check_digests(&xml, kdm_path));
 
     // Check validity period
     if !info.not_valid_before.is_empty() && !info.not_valid_after.is_empty() {
@@ -311,6 +328,168 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
     notes
 }
 
+/// ST 430-1:2006 element names carrying the digests checked below.
+const DEVICE_LIST_TAG: &str = "DeviceList";
+const CERTIFICATE_THUMBPRINT_TAG: &str = "CertificateThumbprint";
+const CONTENT_AUTHENTICATOR_TAG: &str = "ContentAuthenticator";
+
+/// A ST 430-2:2006 thumbprint is a SHA-1 digest, so 20 bytes once decoded. The
+/// KDM schema types these elements `base64Binary` / `ds:DigestValueType`, which
+/// fixes the encoding but not the length, so the XSD pass cannot catch this.
+const SHA1_DIGEST_BYTES: usize = 20;
+
+/// DCI DCSS 9.4.3.5: the base64 SHA-1 of empty input, used as the DeviceList
+/// entry meaning the trusted-device requirement is already met.
+const ASSUME_TRUST_THUMBPRINT: &str = "2jmj7l5rSw0yVb/vlWAYkK/YBwk=";
+
+/// The base64 digests a KDM carries outside its signature.
+#[derive(Debug, Default)]
+struct KdmDigests {
+    device_thumbprints: Vec<String>,
+    content_authenticator: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DigestElement {
+    CertificateThumbprint,
+    ContentAuthenticator,
+}
+
+/// Collect every `<CertificateThumbprint>` in the DeviceList plus the optional
+/// `<ContentAuthenticator>`. Element names are matched on their local name, so
+/// a namespace-prefixed document reads the same as a bare one.
+fn extract_digests(xml: &str) -> KdmDigests {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let local_name = |name: quick_xml::name::QName| {
+        String::from_utf8_lossy(name.local_name().as_ref()).into_owned()
+    };
+
+    let mut reader = Reader::from_str(xml);
+    let mut digests = KdmDigests::default();
+    let mut device_list_depth: u32 = 0;
+    let mut collecting: Option<DigestElement> = None;
+    let mut value = String::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match local_name(e.name()).as_str() {
+                DEVICE_LIST_TAG => device_list_depth += 1,
+                CERTIFICATE_THUMBPRINT_TAG if device_list_depth > 0 => {
+                    collecting = Some(DigestElement::CertificateThumbprint);
+                    value.clear();
+                }
+                CONTENT_AUTHENTICATOR_TAG => {
+                    collecting = Some(DigestElement::ContentAuthenticator);
+                    value.clear();
+                }
+                _ => {}
+            },
+            // a self-closed element carries no digest at all, which the length
+            // rule below has to see rather than skip
+            Ok(Event::Empty(e)) => match local_name(e.name()).as_str() {
+                CERTIFICATE_THUMBPRINT_TAG if device_list_depth > 0 => {
+                    digests.device_thumbprints.push(String::new())
+                }
+                CONTENT_AUTHENTICATOR_TAG => digests.content_authenticator = Some(String::new()),
+                _ => {}
+            },
+            Ok(Event::Text(e)) => {
+                if collecting.is_some() {
+                    value.push_str(&dcpdoctor_parse::text_of(&e));
+                }
+            }
+            Ok(Event::End(e)) => match local_name(e.name()).as_str() {
+                DEVICE_LIST_TAG => device_list_depth = device_list_depth.saturating_sub(1),
+                CERTIFICATE_THUMBPRINT_TAG | CONTENT_AUTHENTICATOR_TAG => {
+                    // base64 may be wrapped across lines, so the value is the
+                    // text with every run of whitespace removed.
+                    let digest: String = value.split_whitespace().collect();
+                    match collecting.take() {
+                        Some(DigestElement::CertificateThumbprint) => {
+                            digests.device_thumbprints.push(digest)
+                        }
+                        Some(DigestElement::ContentAuthenticator) => {
+                            digests.content_authenticator = Some(digest)
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    digests
+}
+
+fn is_sha1_digest(base64_digest: &str) -> bool {
+    base64::engine::general_purpose::STANDARD
+        .decode(base64_digest)
+        .is_ok_and(|bytes| bytes.len() == SHA1_DIGEST_BYTES)
+}
+
+/// Digest rules the KDM schema cannot express: thumbprint and content
+/// authenticator length, and the exclusivity of the DCI assume-trust marker.
+fn check_digests(xml: &str, kdm_path: &Path) -> Vec<Note> {
+    let digests = extract_digests(xml);
+    let mut notes = Vec::new();
+
+    for thumbprint in &digests.device_thumbprints {
+        if !is_sha1_digest(thumbprint) {
+            notes.push(
+                Note::error(
+                    Code::KdmThumbprintInvalid,
+                    format!(
+                        "DeviceList thumbprint '{thumbprint}' does not decode to a {SHA1_DIGEST_BYTES}-byte SHA-1 digest"
+                    ),
+                )
+                .with_file(kdm_path),
+            );
+        }
+    }
+
+    if let Some(authenticator) = &digests.content_authenticator
+        && !is_sha1_digest(authenticator)
+    {
+        notes.push(
+            Note::error(
+                Code::KdmContentAuthenticatorInvalid,
+                format!(
+                    "ContentAuthenticator '{authenticator}' does not decode to a {SHA1_DIGEST_BYTES}-byte SHA-1 digest"
+                ),
+            )
+            .with_file(kdm_path),
+        );
+    }
+
+    let named_devices = digests
+        .device_thumbprints
+        .iter()
+        .filter(|t| *t != ASSUME_TRUST_THUMBPRINT)
+        .count();
+    let assumes_trust = digests
+        .device_thumbprints
+        .iter()
+        .any(|t| t == ASSUME_TRUST_THUMBPRINT);
+    if assumes_trust && named_devices > 0 {
+        notes.push(
+            Note::error(
+                Code::KdmAssumeTrustConflict,
+                format!(
+                    "DeviceList carries the DCI assume-trust thumbprint '{ASSUME_TRUST_THUMBPRINT}' alongside {named_devices} device thumbprint(s); the list either restricts playback to named devices or it does not"
+                ),
+            )
+            .with_file(kdm_path),
+        );
+    }
+
+    notes
+}
+
 fn extract_element(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -384,6 +563,182 @@ fn find_cpl_id_in_dcp(dcp_dir: &Path, cpl_id: &str) -> bool {
         }
     }
     false
+}
+
+// The digest rules, run against KDMs another implementation wrote. Each rule has
+// a test that it fires on a mutant and one that it stays silent on the real
+// files, matching the per-code corpus shape the dci-ctp suite uses.
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    // Generated with DCP-o-matic 2.18.39 (libdcp), one file per ISDCF
+    // formulation, by
+    //   dcpomatic2_kdm_cli -F <formulation> [-T certs/intermediate.pem] -C certs/leaf.pem
+    // so every digest in them is another implementation's output, not a value we
+    // invented. certs/ is the chain they were signed with; the dci-* files'
+    // ContentAuthenticator is the ST 430-2 thumbprint of certs/leaf.pem.
+    const FIXTURE_DIR: &str = "../../../tests/fixtures/kdm";
+
+    /// assume-trust marker in the DeviceList, no ContentAuthenticator.
+    const MODIFIED_TRANSITIONAL_1: &str = "kdm-modified-transitional-1.xml";
+    /// a real device thumbprint, no ContentAuthenticator.
+    const MULTIPLE_MODIFIED_TRANSITIONAL_1: &str = "kdm-multiple-modified-transitional-1.xml";
+    /// assume-trust marker plus a ContentAuthenticator.
+    const DCI_ANY: &str = "kdm-dci-any.xml";
+    /// a real device thumbprint plus a ContentAuthenticator.
+    const DCI_SPECIFIC: &str = "kdm-dci-specific.xml";
+
+    const ALL_FIXTURES: &[&str] = &[
+        MODIFIED_TRANSITIONAL_1,
+        MULTIPLE_MODIFIED_TRANSITIONAL_1,
+        DCI_ANY,
+        DCI_SPECIFIC,
+    ];
+
+    const DIGEST_CODES: &[Code] = &[
+        Code::KdmThumbprintInvalid,
+        Code::KdmContentAuthenticatorInvalid,
+        Code::KdmAssumeTrustConflict,
+    ];
+
+    fn fixture_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(FIXTURE_DIR)
+            .join(name)
+    }
+
+    fn fixture_xml(name: &str) -> String {
+        std::fs::read_to_string(fixture_path(name)).expect("fixture is present")
+    }
+
+    /// Write a fixture out with one substring swapped, so a negative case starts
+    /// from a real KDM instead of a hand-written one.
+    fn mutated_fixture(name: &str, from: &str, to: &str) -> tempfile::NamedTempFile {
+        let xml = fixture_xml(name);
+        assert!(xml.contains(from), "{name} does not contain '{from}'");
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "{}", xml.replace(from, to)).unwrap();
+        f
+    }
+
+    /// The same digest one byte short: still base64, no longer SHA-1 sized.
+    fn truncated(base64_digest: &str) -> String {
+        let engine = base64::engine::general_purpose::STANDARD;
+        let mut bytes = engine
+            .decode(base64_digest)
+            .expect("fixture digest is base64");
+        bytes.pop();
+        engine.encode(bytes)
+    }
+
+    fn only_thumbprint(name: &str) -> String {
+        let digests = extract_digests(&fixture_xml(name));
+        assert_eq!(digests.device_thumbprints.len(), 1, "{name} DeviceList");
+        digests.device_thumbprints[0].clone()
+    }
+
+    fn thumbprint_element(digest: &str) -> String {
+        format!("<{CERTIFICATE_THUMBPRINT_TAG}>{digest}</{CERTIFICATE_THUMBPRINT_TAG}>")
+    }
+
+    #[test]
+    fn the_fixtures_cover_both_content_authenticator_cases() {
+        for name in [MODIFIED_TRANSITIONAL_1, MULTIPLE_MODIFIED_TRANSITIONAL_1] {
+            assert!(
+                extract_digests(&fixture_xml(name))
+                    .content_authenticator
+                    .is_none(),
+                "{name} must have no ContentAuthenticator"
+            );
+        }
+        for name in [DCI_ANY, DCI_SPECIFIC] {
+            assert!(
+                extract_digests(&fixture_xml(name))
+                    .content_authenticator
+                    .is_some(),
+                "{name} must carry a ContentAuthenticator"
+            );
+        }
+    }
+
+    #[test]
+    fn real_kdms_draw_no_digest_note() {
+        for name in ALL_FIXTURES {
+            let notes = validate_kdm(&fixture_path(name), None);
+            assert!(
+                !notes.iter().any(|n| DIGEST_CODES.contains(&n.code)),
+                "{name} is a valid KDM, got: {notes:?}"
+            );
+            assert!(
+                !notes.iter().any(|n| n.code == Code::XmlSchemaViolation),
+                "{name} must satisfy the vendored ST 430-1 / 430-3 schemas, got: {notes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_thumbprint_fires() {
+        let real = only_thumbprint(MULTIPLE_MODIFIED_TRANSITIONAL_1);
+        let f = mutated_fixture(MULTIPLE_MODIFIED_TRANSITIONAL_1, &real, &truncated(&real));
+        let notes = validate_kdm(f.path(), None);
+        assert!(
+            notes.iter().any(|n| n.code == Code::KdmThumbprintInvalid),
+            "a 19-byte DeviceList thumbprint must error, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_thumbprint_element_fires() {
+        let real = only_thumbprint(MULTIPLE_MODIFIED_TRANSITIONAL_1);
+        let f = mutated_fixture(
+            MULTIPLE_MODIFIED_TRANSITIONAL_1,
+            &thumbprint_element(&real),
+            &format!("<{CERTIFICATE_THUMBPRINT_TAG}/>"),
+        );
+        let notes = validate_kdm(f.path(), None);
+        assert!(
+            notes.iter().any(|n| n.code == Code::KdmThumbprintInvalid),
+            "a self-closed thumbprint carries no digest, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_short_content_authenticator_fires() {
+        let real = extract_digests(&fixture_xml(DCI_ANY))
+            .content_authenticator
+            .expect("dci-any carries a ContentAuthenticator");
+        let f = mutated_fixture(DCI_ANY, &real, &truncated(&real));
+        let notes = validate_kdm(f.path(), None);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::KdmContentAuthenticatorInvalid),
+            "a 19-byte ContentAuthenticator must error, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn the_assume_trust_marker_beside_a_real_device_fires() {
+        let real = only_thumbprint(DCI_SPECIFIC);
+        let both = format!(
+            "{}\n            {}",
+            thumbprint_element(&real),
+            thumbprint_element(ASSUME_TRUST_THUMBPRINT)
+        );
+        let f = mutated_fixture(DCI_SPECIFIC, &thumbprint_element(&real), &both);
+        let notes = validate_kdm(f.path(), None);
+        assert!(
+            notes.iter().any(|n| n.code == Code::KdmAssumeTrustConflict),
+            "the assume-trust marker must not share a DeviceList, got: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.code == Code::KdmThumbprintInvalid),
+            "both thumbprints are SHA-1 sized, got: {notes:?}"
+        );
+    }
 }
 
 #[cfg(test)]
