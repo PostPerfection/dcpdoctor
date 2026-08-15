@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- CPL and PKL identity (Bv2.1 §8.1): a SMPTE CPL's `AnnotationText` must be present (`missing_required_element`) and equal its `ContentTitleText` (`cpl_annotation_text_mismatch`), and a PKL packaging exactly one CPL must repeat that title as its own `AnnotationText` (`pkl_annotation_text_mismatch`). A PKL listing one asset id twice now errors as `duplicate_asset_id`, the rule the ASSETMAP already had.
+- CPL metadata (Bv2.1 §8.6.1): a SMPTE CPL with no `CompositionMetadataAsset`, or one with no `VersionNumber`, now reports `missing_required_element` instead of being skipped.
+- `cpl_active_area_invalid`: a `MainPictureActiveArea` with an odd width or height, or one larger than the picture essence the reel carries, errors.
+- `cpl_invalid_language`: every `Language`, `MainSubtitleLanguageList`, `AdditionalSubtitleLanguageList` and `ReleaseTerritory` value in a SMPTE CPL is checked against the IANA subtag registry, so `Deutsch` where `de` belongs is caught rather than passing a grammar test.
 - J2K TLM and POC checks on the native path: a codestream with no TLM marker errors as `j2k_missing_tlm`, and `j2k_poc_invalid` covers the POC marker count the profile fixes (none for 2K, exactly one for 4K), a POC in a tile-part header, and the two fixed 4K progressions' parameter values. The marker walk is shared with the browser build.
 - `--deep-j2k` now runs the codestream checks over every frame instead of frame 0 only, in the same pass as the RDD 52 guard-bit scan, so a stream that goes non-conformant partway through is caught. Each finding reports once with the first offending frame and how many frames carried it.
 - Subtitle documents are schema-validated: SMPTE ST 428-7 timed text routes to the DCDMSubtitle XSD for the DCST namespace it declares (2007, 2010 or 2014) and Interop DCSubtitle to `DCSubtitle.xsd`, both loose and MXF-wrapped, so a schema-invalid subtitle now reports `xml_schema_violation` instead of passing.

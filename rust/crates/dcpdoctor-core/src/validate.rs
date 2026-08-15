@@ -104,6 +104,95 @@ fn check_cpl_asset_hashes(
     notes
 }
 
+/// Bv2.1 §8.1 requires a SMPTE CPL's `AnnotationText` to be present and equal to
+/// its `ContentTitleText`, so the human-readable label a projectionist sees on
+/// the server matches the title the package is filed under. Interop CPLs carry
+/// no such rule. libdcp MISSING_CPL_ANNOTATION_TEXT / MISMATCHED_CPL_ANNOTATION_TEXT,
+/// which it grades as a Bv2.1 error and a warning respectively.
+fn check_cpl_annotation_text(
+    cpl_path: &Path,
+    cpl: &crate::cpl::Cpl,
+    standard: crate::Standard,
+) -> Vec<Note> {
+    if standard != crate::Standard::Smpte {
+        return Vec::new();
+    }
+    if cpl.annotation.trim().is_empty() {
+        return vec![
+            Note::warning(
+                Code::MissingRequiredElement,
+                "SMPTE CPL has no <AnnotationText>",
+            )
+            .with_file(cpl_path),
+        ];
+    }
+    if cpl.annotation != cpl.content_title {
+        return vec![
+            Note::warning(
+                Code::CplAnnotationTextMismatch,
+                format!(
+                    "CPL <AnnotationText> '{}' differs from its <ContentTitleText> '{}'",
+                    cpl.annotation, cpl.content_title
+                ),
+            )
+            .with_file(cpl_path),
+        ];
+    }
+    Vec::new()
+}
+
+/// A PKL that packages exactly one CPL must repeat that CPL's `ContentTitleText`
+/// as its own `AnnotationText` (libdcp MISMATCHED_PKL_ANNOTATION_TEXT_WITH_CPL).
+/// With more than one CPL in the PKL there is no single title to require, so the
+/// rule does not apply.
+fn check_pkl_annotation_text(
+    pkl_path: &Path,
+    pkl: &crate::pkl::Pkl,
+    cpls: &[(std::path::PathBuf, crate::cpl::Cpl)],
+    standard: crate::Standard,
+) -> Vec<Note> {
+    if standard != crate::Standard::Smpte {
+        return Vec::new();
+    }
+    let mut packaged = pkl
+        .assets
+        .iter()
+        .filter_map(|asset| cpls.iter().find(|(_, cpl)| cpl.id == asset.id));
+    let (Some((_, cpl)), None) = (packaged.next(), packaged.next()) else {
+        return Vec::new();
+    };
+    if pkl.annotation == cpl.content_title {
+        return Vec::new();
+    }
+    vec![
+        Note::warning(
+            Code::PklAnnotationTextMismatch,
+            format!(
+                "PKL <AnnotationText> '{}' differs from its only CPL's <ContentTitleText> '{}'",
+                pkl.annotation, cpl.content_title
+            ),
+        )
+        .with_file(pkl_path),
+    ]
+}
+
+/// libdcp DUPLICATE_ASSET_ID_IN_PKL, the PKL counterpart of the asset map rule:
+/// one asset id must not be listed twice.
+fn check_pkl_duplicate_asset_ids(pkl_path: &Path, pkl: &crate::pkl::Pkl) -> Vec<Note> {
+    let mut seen = HashSet::new();
+    pkl.assets
+        .iter()
+        .filter(|asset| !seen.insert(asset.id.as_str()))
+        .map(|asset| {
+            Note::error(
+                Code::DuplicateAssetId,
+                format!("PKL lists asset ID more than once: {}", asset.id),
+            )
+            .with_file(pkl_path)
+        })
+        .collect()
+}
+
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
@@ -219,6 +308,12 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 result.add(note);
             }
         }
+        for note in check_pkl_duplicate_asset_ids(pkl_path, pkl) {
+            result.add(note);
+        }
+        for note in check_pkl_annotation_text(pkl_path, pkl, &dcp.cpls, dcp.standard) {
+            result.add(note);
+        }
         // Verify PKL asset sizes (cheap, so not gated on check_hashes)
         for pkl_asset in &pkl.assets {
             if let Some(&asset_path) = id_to_path.get(pkl_asset.id.as_str()) {
@@ -307,6 +402,9 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             }
         }
         for note in check_cpl_asset_hashes(cpl_path, cpl, &pkl_hashes, &id_to_path) {
+            result.add(note);
+        }
+        for note in check_cpl_annotation_text(cpl_path, cpl, dcp.standard) {
             result.add(note);
         }
         if cpl.reels.is_empty() {
@@ -567,6 +665,15 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             result.add(note);
         }
         for note in crate::validators::check_composition_metadata_asset(cpl_path) {
+            result.add(note);
+        }
+        for note in crate::validators::check_cpl_metadata_asset(cpl_path, dcp.standard) {
+            result.add(note);
+        }
+        for note in crate::validators::check_main_picture_active_area(cpl_path, &id_to_file) {
+            result.add(note);
+        }
+        for note in crate::validators::check_cpl_languages(cpl_path, dcp.standard) {
             result.add(note);
         }
         for note in crate::validators::check_reel_duration(cpl_path) {
@@ -854,23 +961,27 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join(SMPTE_PACKAGE)
     }
 
-    /// Copy the committed package into a temp dir with `edits` applied to its CPL
+    /// Files inside the committed package that the cases below mutate.
+    const CPL_FILE: &str = "cpl.xml";
+    const PKL_FILE: &str = "pkl.xml";
+
+    /// Copy the committed package into a temp dir with `edits` applied to `file`
     /// in order, so each case is one deliberate deviation from a real package.
-    fn mutated_package(edits: &[(&str, String)]) -> tempfile::TempDir {
+    fn mutated_package(file: &str, edits: &[(&str, String)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for entry in std::fs::read_dir(smpte_package_dir()).unwrap().flatten() {
             std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
         }
-        let cpl = dir.path().join("cpl.xml");
-        let mut xml = std::fs::read_to_string(&cpl).unwrap();
+        let target = dir.path().join(file);
+        let mut xml = std::fs::read_to_string(&target).unwrap();
         for (from, to) in edits {
             assert!(
                 xml.contains(from),
-                "the package's CPL no longer has {from:?}"
+                "the package's {file} no longer has {from:?}"
             );
             xml = xml.replace(from, to);
         }
-        std::fs::write(&cpl, xml).unwrap();
+        std::fs::write(&target, xml).unwrap();
         dir
     }
 
@@ -905,7 +1016,7 @@ mod tests {
 
     #[test]
     fn cpl_hashes_agreeing_with_the_pkl_are_silent() {
-        let dir = mutated_package(&agreeing_hashes());
+        let dir = mutated_package(CPL_FILE, &agreeing_hashes());
         let result = verify_dcp(dir.path(), &VerifyOptions::default());
         assert!(
             !result
@@ -920,7 +1031,7 @@ mod tests {
     #[test]
     fn cpl_essence_asset_without_a_hash_fires() {
         // the package's CPL carries no <Hash> at all, which is the finding
-        let dir = mutated_package(&[]);
+        let dir = mutated_package(CPL_FILE, &[]);
         let result = verify_dcp(dir.path(), &VerifyOptions::default());
         for kind in ["picture", "sound"] {
             assert!(
@@ -946,7 +1057,7 @@ mod tests {
                 pkl_hash_of("sound.mxf")
             ),
         );
-        let dir = mutated_package(&edits);
+        let dir = mutated_package(CPL_FILE, &edits);
         let result = verify_dcp(dir.path(), &VerifyOptions::default());
         assert!(
             result
@@ -982,6 +1093,120 @@ mod tests {
         assert!(!result.notes.iter().any(|note| {
             note.message.contains("IMF Composition Playlist") || note.message.contains("[Photon]")
         }));
+    }
+
+    // ─── CPL and PKL identity (Bv2.1 §8.1) ────────────────────────────────
+
+    /// The title the committed package's CPL carries, which its AnnotationText
+    /// and its PKL's AnnotationText must both repeat.
+    const PACKAGE_TITLE: &str = "Test DCP";
+
+    /// Where an AnnotationText is inserted: it precedes ContentTitleText in the
+    /// CPL and the Creator element in the PKL.
+    const CPL_TITLE_ELEMENT: &str = "<ContentTitleText>Test DCP</ContentTitleText>";
+    const PKL_CREATOR_ELEMENT: &str = "<Creator>";
+
+    fn cpl_with_annotation(text: &str) -> Vec<(&'static str, String)> {
+        vec![(
+            CPL_TITLE_ELEMENT,
+            format!("<AnnotationText>{text}</AnnotationText>{CPL_TITLE_ELEMENT}"),
+        )]
+    }
+
+    fn notes_of(dir: &Path) -> Vec<Note> {
+        verify_dcp(dir, &VerifyOptions::default()).notes
+    }
+
+    #[test]
+    fn cpl_annotation_text_must_be_present_and_equal_the_content_title() {
+        // the committed package's CPL has no AnnotationText at all
+        let missing = notes_of(mutated_package(CPL_FILE, &[]).path());
+        assert!(
+            missing
+                .iter()
+                .any(|n| n.code == Code::MissingRequiredElement
+                    && n.message.contains("AnnotationText")),
+            "a SMPTE CPL with no AnnotationText must fire, got: {missing:?}"
+        );
+
+        let matching =
+            notes_of(mutated_package(CPL_FILE, &cpl_with_annotation(PACKAGE_TITLE)).path());
+        assert!(
+            !matching
+                .iter()
+                .any(|n| n.code == Code::CplAnnotationTextMismatch
+                    || (n.code == Code::MissingRequiredElement
+                        && n.message.contains("AnnotationText"))),
+            "an AnnotationText equal to the ContentTitleText must stay silent, got: {matching:?}"
+        );
+
+        let differing =
+            notes_of(mutated_package(CPL_FILE, &cpl_with_annotation("Some Other Title")).path());
+        assert!(
+            differing
+                .iter()
+                .any(|n| n.code == Code::CplAnnotationTextMismatch),
+            "an AnnotationText differing from the ContentTitleText must fire, got: {differing:?}"
+        );
+    }
+
+    #[test]
+    fn a_pkl_with_one_cpl_must_repeat_its_content_title() {
+        // the committed package's PKL has no AnnotationText, and lists one CPL
+        let missing = notes_of(mutated_package(PKL_FILE, &[]).path());
+        assert!(
+            missing
+                .iter()
+                .any(|n| n.code == Code::PklAnnotationTextMismatch),
+            "a PKL whose AnnotationText is not its only CPL's title must fire, got: {missing:?}"
+        );
+
+        let matching = notes_of(
+            mutated_package(
+                PKL_FILE,
+                &[(
+                    PKL_CREATOR_ELEMENT,
+                    format!(
+                        "<AnnotationText>{PACKAGE_TITLE}</AnnotationText>{PKL_CREATOR_ELEMENT}"
+                    ),
+                )],
+            )
+            .path(),
+        );
+        assert!(
+            !matching
+                .iter()
+                .any(|n| n.code == Code::PklAnnotationTextMismatch),
+            "a PKL repeating its CPL's title must stay silent, got: {matching:?}"
+        );
+    }
+
+    #[test]
+    fn a_pkl_listing_one_asset_twice_fires() {
+        let clean = notes_of(mutated_package(PKL_FILE, &[]).path());
+        assert!(
+            !clean.iter().any(|n| n.code == Code::DuplicateAssetId),
+            "the committed package lists each asset once, got: {clean:?}"
+        );
+
+        let duplicated_asset = r#"<Asset>
+      <Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>"#;
+        let notes = notes_of(
+            mutated_package(
+                PKL_FILE,
+                &[(
+                    duplicated_asset,
+                    format!("{duplicated_asset}{}", "</Asset>\n    <Asset>\n      <Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>"),
+                )],
+            )
+            .path(),
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::DuplicateAssetId && n.message.contains("PKL")),
+            "a PKL listing one id twice must fire, got: {notes:?}"
+        );
     }
 
     /// Write a package whose asset map sits at `am_name` and declares

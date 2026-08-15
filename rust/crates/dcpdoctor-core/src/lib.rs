@@ -90,6 +90,7 @@ pub enum Code {
     PklHashMismatch,
     PklSizeMismatch,
     PklMissingAssetReference,
+    PklAnnotationTextMismatch,
 
     // CPL
     CplInvalidDuration,
@@ -99,6 +100,9 @@ pub enum Code {
     CplInvalidContentKind,
     CplMissingHash,
     CplPklHashMismatch,
+    CplAnnotationTextMismatch,
+    CplActiveAreaInvalid,
+    CplInvalidLanguage,
 
     // MXF
     MxfUnreadable,
@@ -224,6 +228,7 @@ impl Code {
             Code::PklHashMismatch => "pkl_hash_mismatch",
             Code::PklSizeMismatch => "pkl_size_mismatch",
             Code::PklMissingAssetReference => "pkl_missing_asset_reference",
+            Code::PklAnnotationTextMismatch => "pkl_annotation_text_mismatch",
             Code::CplInvalidDuration => "cpl_invalid_duration",
             Code::CplMismatchedDurations => "cpl_mismatched_durations",
             Code::CplMissingReel => "cpl_missing_reel",
@@ -231,6 +236,9 @@ impl Code {
             Code::CplInvalidContentKind => "cpl_invalid_content_kind",
             Code::CplMissingHash => "cpl_missing_hash",
             Code::CplPklHashMismatch => "cpl_pkl_hash_mismatch",
+            Code::CplAnnotationTextMismatch => "cpl_annotation_text_mismatch",
+            Code::CplActiveAreaInvalid => "cpl_active_area_invalid",
+            Code::CplInvalidLanguage => "cpl_invalid_language",
             Code::MxfUnreadable => "mxf_unreadable",
             Code::MxfHashMismatch => "mxf_hash_mismatch",
             Code::MxfInvalidStructure => "mxf_invalid_structure",

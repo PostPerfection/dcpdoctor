@@ -10,6 +10,7 @@ asdcplib = { git = "https://github.com/PostPerfection/asdcplib-rs.git", rev = "4
 base64 = "0.22"
 dcpdoctor-imf.workspace = true
 dcpdoctor-parse.workspace = true
+language-tags = "0.3"
 postkit.workspace = true
 quick-xml.workspace = true
 regex-lite = "0.1"

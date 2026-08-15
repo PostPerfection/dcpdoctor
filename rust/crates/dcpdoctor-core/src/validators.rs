@@ -570,6 +570,226 @@ pub fn check_composition_metadata_asset(cpl_path: &Path) -> Vec<Note> {
     notes
 }
 
+// ─── CompositionMetadataAsset presence (Bv2.1 §8.6.1) ─────────────────────────
+
+/// The metadata block ST 429-16 adds to a SMPTE CPL's reel.
+const COMPOSITION_METADATA_ASSET: &str = "CompositionMetadataAsset";
+
+/// A SMPTE CPL shall carry a CompositionMetadataAsset, and that block shall carry
+/// a VersionNumber (libdcp MISSING_CPL_METADATA and
+/// MISSING_CPL_METADATA_VERSION_NUMBER, both Bv2.1 "shall"s). Interop CPLs have
+/// no such block, so this is SMPTE only. `check_composition_metadata_asset`
+/// covers the block's agreement with the picture once it is present.
+pub fn check_cpl_metadata_asset(cpl_path: &Path, standard: Standard) -> Vec<Note> {
+    if standard != Standard::Smpte {
+        return Vec::new();
+    }
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return Vec::new();
+    };
+    if !content.contains("CompositionPlaylist") {
+        return Vec::new();
+    }
+
+    let Some(metadata) = essence_block(&content, &[COMPOSITION_METADATA_ASSET]) else {
+        return vec![
+            Note::warning(
+                Code::MissingRequiredElement,
+                "SMPTE CPL has no <CompositionMetadataAsset>",
+            )
+            .with_file(cpl_path),
+        ];
+    };
+    if extract_ns_tag(metadata, "VersionNumber").is_none_or(|v| v.is_empty()) {
+        return vec![
+            Note::warning(
+                Code::MissingRequiredElement,
+                "CPL <CompositionMetadataAsset> has no <VersionNumber>",
+            )
+            .with_file(cpl_path),
+        ];
+    }
+    Vec::new()
+}
+
+// ─── MainPictureActiveArea (ST 429-16, libdcp INVALID_MAIN_PICTURE_ACTIVE_AREA) ─
+
+/// The declared active picture rectangle inside the CompositionMetadataAsset.
+const MAIN_PICTURE_ACTIVE_AREA: &str = "MainPictureActiveArea";
+
+/// Chroma subsampling and the 2K/4K downsample both halve the frame, so an odd
+/// active-area edge has no defined centre; ST 429-16 requires even numbers.
+const ACTIVE_AREA_EDGE_MULTIPLE: u64 = 2;
+
+/// The active area a CPL declares must have even width and height and must not
+/// be larger than the picture the reel actually carries. The size comparison
+/// needs the essence, so it is skipped when the MXF is absent.
+pub fn check_main_picture_active_area(
+    cpl_path: &Path,
+    id_to_file: &HashMap<String, PathBuf>,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    for (index, cap) in reel_re.captures_iter(&content).enumerate() {
+        let reel = cap.get(1).unwrap().as_str();
+        let Some(metadata) = essence_block(reel, &[COMPOSITION_METADATA_ASSET]) else {
+            continue;
+        };
+        let Some(area) = essence_block(metadata, &[MAIN_PICTURE_ACTIVE_AREA]) else {
+            continue;
+        };
+        let (Some(width), Some(height)) = (
+            extract_ns_tag(area, "Width").and_then(|v| v.parse::<u64>().ok()),
+            extract_ns_tag(area, "Height").and_then(|v| v.parse::<u64>().ok()),
+        ) else {
+            continue;
+        };
+
+        let mut invalid = |detail: String| {
+            notes.push(
+                Note::error(
+                    Code::CplActiveAreaInvalid,
+                    format!("Reel {} <MainPictureActiveArea> {detail}", index + 1),
+                )
+                .with_file(cpl_path),
+            );
+        };
+
+        for (label, value) in [("width", width), ("height", height)] {
+            if value % ACTIVE_AREA_EDGE_MULTIPLE != 0 {
+                invalid(format!("{label} {value} is not a multiple of 2"));
+            }
+        }
+
+        let picture_size = essence_block(reel, PICTURE_ASSETS)
+            .and_then(|picture| asset_file(picture, id_to_file))
+            .map(|path| crate::mxf::read_mxf_info(&path))
+            .and_then(|info| info.picture)
+            .map(|picture| (u64::from(picture.width), u64::from(picture.height)));
+        let Some((asset_width, asset_height)) = picture_size else {
+            continue;
+        };
+        if asset_width > 0 && width > asset_width {
+            invalid(format!(
+                "width {width} is bigger than the asset width {asset_width}"
+            ));
+        }
+        if asset_height > 0 && height > asset_height {
+            invalid(format!(
+                "height {height} is bigger than the asset height {asset_height}"
+            ));
+        }
+    }
+
+    notes
+}
+
+// ─── RFC 5646 languages and release territory (Bv2.1 §6.2.1) ──────────────────
+
+/// CPL elements carrying a single RFC 5646 language tag.
+const LANGUAGE_TAG_ELEMENTS: &[&str] = &["Language"];
+
+/// CPL elements carrying a space-separated list of RFC 5646 language tags.
+const LANGUAGE_TAG_LIST_ELEMENTS: &[&str] =
+    &["MainSubtitleLanguageList", "AdditionalSubtitleLanguageList"];
+
+/// ReleaseTerritory is a bare region subtag, not a whole tag. RFC 5646 writes a
+/// region as two letters or three digits, so parsing `und-<territory>` applies
+/// that same grammar rather than a second, hand-written one. libdcp special-cases
+/// the UN M.49 world code "001", which this form already accepts.
+const RELEASE_TERRITORY: &str = "ReleaseTerritory";
+const UNDETERMINED_LANGUAGE: &str = "und";
+
+/// True when `tag` is a valid RFC 5646 tag: well-formed *and* built from
+/// subtags in the IANA registry. Grammar alone would accept "Deutsch" as a
+/// language, which is exactly the value a mis-converted Interop package writes,
+/// so libdcp checks against its own bundled registry and so do we.
+fn is_valid_language_tag(tag: &str) -> bool {
+    language_tags::LanguageTag::parse(tag).is_ok_and(|parsed| parsed.is_valid())
+}
+
+/// True when `territory` is a valid RFC 5646 region subtag, tested as the region
+/// of an otherwise undetermined tag so the same registry backs both checks.
+/// Subtags are case-insensitive (real CPLs write `us` as often as `US`) and the
+/// parser canonicalises them, so the round-trip comparison ignores case.
+fn is_valid_region_subtag(territory: &str) -> bool {
+    language_tags::LanguageTag::parse(&format!("{UNDETERMINED_LANGUAGE}-{territory}")).is_ok_and(
+        |tag| {
+            tag.region()
+                .is_some_and(|region| region.eq_ignore_ascii_case(territory))
+                && tag.is_valid()
+        },
+    )
+}
+
+/// Every occurrence of a (possibly namespace-prefixed) element's text, in
+/// document order.
+fn all_ns_tag_values(xml: &str, tag: &str) -> Vec<String> {
+    let Ok(re) = regex_lite::Regex::new(&format!(
+        r"<(?:[\w-]+:)?{tag}(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?{tag}>"
+    )) else {
+        return Vec::new();
+    };
+    re.captures_iter(xml)
+        .map(|c| c.get(1).unwrap().as_str().trim().to_string())
+        .collect()
+}
+
+/// Every language tag and the release territory a SMPTE CPL declares must be
+/// well-formed RFC 5646 (libdcp INVALID_LANGUAGE). Interop CPLs predate the rule
+/// and write plain names like "English", so this is SMPTE only.
+pub fn check_cpl_languages(cpl_path: &Path, standard: Standard) -> Vec<Note> {
+    let mut notes = Vec::new();
+    if standard != Standard::Smpte {
+        return notes;
+    }
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+    if !content.contains("CompositionPlaylist") {
+        return notes;
+    }
+
+    let mut invalid = |element: &str, value: &str| {
+        notes.push(
+            Note::warning(
+                Code::CplInvalidLanguage,
+                format!("<{element}> value '{value}' is not a valid RFC 5646 tag"),
+            )
+            .with_file(cpl_path),
+        );
+    };
+
+    for element in LANGUAGE_TAG_ELEMENTS {
+        for value in all_ns_tag_values(&content, element) {
+            if !value.is_empty() && !is_valid_language_tag(&value) {
+                invalid(element, &value);
+            }
+        }
+    }
+    for element in LANGUAGE_TAG_LIST_ELEMENTS {
+        for list in all_ns_tag_values(&content, element) {
+            for value in list.split_whitespace() {
+                if !is_valid_language_tag(value) {
+                    invalid(element, value);
+                }
+            }
+        }
+    }
+    for territory in all_ns_tag_values(&content, RELEASE_TERRITORY) {
+        if !territory.is_empty() && !is_valid_region_subtag(&territory) {
+            invalid(RELEASE_TERRITORY, &territory);
+        }
+    }
+
+    notes
+}
+
 // ─── Reel EditRate Beyond the Picture (ST 429-2) ──────────────────────────────
 
 /// Reel asset classes whose EditRate no spec text pins to the picture's. ST
@@ -3442,5 +3662,213 @@ mod tests {
 
         // Interop is out of scope
         assert!(check_sound_channel_configuration(cpl.path(), Standard::Interop, &map2).is_empty());
+    }
+
+    // ─── CompositionMetadataAsset presence, active area, languages ─────────
+
+    /// A SMPTE CPL whose single reel carries the metadata block `metadata`.
+    fn cpl_with_metadata(metadata: &str) -> tempfile::NamedTempFile {
+        write_cpl(&format!(
+            r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel>
+    <Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture>
+        <Id>urn:uuid:{PICTURE_ID}</Id>
+        <EditRate>24 1</EditRate>
+        <Duration>48</Duration>
+      </MainPicture>
+      {metadata}
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+        ))
+    }
+
+    const PICTURE_ID: &str = "f76deec8-ab85-4f05-973d-089b67a55e5f";
+
+    /// A CompositionMetadataAsset with the given inner elements.
+    fn metadata_block(inner: &str) -> String {
+        format!(
+            r#"<meta:CompositionMetadataAsset xmlns:meta="http://www.smpte-ra.org/schemas/429-16/2014/CPL-Metadata">
+        <meta:Id>urn:uuid:11111111-0000-0000-0000-000000000000</meta:Id>
+        <meta:EditRate>24 1</meta:EditRate>
+        <meta:IntrinsicDuration>48</meta:IntrinsicDuration>
+        {inner}
+      </meta:CompositionMetadataAsset>"#
+        )
+    }
+
+    const VERSION_NUMBER: &str = "<meta:VersionNumber>1</meta:VersionNumber>";
+
+    #[test]
+    fn a_smpte_cpl_without_composition_metadata_fires() {
+        let f = cpl_with_metadata("");
+        let notes = check_cpl_metadata_asset(f.path(), Standard::Smpte);
+        assert!(
+            notes.iter().any(|n| n.code == Code::MissingRequiredElement
+                && n.message.contains("CompositionMetadataAsset")),
+            "got: {notes:?}"
+        );
+        // the rule is a SMPTE one; Interop CPLs carry no such block
+        assert!(check_cpl_metadata_asset(f.path(), Standard::Interop).is_empty());
+    }
+
+    #[test]
+    fn composition_metadata_without_a_version_number_fires() {
+        let f = cpl_with_metadata(&metadata_block(""));
+        let notes = check_cpl_metadata_asset(f.path(), Standard::Smpte);
+        assert!(
+            notes.iter().any(|n| n.message.contains("VersionNumber")),
+            "got: {notes:?}"
+        );
+
+        let complete = cpl_with_metadata(&metadata_block(VERSION_NUMBER));
+        assert!(
+            check_cpl_metadata_asset(complete.path(), Standard::Smpte).is_empty(),
+            "a complete metadata block must stay silent"
+        );
+    }
+
+    /// A MainPictureActiveArea of the given size.
+    fn active_area(width: u32, height: u32) -> String {
+        format!(
+            "<meta:MainPictureActiveArea><meta:Width>{width}</meta:Width><meta:Height>{height}</meta:Height></meta:MainPictureActiveArea>"
+        )
+    }
+
+    #[test]
+    fn an_odd_active_area_edge_fires_and_an_even_one_does_not() {
+        let odd = cpl_with_metadata(&metadata_block(&format!(
+            "{VERSION_NUMBER}{}",
+            active_area(1997, 1080)
+        )));
+        let notes = check_main_picture_active_area(odd.path(), &HashMap::new());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::CplActiveAreaInvalid && n.message.contains("width 1997")),
+            "an odd active-area width must fire, got: {notes:?}"
+        );
+
+        let even = cpl_with_metadata(&metadata_block(&format!(
+            "{VERSION_NUMBER}{}",
+            active_area(1998, 1080)
+        )));
+        assert!(
+            check_main_picture_active_area(even.path(), &HashMap::new()).is_empty(),
+            "an even active area with no essence to compare against must stay silent"
+        );
+    }
+
+    #[test]
+    fn an_active_area_bigger_than_the_picture_asset_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let mxf = dir.path().join("pic.mxf");
+        write_picture_mxf(&mxf, 2048, 1080);
+        let map: HashMap<String, PathBuf> = HashMap::from([(PICTURE_ID.to_string(), mxf)]);
+
+        let oversize = cpl_with_metadata(&metadata_block(&format!(
+            "{VERSION_NUMBER}{}",
+            active_area(4096, 1080)
+        )));
+        let notes = check_main_picture_active_area(oversize.path(), &map);
+        assert!(
+            notes.iter().any(|n| n.code == Code::CplActiveAreaInvalid
+                && n.message.contains("bigger than the asset width")),
+            "an active area wider than the essence must fire, got: {notes:?}"
+        );
+
+        let fitting = cpl_with_metadata(&metadata_block(&format!(
+            "{VERSION_NUMBER}{}",
+            active_area(2048, 1080)
+        )));
+        assert!(
+            check_main_picture_active_area(fitting.path(), &map).is_empty(),
+            "an active area matching the essence must stay silent"
+        );
+    }
+
+    /// A single-frame 2K picture MXF of the given stored size.
+    fn write_picture_mxf(path: &Path, width: u32, height: u32) {
+        use asdcplib::jp2k::{MxfWriter, PictureDescriptor};
+        use asdcplib::{LabelSet, Rational, WriterInfo};
+
+        let info = WriterInfo {
+            asset_uuid: [9; 16],
+            label_set: LabelSet::Smpte,
+            ..Default::default()
+        };
+        let desc = PictureDescriptor {
+            edit_rate: Rational::new(24, 1),
+            sample_rate: Rational::new(24, 1),
+            stored_width: width,
+            stored_height: height,
+            aspect_ratio: Rational::new(width as i32, height as i32),
+            container_duration: 1,
+            component_count: 3,
+        };
+        let mut writer = MxfWriter::new();
+        writer
+            .open_write(path.to_str().unwrap(), &info, &desc, 16_384)
+            .unwrap();
+        // a minimal codestream: this test reads the descriptor, not the essence
+        writer
+            .write_frame(&[0xFF, 0x4F, 0xFF, 0x93, 0, 0, 0, 0], None, None)
+            .unwrap();
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn invalid_language_tags_and_territories_fire() {
+        let f = cpl_with_metadata(&metadata_block(&format!(
+            "{VERSION_NUMBER}<meta:ReleaseTerritory>Freedonia</meta:ReleaseTerritory><meta:MainSubtitleLanguageList>en Deutsch</meta:MainSubtitleLanguageList>"
+        )));
+        let notes = check_cpl_languages(f.path(), Standard::Smpte);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::CplInvalidLanguage && n.message.contains("Deutsch")),
+            "a subtitle language that is not an RFC 5646 tag must fire, got: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::CplInvalidLanguage && n.message.contains("Freedonia")),
+            "a release territory that is not a region subtag must fire, got: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.message.contains("'en'")),
+            "en is a valid tag, got: {notes:?}"
+        );
+        // Interop CPLs predate the rule
+        assert!(check_cpl_languages(f.path(), Standard::Interop).is_empty());
+    }
+
+    #[test]
+    fn valid_language_tags_and_territories_stay_silent() {
+        // subtags are case-insensitive, and real CPLs write the lowercase form
+        for territory in ["US", "us", "GB", "001"] {
+            let f = cpl_with_metadata(&metadata_block(&format!(
+                "{VERSION_NUMBER}<meta:ReleaseTerritory>{territory}</meta:ReleaseTerritory>"
+            )));
+            assert!(
+                check_cpl_languages(f.path(), Standard::Smpte).is_empty(),
+                "{territory} is a valid RFC 5646 region subtag"
+            );
+        }
+        let f = cpl_with_metadata(&format!(
+            "<Language>en-US</Language>{}",
+            metadata_block(&format!(
+                "{VERSION_NUMBER}<meta:AdditionalSubtitleLanguageList>de fr-CA</meta:AdditionalSubtitleLanguageList>"
+            ))
+        ));
+        assert!(
+            check_cpl_languages(f.path(), Standard::Smpte).is_empty(),
+            "well-formed tags must stay silent"
+        );
     }
 }
