@@ -467,6 +467,15 @@ pub fn check_glyph_coverage_mxf(mxf_path: &Path, keys: &crate::kdm::ContentKeys)
     notes
 }
 
+/// The ST 429-5 timed-text document inside a subtitle MXF, for callers that want
+/// the XML itself (the XSD pass) rather than its fonts. `None` when the MXF can't
+/// be read or is encrypted with no covering key.
+pub fn timed_text_xml(mxf_path: &Path, keys: &crate::kdm::ContentKeys) -> Option<String> {
+    read_mxf_timed_text(mxf_path, keys)
+        .map(|(xml, _, _)| xml)
+        .filter(|xml| !xml.is_empty())
+}
+
 /// A timed-text document, its embedded OpenType fonts keyed by resource uuid, and
 /// any decryption/skip notes produced while reading.
 type MxfTimedText = (String, HashMap<[u8; 16], Vec<u8>>, Vec<Note>);
@@ -921,6 +930,34 @@ pub(crate) mod tests {
         }
         writer.finalize().unwrap();
         path
+    }
+
+    // the XSD pass validates wrapped subtitles too, which means unwrapping the
+    // document out of the essence rather than reading a file.
+    #[test]
+    fn wrapped_timed_text_document_is_readable_for_schema_validation() {
+        if !crate::schema::xmllint_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let uuid = [0xCD; 16];
+        let doc = mxf_doc("Hi", &uuid_urn(&uuid));
+        let path = write_mxf(dir.path(), &doc, Some((&make_font(&['H', 'i']), uuid)));
+
+        let xml = timed_text_xml(&path, &crate::kdm::ContentKeys::none())
+            .expect("the wrapped document must come back out of the MXF");
+        assert!(xml.contains("SubtitleReel"), "got: {xml}");
+
+        // that document omits required ST 428-7 elements, so the XSD must object,
+        // and the finding must name the MXF rather than a temporary file
+        let schema_dir = crate::schema::locate_schema_dir().expect("the repository vendors XSDs");
+        let notes = crate::schema::check_schema_xml(&xml, &path, &schema_dir);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::XmlSchemaViolation && n.file.as_deref() == Some(&*path)),
+            "wrapped timed text must reach its XSD, got: {notes:?}"
+        );
     }
 
     #[test]

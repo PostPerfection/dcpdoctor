@@ -82,6 +82,7 @@ pub enum Code {
     // XML
     XmlParseError,
     XmlSchemaViolation,
+    SchemaValidationSkipped,
     InvalidUuid,
     MissingRequiredElement,
 
@@ -215,6 +216,7 @@ impl Code {
             Code::AssetmapSizeMismatch => "assetmap_size_mismatch",
             Code::XmlParseError => "xml_parse_error",
             Code::XmlSchemaViolation => "xml_schema_violation",
+            Code::SchemaValidationSkipped => "schema_validation_skipped",
             Code::InvalidUuid => "invalid_uuid",
             Code::MissingRequiredElement => "missing_required_element",
             Code::PklHashMismatch => "pkl_hash_mismatch",

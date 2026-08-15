@@ -131,18 +131,25 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
 
     // 0. XSD schema validation, when a schema dir is available (schema-path
     // driven, see schema::locate_schema_dir). Validates every CPL/PKL/ASSETMAP
-    // against the SMPTE/Interop XSDs, emitting xml_schema_violation.
-    if let Some(schema_dir) = crate::schema::locate_schema_dir() {
-        for note in crate::schema::check_schema(&dcp.assetmap_path, &schema_dir) {
+    // against the SMPTE/Interop XSDs, emitting xml_schema_violation. Subtitle
+    // documents get the same treatment further down, where the reels resolve
+    // them. When the pass cannot run at all it says so rather than passing
+    // silently with no XSD coverage.
+    let schema_dir = crate::schema::locate_schema_dir();
+    if let Some(reason) = crate::schema::schema_pass_unavailable(schema_dir.as_deref()) {
+        result.add(Note::warning(Code::SchemaValidationSkipped, reason).with_file(dcp_dir));
+    }
+    if let Some(schema_dir) = schema_dir.as_deref() {
+        for note in crate::schema::check_schema(&dcp.assetmap_path, schema_dir) {
             result.add(note);
         }
         for (pkl_path, _) in &dcp.pkls {
-            for note in crate::schema::check_schema(pkl_path, &schema_dir) {
+            for note in crate::schema::check_schema(pkl_path, schema_dir) {
                 result.add(note);
             }
         }
         for (cpl_path, _) in &dcp.cpls {
-            for note in crate::schema::check_schema(cpl_path, &schema_dir) {
+            for note in crate::schema::check_schema(cpl_path, schema_dir) {
                 result.add(note);
             }
         }
@@ -402,6 +409,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     .and_then(|e| e.to_str())
                     .is_some_and(|e| e.eq_ignore_ascii_case("xml"));
                 if is_xml && full_path.exists() {
+                    if let Some(schema_dir) = schema_dir.as_deref() {
+                        for note in crate::schema::check_schema(&full_path, schema_dir) {
+                            result.add(note);
+                        }
+                    }
                     for note in crate::subtitle::validate_subtitle(&full_path, dcp.standard) {
                         result.add(note);
                     }
@@ -433,9 +445,17 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                         result.add(note);
                     }
                 } else if full_path.exists() {
-                    // SMPTE ST 429-5 MXF-wrapped timed text: fonts are embedded
-                    // as ancillary resources, read them straight from the MXF
+                    // SMPTE ST 429-5 MXF-wrapped timed text: the document and its
+                    // fonts are inside the essence, so unwrap both from the MXF
                     // (decrypting with the KDM when the essence is encrypted).
+                    if let Some(schema_dir) = schema_dir.as_deref()
+                        && let Some(xml) =
+                            crate::subtitle::timed_text_xml(&full_path, &content_keys)
+                    {
+                        for note in crate::schema::check_schema_xml(&xml, &full_path, schema_dir) {
+                            result.add(note);
+                        }
+                    }
                     for note in crate::subtitle::check_glyph_coverage_mxf(&full_path, &content_keys)
                     {
                         result.add(note);
@@ -1176,6 +1196,127 @@ mod tests {
                 .iter()
                 .any(|n| n.code == Code::SubtitleInvalidTiming),
             "expected subtitle timing note from pipeline, got: {:?}",
+            result.notes
+        );
+    }
+
+    /// Write a package whose single reel references `sub.xml`, and return it.
+    fn package_with_subtitle(subtitle_xml: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let sub_id = "11111111-2222-3333-4444-555555555555";
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+    <Asset><Id>urn:uuid:{sub_id}</Id>
+      <ChunkList><Chunk><Path>sub.xml</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><Duration>48</Duration></MainPicture>
+      <MainSubtitle><Id>urn:uuid:{sub_id}</Id><Duration>48</Duration></MainSubtitle>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("sub.xml"), subtitle_xml).unwrap();
+        dir
+    }
+
+    /// The XSD the conformant document below routes to.
+    const SUBTITLE_SCHEMA: &str = "DCDMSubtitle-2010.xsd";
+
+    /// A conformant ST 428-7:2010 timed-text document.
+    const CONFORMANT_SUBTITLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:Id>urn:uuid:22222222-2222-3333-4444-555555555555</dcst:Id>
+  <dcst:ContentTitleText>Test</dcst:ContentTitleText>
+  <dcst:IssueDate>2024-01-01T00:00:00.000-00:00</dcst:IssueDate>
+  <dcst:ReelNumber>1</dcst:ReelNumber>
+  <dcst:Language>en</dcst:Language>
+  <dcst:EditRate>24 1</dcst:EditRate>
+  <dcst:TimeCodeRate>24</dcst:TimeCodeRate>
+  <dcst:StartTime>00:00:00:000</dcst:StartTime>
+  <dcst:LoadFont ID="f">urn:uuid:33333333-2222-3333-4444-555555555555</dcst:LoadFont>
+  <dcst:SubtitleList>
+    <dcst:Font ID="f">
+      <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
+        <dcst:Text>Hi</dcst:Text>
+      </dcst:Subtitle>
+    </dcst:Font>
+  </dcst:SubtitleList>
+</dcst:SubtitleReel>"#;
+
+    // subtitle documents used to reach no XSD at all, so a schema-invalid one
+    // passed here and failed at the cinema.
+    #[test]
+    fn subtitle_asset_is_schema_validated_by_the_pipeline() {
+        if !crate::schema::xmllint_available() {
+            return;
+        }
+        // this minimal package's own ASSETMAP and CPL are not schema-conformant,
+        // so only findings against the subtitle file itself count here
+        let subtitle_violations = |dir: &Path| {
+            let subtitle = dir.join("sub.xml");
+            verify_dcp(dir, &VerifyOptions::default())
+                .notes
+                .into_iter()
+                .filter(|n| {
+                    n.code == Code::XmlSchemaViolation && n.file.as_deref() == Some(&*subtitle)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let clean = package_with_subtitle(CONFORMANT_SUBTITLE);
+        assert!(
+            subtitle_violations(clean.path()).is_empty(),
+            "a conformant subtitle must not draw a schema violation"
+        );
+
+        let broken = package_with_subtitle(&CONFORMANT_SUBTITLE.replace(
+            "urn:uuid:22222222-2222-3333-4444-555555555555",
+            "not-a-uuid",
+        ));
+        let notes = subtitle_violations(broken.path());
+        assert!(
+            notes.iter().any(|n| n.message.contains(SUBTITLE_SCHEMA)),
+            "a schema-invalid subtitle must fire against its own XSD, got: {notes:?}"
+        );
+    }
+
+    // the XSD pass silently skipping itself turned a machine without xmllint into
+    // a clean run; it now says so, and must stay quiet when it really did run.
+    #[test]
+    fn a_complete_schema_environment_draws_no_skip_note() {
+        if !crate::schema::xmllint_available() {
+            return;
+        }
+        let dir = package_with_subtitle(CONFORMANT_SUBTITLE);
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            !result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::SchemaValidationSkipped),
+            "xmllint and the schemas are both present here, got: {:?}",
             result.notes
         );
     }

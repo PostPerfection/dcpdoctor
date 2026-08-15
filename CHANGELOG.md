@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Subtitle documents are schema-validated: SMPTE ST 428-7 timed text routes to the DCDMSubtitle XSD for the DCST namespace it declares (2007, 2010 or 2014) and Interop DCSubtitle to `DCSubtitle.xsd`, both loose and MXF-wrapped, so a schema-invalid subtitle now reports `xml_schema_violation` instead of passing.
+- `schema_validation_skipped`: the XSD pass used to skip itself silently when the schema directory or `xmllint` was absent, so a machine without either reported a clean run with no XSD coverage. It now warns and names the reason.
 - CPL asset hashes: every reel asset's `<Hash>` is now read and compared with the PKL's for the same asset, so a disagreement errors as `cpl_pkl_hash_mismatch` (libdcp MISMATCHED_PICTURE_HASHES / MISMATCHED_SOUND_HASHES) and an MXF-backed asset with no `<Hash>` warns as `cpl_missing_hash`. Servers that hash-check against the CPL rather than the PKL reject the first case.
 - KDM digest rules the schema cannot express, all errors: a DeviceList `<CertificateThumbprint>` that does not decode to a 20-byte SHA-1 digest (`kdm_thumbprint_invalid`), the same for `<ContentAuthenticator>` when present (`kdm_content_authenticator_invalid`), and the DCI assume-trust marker (DCSS 9.4.3.5) sharing a DeviceList with a real device thumbprint (`kdm_assume_trust_conflict`). Checked against real DCP-o-matic KDMs, one per ISDCF formulation, under `tests/fixtures/kdm`.
 
