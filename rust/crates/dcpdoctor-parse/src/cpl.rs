@@ -11,6 +11,10 @@ pub struct ReelAsset {
     pub edit_rate: String,
     pub duration: i64,
     pub entry_point: i64,
+    /// Base64 SHA-1 of the referenced file, from the asset's `Hash` element.
+    /// Empty when the element is absent: ST 429-7 makes it optional in the CPL
+    /// schema, so absence is a finding rather than a parse failure.
+    pub hash: String,
 }
 
 /// A single reel in the CPL.
@@ -140,6 +144,7 @@ fn fill_reel_asset(asset: &mut ReelAsset, tag: &str, text: String) {
         "EditRate" => asset.edit_rate = text,
         "Duration" | "IntrinsicDuration" => asset.duration = text.parse().unwrap_or(0),
         "EntryPoint" => asset.entry_point = text.parse().unwrap_or(0),
+        "Hash" => asset.hash = text,
         _ => {}
     }
 }
@@ -169,6 +174,7 @@ mod tests {
           <IntrinsicDuration>96</IntrinsicDuration>
           <EntryPoint>12</EntryPoint>
           <Duration>48</Duration>
+          <Hash>Q0lqBCWQW113PAgvQLJhCKV49Z4=</Hash>
         </MainPicture>
         <MainSound>
           <Id>urn:uuid:6b6673ae-d44d-4153-93ad-5333d7af01fb</Id>
@@ -202,7 +208,12 @@ mod tests {
         // Duration comes last and wins over IntrinsicDuration
         assert_eq!(reel.picture.duration, 48);
         assert_eq!(reel.picture.entry_point, 12);
+        assert_eq!(reel.picture.hash, "Q0lqBCWQW113PAgvQLJhCKV49Z4=");
         assert_eq!(reel.sound.id, "6b6673ae-d44d-4153-93ad-5333d7af01fb");
+        assert!(
+            reel.sound.hash.is_empty(),
+            "an asset with no Hash element must read back empty"
+        );
         assert_eq!(reel.subtitle.id, "11111111-2222-3333-4444-555555555555");
         assert!(!reel.stereoscopic);
     }

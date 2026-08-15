@@ -22,6 +22,88 @@ fn is_standard_picture_size(width: u32, height: u32) -> bool {
     STANDARD_PICTURE_SIZES.contains(&(width, height))
 }
 
+/// Extension of the essence files ST 429-3 / ST 429-2 wrap picture and sound in.
+/// libdcp requires a CPL `Hash` on exactly these (its "encryptable" assets), so a
+/// loose Interop subtitle XML with no hash is not a finding.
+const ESSENCE_EXTENSION: &str = "mxf";
+
+/// A reel's essence references, each with the label findings name it by.
+fn reel_file_assets(
+    reel: &crate::cpl::Reel,
+) -> [(&'static str, &crate::cpl::ReelAsset); REEL_ASSET_KINDS] {
+    [
+        ("picture", &reel.picture),
+        ("sound", &reel.sound),
+        ("subtitle", &reel.subtitle),
+    ]
+}
+
+/// Picture, sound and subtitle: the reel asset classes `Reel` carries.
+const REEL_ASSET_KINDS: usize = 3;
+
+/// The CPL carries its own `Hash` per reel asset alongside the PKL's, and some
+/// servers hash-check against the CPL rather than the PKL, so the two disagreeing
+/// is a rejection even when the PKL hash matches the bytes on disk. Covers
+/// libdcp's MISSING_HASH plus MISMATCHED_PICTURE_HASHES / MISMATCHED_SOUND_HASHES
+/// (one code here, since the message names the asset class).
+fn check_cpl_asset_hashes(
+    cpl_path: &Path,
+    cpl: &crate::cpl::Cpl,
+    pkl_hashes: &HashMap<&str, &str>,
+    id_to_path: &HashMap<&str, &str>,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    for (index, reel) in cpl.reels.iter().enumerate() {
+        for (kind, asset) in reel_file_assets(reel) {
+            if asset.id.is_empty() {
+                continue;
+            }
+            let is_essence = id_to_path.get(asset.id.as_str()).is_some_and(|path| {
+                Path::new(path)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case(ESSENCE_EXTENSION))
+            });
+
+            if asset.hash.is_empty() {
+                if is_essence {
+                    notes.push(
+                        Note::warning(
+                            Code::CplMissingHash,
+                            format!(
+                                "Reel {} {kind} asset {} has no <Hash> in the CPL",
+                                index + 1,
+                                asset.id
+                            ),
+                        )
+                        .with_file(cpl_path),
+                    );
+                }
+                continue;
+            }
+
+            if let Some(&pkl_hash) = pkl_hashes.get(asset.id.as_str())
+                && pkl_hash != asset.hash
+            {
+                notes.push(
+                    Note::error(
+                        Code::CplPklHashMismatch,
+                        format!(
+                            "Reel {} {kind} asset {} hash differs between CPL ({}) and PKL ({pkl_hash})",
+                            index + 1,
+                            asset.id,
+                            asset.hash
+                        ),
+                    )
+                    .with_file(cpl_path),
+                );
+            }
+        }
+    }
+
+    notes
+}
+
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
@@ -202,11 +284,23 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         });
     }
 
+    // asset id -> the hash the PKLs record for it, for the CPL/PKL comparison
+    let pkl_hashes: HashMap<&str, &str> = dcp
+        .pkls
+        .iter()
+        .flat_map(|(_, pkl)| &pkl.assets)
+        .filter(|a| !a.hash.is_empty())
+        .map(|a| (a.id.as_str(), a.hash.as_str()))
+        .collect();
+
     for (cpl_path, cpl) in &dcp.cpls {
         if opts.check_signatures {
             for note in crate::signature::verify_signature(cpl_path, opts.strict_smpte) {
                 result.add(note);
             }
+        }
+        for note in check_cpl_asset_hashes(cpl_path, cpl, &pkl_hashes, &id_to_path) {
+            result.add(note);
         }
         if cpl.reels.is_empty() {
             result.add(Note {
@@ -719,6 +813,132 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../tests/dcps/synthetic/valid")
             .join(relative_path)
+    }
+
+    // ─── CPL asset hashes ─────────────────────────────────────────────────
+
+    /// A committed SMPTE package whose PKL records the real SHA-1 of its own
+    /// files, so a hash case starts from genuine digests instead of invented ones.
+    const SMPTE_PACKAGE: &str = "../../../tests/fixtures/valid_smpte";
+
+    /// Anchors the hash edits attach to; both are unique in that package's CPL.
+    const AFTER_PICTURE_FIELDS: &str = "<ScreenAspectRatio>1998 1080</ScreenAspectRatio>";
+    const SOUND_CLOSE_TAG: &str = "</MainSound>";
+
+    fn smpte_package_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(SMPTE_PACKAGE)
+    }
+
+    /// Copy the committed package into a temp dir with `edits` applied to its CPL
+    /// in order, so each case is one deliberate deviation from a real package.
+    fn mutated_package(edits: &[(&str, String)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for entry in std::fs::read_dir(smpte_package_dir()).unwrap().flatten() {
+            std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+        }
+        let cpl = dir.path().join("cpl.xml");
+        let mut xml = std::fs::read_to_string(&cpl).unwrap();
+        for (from, to) in edits {
+            assert!(
+                xml.contains(from),
+                "the package's CPL no longer has {from:?}"
+            );
+            xml = xml.replace(from, to);
+        }
+        std::fs::write(&cpl, xml).unwrap();
+        dir
+    }
+
+    /// The hash the committed package's PKL records for one of its files.
+    fn pkl_hash_of(original_filename: &str) -> String {
+        use crate::assetmap::ParseXmlFile;
+        crate::pkl::Pkl::parse(&smpte_package_dir().join("pkl.xml"))
+            .expect("the package's PKL parses")
+            .assets
+            .into_iter()
+            .find(|a| a.original_filename == original_filename)
+            .expect("the package's PKL lists the file")
+            .hash
+    }
+
+    /// Edits putting the PKL's own hashes into the CPL's picture and sound assets.
+    fn agreeing_hashes() -> Vec<(&'static str, String)> {
+        vec![
+            (
+                AFTER_PICTURE_FIELDS,
+                format!(
+                    "{AFTER_PICTURE_FIELDS}<Hash>{}</Hash>",
+                    pkl_hash_of("picture.mxf")
+                ),
+            ),
+            (
+                SOUND_CLOSE_TAG,
+                format!("<Hash>{}</Hash>{SOUND_CLOSE_TAG}", pkl_hash_of("sound.mxf")),
+            ),
+        ]
+    }
+
+    #[test]
+    fn cpl_hashes_agreeing_with_the_pkl_are_silent() {
+        let dir = mutated_package(&agreeing_hashes());
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            !result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::CplMissingHash || n.code == Code::CplPklHashMismatch),
+            "CPL hashes equal to the PKL's must draw nothing, got: {:?}",
+            result.notes
+        );
+    }
+
+    #[test]
+    fn cpl_essence_asset_without_a_hash_fires() {
+        // the package's CPL carries no <Hash> at all, which is the finding
+        let dir = mutated_package(&[]);
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        for kind in ["picture", "sound"] {
+            assert!(
+                result
+                    .notes
+                    .iter()
+                    .any(|n| n.code == Code::CplMissingHash && n.message.contains(kind)),
+                "an MXF-backed {kind} asset with no <Hash> must fire, got: {:?}",
+                result.notes
+            );
+        }
+    }
+
+    #[test]
+    fn cpl_hash_disagreeing_with_the_pkl_fires() {
+        // the sound asset's real hash, put on the picture asset: a valid base64
+        // SHA-1 that is simply the wrong one, which is what a botched re-wrap makes
+        let mut edits = agreeing_hashes();
+        edits[0] = (
+            AFTER_PICTURE_FIELDS,
+            format!(
+                "{AFTER_PICTURE_FIELDS}<Hash>{}</Hash>",
+                pkl_hash_of("sound.mxf")
+            ),
+        );
+        let dir = mutated_package(&edits);
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::CplPklHashMismatch && n.message.contains("picture")),
+            "a CPL picture hash unequal to the PKL's must fire, got: {:?}",
+            result.notes
+        );
+        assert!(
+            !result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::CplPklHashMismatch && n.message.contains("sound")),
+            "the untouched sound asset must stay silent, got: {:?}",
+            result.notes
+        );
     }
 
     #[test]

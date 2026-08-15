@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- CPL asset hashes: every reel asset's `<Hash>` is now read and compared with the PKL's for the same asset, so a disagreement errors as `cpl_pkl_hash_mismatch` (libdcp MISMATCHED_PICTURE_HASHES / MISMATCHED_SOUND_HASHES) and an MXF-backed asset with no `<Hash>` warns as `cpl_missing_hash`. Servers that hash-check against the CPL rather than the PKL reject the first case.
 - KDM digest rules the schema cannot express, all errors: a DeviceList `<CertificateThumbprint>` that does not decode to a 20-byte SHA-1 digest (`kdm_thumbprint_invalid`), the same for `<ContentAuthenticator>` when present (`kdm_content_authenticator_invalid`), and the DCI assume-trust marker (DCSS 9.4.3.5) sharing a DeviceList with a real device thumbprint (`kdm_assume_trust_conflict`). Checked against real DCP-o-matic KDMs, one per ISDCF formulation, under `tests/fixtures/kdm`.
 
 ### Fixed
