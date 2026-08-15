@@ -2,6 +2,7 @@
 
 mod assetmap;
 mod cpl;
+pub mod j2k;
 mod pkl;
 
 pub use assetmap::{Asset, AssetMap, parse_assetmap};

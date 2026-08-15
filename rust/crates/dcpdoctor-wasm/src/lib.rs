@@ -177,7 +177,7 @@ pub fn validate_mxf_file(data: &[u8], path: &str) -> String {
     // If this is a picture MXF, try to parse J2K codestream header
     if metadata.essence_type == mxf::EssenceType::Jpeg2000 {
         if let Some(j2k_header) = j2k::parse_j2k_from_mxf(data) {
-            let j2k_notes = j2k_validate::validate_j2k(path, &j2k_header);
+            let j2k_notes = j2k_validate::validate_j2k(path, &j2k_header, data);
             notes.extend(j2k_notes);
         }
     }

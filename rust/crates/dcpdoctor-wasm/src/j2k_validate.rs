@@ -5,8 +5,19 @@
 use crate::j2k::J2kHeader;
 use crate::{Note, Severity};
 
-/// Validate J2K codestream header against DCI requirements.
-pub fn validate_j2k(path: &str, header: &J2kHeader) -> Vec<Note> {
+/// POC markers the DCI profiles allow in a codestream's main header: none for
+/// 2K, exactly one for 4K, where the marker signals the switch from the 2K
+/// portion to the 4K portion. This file used to reject a POC marker outright,
+/// which is a false positive on every conformant 4K DCP.
+const POC_MARKERS_IN_MAIN_HEADER_2K: usize = 0;
+const POC_MARKERS_IN_MAIN_HEADER_4K: usize = 1;
+
+/// Stored width above which a codestream is a 4K one.
+const MAX_2K_WIDTH: u32 = 2048;
+
+/// Validate J2K codestream header against DCI requirements. `mxf_data` is the
+/// buffer `header` was parsed from, so the marker walk can reach the codestream.
+pub fn validate_j2k(path: &str, header: &J2kHeader, mxf_data: &[u8]) -> Vec<Note> {
     let mut notes = Vec::new();
 
     // DCI requires 3 components (XYZ color)
@@ -139,8 +150,11 @@ pub fn validate_j2k(path: &str, header: &J2kHeader) -> Vec<Note> {
         }
     }
 
-    // TLM marker must be present (SMPTE 428-1 §6.1)
-    if !header.tlm_present {
+    // TLM presence and POC placement need the whole codestream, not just the
+    // main-header fields above (SMPTE 428-1, matching libdcp's verify_j2k).
+    let codestream = &mxf_data[header.codestream_offset.min(mxf_data.len())..];
+    let scan = dcpdoctor_parse::j2k::scan_markers(codestream);
+    if !scan.tlm_present {
         notes.push(Note {
             severity: Severity::Error,
             code: "j2k_missing_tlm".to_string(),
@@ -149,12 +163,41 @@ pub fn validate_j2k(path: &str, header: &J2kHeader) -> Vec<Note> {
         });
     }
 
-    // POC marker must NOT be present for DCI (SMPTE 428-1)
-    if header.poc_present {
+    let expected_poc = if header.width > MAX_2K_WIDTH {
+        POC_MARKERS_IN_MAIN_HEADER_4K
+    } else {
+        POC_MARKERS_IN_MAIN_HEADER_2K
+    };
+    if scan.poc_in_main_header != expected_poc {
         notes.push(Note {
             severity: Severity::Error,
-            code: "j2k_poc_present".to_string(),
-            message: "J2K codestream contains POC (progression order change) marker — not permitted for DCI".to_string(),
+            code: "j2k_poc_invalid".to_string(),
+            message: format!(
+                "J2K main header has {} POC marker(s); DCI requires {expected_poc}",
+                scan.poc_in_main_header
+            ),
+            file: Some(path.to_string()),
+        });
+    }
+    if scan.poc_after_main_header > 0 {
+        notes.push(Note {
+            severity: Severity::Error,
+            code: "j2k_poc_invalid".to_string(),
+            message: format!(
+                "{} POC marker(s) sit in a tile-part header, where no DCI profile permits one",
+                scan.poc_after_main_header
+            ),
+            file: Some(path.to_string()),
+        });
+    }
+    for mismatch in &scan.poc_field_mismatches {
+        notes.push(Note {
+            severity: Severity::Error,
+            code: "j2k_poc_invalid".to_string(),
+            message: format!(
+                "POC {} is {}, expected {}",
+                mismatch.field, mismatch.found, mismatch.expected
+            ),
             file: Some(path.to_string()),
         });
     }

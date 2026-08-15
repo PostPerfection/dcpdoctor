@@ -902,9 +902,13 @@ mod decrypt_tests {
     use postkit::certificate::{KdmConfig, KdmContentKey, build_kdm, generate_chain};
     use std::path::PathBuf;
 
+    /// Edit rate the fixture MXF declares, which the codestream checks scale the
+    /// per-component byte limit by.
+    const PICTURE_FPS: f64 = 24.0;
+
     // A 2K picture codestream with `guard_bits` in its QCD: SOC, QCD, SOT. Enough
-    // for check_guard_bits_mxf (which reads width from the descriptor, guard bits
-    // from the QCD). 2K expects 1 guard bit, so gb=0 is a planted violation.
+    // for the guard-bit rule (width comes from the descriptor, guard bits from the
+    // QCD). 2K expects 1 guard bit, so gb=0 is a planted violation.
     fn codestream(guard_bits: u8) -> Vec<u8> {
         let mut d = vec![0xFF, 0x4F]; // SOC
         d.extend_from_slice(&[0xFF, 0x5C]); // QCD
@@ -1001,7 +1005,8 @@ mod decrypt_tests {
         let mxf = dir.path().join("pic.mxf");
         write_encrypted_mxf(&mxf, uuid::Uuid::new_v4(), [0x11; 16], 0);
 
-        let notes = crate::j2k::check_guard_bits_mxf(&mxf, &ContentKeys::none());
+        let notes =
+            crate::j2k::check_picture_j2k_mxf(&mxf, PICTURE_FPS, &ContentKeys::none(), true);
         assert!(
             notes.is_empty(),
             "encrypted essence must skip without a KDM, got: {notes:?}"
@@ -1021,7 +1026,7 @@ mod decrypt_tests {
         write_encrypted_mxf(&mxf, key_id, content_key, 0);
 
         let keys = ContentKeys::from_kdm(&kdm_path, &recipient_key).expect("unwrap kdm");
-        let notes = crate::j2k::check_guard_bits_mxf(&mxf, &keys);
+        let notes = crate::j2k::check_picture_j2k_mxf(&mxf, PICTURE_FPS, &keys, true);
         assert!(
             notes.iter().any(|n| n.code == Code::J2kGuardBits),
             "planted guard-bit violation must fire on decrypted essence, got: {notes:?}"
@@ -1056,7 +1061,7 @@ mod decrypt_tests {
         write_encrypted_mxf(&mxf, key_id, [0xCD; 16], 1);
 
         let keys = ContentKeys::from_kdm(&kdm_path, &recipient_key).expect("unwrap kdm");
-        let notes = crate::j2k::check_guard_bits_mxf(&mxf, &keys);
+        let notes = crate::j2k::check_picture_j2k_mxf(&mxf, PICTURE_FPS, &keys, true);
         assert!(
             notes.iter().any(|n| n.code == Code::MxfHashMismatch),
             "a mismatched content key must fail the MIC, got: {notes:?}"

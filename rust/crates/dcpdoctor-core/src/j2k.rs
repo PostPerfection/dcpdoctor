@@ -7,6 +7,9 @@
 /// - Wavelet transform type
 /// - Component count and bit depth
 use crate::{Code, Note};
+use dcpdoctor_parse::j2k::{
+    COD, MarkerScan, QCD, SIZ, SOC, find_first_sot, main_header_segment, scan_markers, tile_parts,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -334,51 +337,6 @@ pub fn analyze_frame_bitrates(dir: &Path, fps: f64) -> Result<BitrateStats, Stri
 
 // ─── 0xFFFF legacy-decoder constraint (SMPTE Cat. 862 / DoM #2740) ─────────────
 
-/// Index of the first SOT (0xFF90) marker, i.e. the main-header length Lmh.
-/// Walks only the main-header marker segments so a 0xFF90 inside packet data is
-/// never mistaken for a tile-part start.
-fn find_first_sot(data: &[u8]) -> Option<usize> {
-    const SOT: u16 = 0xFF90;
-    const SOD: u16 = 0xFF93;
-    const EOC: u16 = 0xFFD9;
-    let mut pos = 2; // skip SOC (delimiting marker, no segment)
-    while pos + 4 <= data.len() {
-        let marker = u16::from_be_bytes([data[pos], data[pos + 1]]);
-        if marker == SOT {
-            return Some(pos);
-        }
-        if marker == SOD || marker == EOC {
-            return None;
-        }
-        let seg_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-        if seg_len < 2 {
-            return None;
-        }
-        pos += 2 + seg_len;
-    }
-    None
-}
-
-/// Tile-parts of a codestream, as (start offset, Psot length) pairs, walked from
-/// the first SOT at `lmh`. Stops at a Psot of 0 (a final tile-part may signal
-/// its length that way).
-fn tile_parts(data: &[u8], lmh: usize) -> Vec<(usize, usize)> {
-    const SOT: u16 = 0xFF90;
-    let mut parts = Vec::new();
-    let mut pos = lmh;
-    while pos + 12 <= data.len() && u16::from_be_bytes([data[pos], data[pos + 1]]) == SOT {
-        // SOT: FF90, Lsot(2), Isot(2), Psot(4), TPsot(1), TNsot(1)
-        let psot = u32::from_be_bytes([data[pos + 6], data[pos + 7], data[pos + 8], data[pos + 9]])
-            as usize;
-        parts.push((pos, psot));
-        if psot == 0 {
-            break;
-        }
-        pos += psot;
-    }
-    parts
-}
-
 /// Detect the SMPTE Legacy Compatibility Note 1 (Dolby Cat. 862 / DoM #2740)
 /// error condition: two consecutive 0xFF bytes at a byte position that is
 /// 254 mod 256, counted from the codestream start over the main header plus the
@@ -386,8 +344,7 @@ fn tile_parts(data: &[u8], lmh: usize) -> Vec<(usize, usize)> {
 /// tile-parts. Legacy Dolby decoders (DSS200 Cat. 862, DSP100) fail on such
 /// streams. Returns the offending byte offset, if any.
 pub fn detect_legacy_ffff(codestream: &[u8]) -> Option<usize> {
-    const SOC: u16 = 0xFF4F;
-    if codestream.len() < 4 || u16::from_be_bytes([codestream[0], codestream[1]]) != SOC {
+    if codestream.len() < 4 || !starts_with_soc(codestream) {
         return None;
     }
     let lmh = find_first_sot(codestream)?;
@@ -456,34 +413,8 @@ impl SizInfo {
     }
 }
 
-/// Return a main-header marker segment's parameter bytes (excluding the 2 marker
-/// bytes and the 2 length bytes). `None` if the marker is absent before the
-/// first tile (SOT).
-fn main_header_segment(data: &[u8], marker: u16) -> Option<&[u8]> {
-    const SOT: u16 = 0xFF90;
-    const SOD: u16 = 0xFF93;
-    const EOC: u16 = 0xFFD9;
-    let mut pos = 2; // skip SOC
-    while pos + 4 <= data.len() {
-        let m = u16::from_be_bytes([data[pos], data[pos + 1]]);
-        if m == SOT || m == SOD || m == EOC {
-            return None;
-        }
-        let seg_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-        if seg_len < 2 {
-            return None;
-        }
-        if m == marker {
-            let end = pos + 2 + seg_len;
-            return data.get(pos + 4..end);
-        }
-        pos += 2 + seg_len;
-    }
-    None
-}
-
 fn parse_siz(data: &[u8]) -> Option<SizInfo> {
-    let s = main_header_segment(data, 0xFF51)?;
+    let s = main_header_segment(data, SIZ)?;
     if s.len() < 26 {
         return None;
     }
@@ -502,8 +433,68 @@ fn parse_siz(data: &[u8]) -> Option<SizInfo> {
 
 /// Number of guard bits declared in the QCD marker (the top 3 bits of Sqcd).
 fn qcd_guard_bits(data: &[u8]) -> Option<u8> {
-    let s = main_header_segment(data, 0xFF5C)?;
+    let s = main_header_segment(data, QCD)?;
     s.first().map(|sqcd| sqcd >> 5)
+}
+
+/// POC markers the DCI profiles allow in a codestream's main header: none for
+/// 2K, exactly one for 4K. The 4K profile codes the 2K portion and the 4K
+/// portion as two progressions, and the POC marker is what signals the switch,
+/// which is why the profiles differ. A POC marker in a tile-part header is
+/// permitted by neither.
+///
+/// The browser build used to reject a POC marker outright, which is a false
+/// positive on every conformant 4K DCP.
+const POC_MARKERS_IN_MAIN_HEADER_2K: usize = 0;
+const POC_MARKERS_IN_MAIN_HEADER_4K: usize = 1;
+
+/// TLM and POC findings from a full marker walk: libdcp's
+/// MISSING_JPEG2000_TLM_MARKER, INCORRECT_JPEG2000_POC_MARKER_COUNT_FOR_2K/4K,
+/// INVALID_JPEG2000_POC_MARKER_LOCATION and INCORRECT_JPEG2000_POC_MARKER.
+fn marker_placement_notes(scan: &MarkerScan, is_4k: bool, label: &str) -> Vec<Note> {
+    let mut notes = Vec::new();
+
+    if !scan.tlm_present {
+        notes.push(Note::error(
+            Code::J2kMissingTlm,
+            "JPEG 2000 codestream has no TLM (tile-part length) marker",
+        ));
+    }
+
+    let expected_poc = if is_4k {
+        POC_MARKERS_IN_MAIN_HEADER_4K
+    } else {
+        POC_MARKERS_IN_MAIN_HEADER_2K
+    };
+    if scan.poc_in_main_header != expected_poc {
+        notes.push(Note::error(
+            Code::J2kPocInvalid,
+            format!(
+                "DCI {label} requires {expected_poc} POC marker(s) in the main header; codestream has {}",
+                scan.poc_in_main_header
+            ),
+        ));
+    }
+    if scan.poc_after_main_header > 0 {
+        notes.push(Note::error(
+            Code::J2kPocInvalid,
+            format!(
+                "{} POC marker(s) sit in a tile-part header, where no DCI profile permits one",
+                scan.poc_after_main_header
+            ),
+        ));
+    }
+    for mismatch in &scan.poc_field_mismatches {
+        notes.push(Note::error(
+            Code::J2kPocInvalid,
+            format!(
+                "POC {} is {}, expected {}",
+                mismatch.field, mismatch.found, mismatch.expected
+            ),
+        ));
+    }
+
+    notes
 }
 
 /// Validate a JPEG 2000 codestream against the SMPTE ST 429-4 / ISO 15444-1
@@ -512,9 +503,8 @@ fn qcd_guard_bits(data: &[u8]) -> Option<u8> {
 /// frame size vs profile, and per-colour-component byte limits (which scale with
 /// frame rate). `fps` is the picture edit rate.
 pub fn validate_cinema_j2k(data: &[u8], fps: f64) -> Vec<Note> {
-    const SOC: u16 = 0xFF4F;
     let mut notes = Vec::new();
-    if data.len() < 4 || u16::from_be_bytes([data[0], data[1]]) != SOC {
+    if data.len() < 4 || !starts_with_soc(data) {
         return notes; // not a J2K codestream
     }
 
@@ -530,7 +520,7 @@ pub fn validate_cinema_j2k(data: &[u8], fps: f64) -> Vec<Note> {
     let label = if is_4k { "Cinema 4K" } else { "Cinema 2K" };
 
     // required main-header markers
-    if main_header_segment(data, 0xFF52).is_none() {
+    if main_header_segment(data, COD).is_none() {
         notes.push(Note::error(
             Code::J2kInvalidProfile,
             "JPEG 2000 codestream missing COD marker",
@@ -565,7 +555,10 @@ pub fn validate_cinema_j2k(data: &[u8], fps: f64) -> Vec<Note> {
         ));
     }
 
-    // guard-bit count is checked per-frame with a timecode in check_guard_bits_mxf
+    // guard-bit count is checked alongside these in check_picture_j2k_mxf, which
+    // reads the profile off the MXF descriptor rather than the codestream
+
+    notes.extend(marker_placement_notes(&scan_markers(data), is_4k, label));
 
     // tile-part organisation: 2K has 3 tile-parts (one per colour component),
     // 4K has 6 (three 2K-portion, three 4K-portion)
@@ -602,84 +595,12 @@ pub fn validate_cinema_j2k(data: &[u8], fps: f64) -> Vec<Note> {
     notes
 }
 
-/// Read the first frame of a picture MXF and run the codestream checks: the
-/// 0xFFFF legacy constraint (DoM #2740) and the ISO 15444-1 cinema profile
-/// constraints (DoM #2451/#1664). Non-picture or unreadable MXFs yield no notes.
-/// `fps` is the picture edit rate, used for the per-component byte limit.
-/// Encrypted essence is decrypted with `keys`; without a covering key it skips
-/// (with a note when a KDM was supplied but lacks the KeyId).
-pub fn check_picture_j2k_mxf(path: &Path, fps: f64, keys: &crate::kdm::ContentKeys) -> Vec<Note> {
-    let mut notes = Vec::new();
-    let Some(s) = path.to_str() else {
-        return notes;
-    };
-    let mut reader = asdcplib::jp2k::MxfReader::new();
-    if reader.open_read(s).is_err() {
-        return notes;
-    }
-    let Ok(info) = reader.writer_info() else {
-        return notes;
-    };
-    let essence = keys.resolve(&info);
-    if essence.is_missing() {
-        notes.extend(essence.skip_note(path));
-        return notes;
-    }
-    let mut ctx = match essence.contexts() {
-        Ok(c) => c,
-        Err(e) => {
-            notes.push(Note::error(Code::MxfUnreadable, e).with_file(path));
-            return notes;
-        }
-    };
-    let (dec, hmac) = match ctx.as_mut() {
-        Some(c) => (Some(&mut c.dec), Some(&mut c.hmac)),
-        None => (None, None),
-    };
-    // DCI caps a frame near 1.3 MB (2K) / 2.6 MB (4K); 8 MiB is safe headroom.
-    let mut buf = vec![0u8; 8 * 1024 * 1024];
-    let n = match reader.read_frame(0, &mut buf, dec, hmac) {
-        Ok(n) => n,
-        Err(e) => {
-            // with a key set, a read failure is a decrypt/MIC integrity failure
-            if info.encrypted_essence {
-                notes.push(
-                    Note::error(
-                        Code::MxfHashMismatch,
-                        format!("frame 0 integrity check (HMAC/MIC) failed: {e}"),
-                    )
-                    .with_file(path),
-                );
-            }
-            return notes;
-        }
-    };
-    let frame = &buf[..n];
-
-    if let Some(off) = detect_legacy_ffff(frame) {
-        notes.push(
-            Note::warning(
-                Code::J2kLegacyFfff,
-                format!(
-                    "JPEG 2000 codestream triggers the 0xFFFF legacy-decoder error condition (SMPTE Cat. 862) at byte offset {off}"
-                ),
-            )
-            .with_file(path),
-        );
-    }
-    for mut note in validate_cinema_j2k(frame, fps) {
-        note.file = Some(path.to_path_buf());
-        notes.push(note);
-    }
-    notes
-}
-
 // ─── guard-bit constraint (SMPTE RDD 52 / DoM #2984) ──────────────────────────
 
 /// true if the buffer begins with the SOC marker, i.e. is a raw J2K codestream
 /// (encrypted essence read without a KDM does not).
 fn starts_with_soc(data: &[u8]) -> bool {
-    data.len() >= 2 && u16::from_be_bytes([data[0], data[1]]) == 0xFF4F
+    data.len() >= 2 && u16::from_be_bytes([data[0], data[1]]) == SOC
 }
 
 /// guard bits RDD 52 requires for a codestream of the given width: 1 for 2K, 2 for
@@ -712,12 +633,90 @@ fn frame_to_timecode(frame: u32, fps: u32) -> String {
     )
 }
 
-/// Scan a picture MXF for the RDD 52 guard-bit constraint (1 guard bit for 2K,
-/// 2 for 4K). Reports the first offending frame with its timecode and how many
-/// frames are affected. Non-picture or unreadable MXFs yield no notes. Encrypted
-/// essence is decrypted with `keys`; without a covering key it skips (with a note
-/// when a KDM was supplied but lacks the KeyId).
-pub fn check_guard_bits_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> Vec<Note> {
+/// Frame buffer for reading picture essence. DCI caps a frame near 1.3 MB (2K)
+/// and 2.6 MB (4K), so this is headroom for a non-conformant asset too.
+const FRAME_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+
+/// Distinct findings one asset's scan reports before it stops collecting. A
+/// stream that is wrong in one way is wrong that way on every frame, so this
+/// only bounds pathological essence.
+const MAX_CODESTREAM_FINDINGS: usize = 20;
+
+/// One distinct finding across a scan, with the first frame that showed it.
+struct CodestreamFinding {
+    note: Note,
+    first_frame: u32,
+    frames: u32,
+}
+
+/// Collects per-frame findings into one note each, so a fault present on every
+/// frame of a feature reports once rather than 170,000 times.
+#[derive(Default)]
+struct CodestreamFindings {
+    findings: Vec<CodestreamFinding>,
+}
+
+impl CodestreamFindings {
+    fn record(&mut self, frame: u32, note: Note) {
+        if let Some(seen) = self
+            .findings
+            .iter_mut()
+            .find(|f| f.note.code == note.code && f.note.message == note.message)
+        {
+            seen.frames += 1;
+            return;
+        }
+        if self.findings.len() < MAX_CODESTREAM_FINDINGS {
+            self.findings.push(CodestreamFinding {
+                note,
+                first_frame: frame,
+                frames: 1,
+            });
+        }
+    }
+
+    /// Finish each note with the file it came from and, once more than one frame
+    /// has been read, where in the asset it was seen.
+    fn into_notes(self, path: &Path, fps: u32, frames_scanned: u32) -> Vec<Note> {
+        self.findings
+            .into_iter()
+            .map(|finding| {
+                let mut note = finding.note;
+                if frames_scanned > 1 {
+                    note.message.push_str(&format!(
+                        " (first at frame {} / {})",
+                        finding.first_frame,
+                        frame_to_timecode(finding.first_frame, fps)
+                    ));
+                    if finding.frames > 1 {
+                        note.message
+                            .push_str(&format!(", {} frames affected", finding.frames));
+                    }
+                }
+                note.with_file(path)
+            })
+            .collect()
+    }
+}
+
+/// Read a picture MXF's codestreams and run every per-frame check on each: the
+/// 0xFFFF legacy-decoder constraint (DoM #2740), the ISO 15444-1 cinema profile
+/// constraints (DoM #2451/#1664, TLM and POC placement included) and the RDD 52
+/// guard-bit rule (DoM #2984). `fps` is the picture edit rate, used for the
+/// per-component byte limit.
+///
+/// `scan_every_frame` false reads only frame 0, which catches an encoder that was
+/// wrong for the whole asset; reading the rest is what catches a stream that goes
+/// non-conformant partway through, and costs a pass over the essence. Non-picture
+/// or unreadable MXFs yield no notes. Encrypted essence is decrypted with `keys`;
+/// without a covering key it skips (with a note when a KDM was supplied but lacks
+/// the KeyId).
+pub fn check_picture_j2k_mxf(
+    path: &Path,
+    fps: f64,
+    keys: &crate::kdm::ContentKeys,
+    scan_every_frame: bool,
+) -> Vec<Note> {
     let mut notes = Vec::new();
     let Some(s) = path.to_str() else {
         return notes;
@@ -744,13 +743,20 @@ pub fn check_guard_bits_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> Vec<
             return notes;
         }
     };
+
     let width = desc.stored_width;
-    let fps =
+    let timecode_rate =
         (desc.edit_rate.numerator as f64 / desc.edit_rate.denominator.max(1) as f64).round() as u32;
-    let mut buf = vec![0u8; 16 * 1024 * 1024];
-    let mut first_bad: Option<(u32, u8, u8)> = None;
-    let mut bad_count = 0u32;
-    for i in 0..desc.container_duration {
+    let frames = if scan_every_frame {
+        desc.container_duration
+    } else {
+        1
+    };
+
+    let mut findings = CodestreamFindings::default();
+    let mut buf = vec![0u8; FRAME_BUFFER_BYTES];
+    let mut scanned = 0u32;
+    for i in 0..frames {
         let (dec, hmac) = match ctx.as_mut() {
             Some(c) => (Some(&mut c.dec), Some(&mut c.hmac)),
             None => (None, None),
@@ -772,36 +778,43 @@ pub fn check_guard_bits_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> Vec<
                 break;
             }
         };
+        let frame = &buf[..n];
         // essence that isn't a readable codestream (encrypted without a KDM, or
         // not picture) can't be checked; bail on the first frame.
-        if i == 0 && !starts_with_soc(&buf[..n]) {
+        if i == 0 && !starts_with_soc(frame) {
             return notes;
         }
-        if let Some((expected, actual)) = guard_bit_violation(&buf[..n], width) {
-            bad_count += 1;
-            if first_bad.is_none() {
-                first_bad = Some((i, expected, actual));
-            }
+        scanned += 1;
+
+        if let Some(offset) = detect_legacy_ffff(frame) {
+            findings.record(
+                i,
+                Note::warning(
+                    Code::J2kLegacyFfff,
+                    format!(
+                        "JPEG 2000 codestream triggers the 0xFFFF legacy-decoder error condition (SMPTE Cat. 862) at byte offset {offset}"
+                    ),
+                ),
+            );
+        }
+        if let Some((expected, actual)) = guard_bit_violation(frame, width) {
+            let profile = if width > 2048 { "4K" } else { "2K" };
+            findings.record(
+                i,
+                Note::error(
+                    Code::J2kGuardBits,
+                    format!(
+                        "JPEG 2000 QCD declares {actual} guard bit(s); SMPTE RDD 52 requires {expected} for {profile}"
+                    ),
+                ),
+            );
+        }
+        for note in validate_cinema_j2k(frame, fps) {
+            findings.record(i, note);
         }
     }
-    if let Some((frame, expected, actual)) = first_bad {
-        let profile = if width > 2048 { "4K" } else { "2K" };
-        let more = if bad_count > 1 {
-            format!(" ({bad_count} frames affected)")
-        } else {
-            String::new()
-        };
-        notes.push(
-            Note::error(
-                Code::J2kGuardBits,
-                format!(
-                    "JPEG 2000 QCD declares {actual} guard bit(s); SMPTE RDD 52 requires {expected} for {profile} at frame {frame} ({}){more}",
-                    frame_to_timecode(frame, fps)
-                ),
-            )
-            .with_file(path),
-        );
-    }
+
+    notes.extend(findings.into_notes(path, timecode_rate, scanned));
     notes
 }
 
@@ -882,8 +895,28 @@ mod ffff_tests {
 mod cinema_tests {
     use super::*;
 
-    // Assemble a codestream: SOC, SIZ, COD, QCD, then one tile-part per entry in
-    // `tp_data_sizes` (each SOT+SOD plus that many data bytes), then EOC.
+    /// COM, another length-prefixed main-header segment, used to retag a marker
+    /// so it disappears without changing any offset in the stream.
+    const COM: u16 = 0xFF64;
+
+    /// The conformant two-progression POC parameter bytes: RSpoc, CSpoc,
+    /// LYEpoc(2), REpoc, CEpoc, Ppoc, twice.
+    const CONFORMANT_POC_PARAMETERS: &[u8] = &[0, 0, 0, 1, 6, 3, 4, 6, 0, 0, 1, 7, 3, 4];
+
+    /// Retag the first `marker` as `replacement`, in place. Both must be
+    /// length-prefixed segment markers so the stream stays walkable.
+    fn retag_marker(data: &mut [u8], marker: u16, replacement: u16) {
+        let needle = marker.to_be_bytes();
+        let at = data
+            .windows(2)
+            .position(|w| w == needle)
+            .expect("the stream carries the marker being retagged");
+        data[at..at + 2].copy_from_slice(&replacement.to_be_bytes());
+    }
+
+    // Assemble a codestream: SOC, SIZ, COD, QCD, TLM, the 4K POC when the image is
+    // 4K, then one tile-part per entry in `tp_data_sizes` (each SOT+SOD plus that
+    // many data bytes), then EOC.
     pub(super) fn build_j2k(
         rsiz: u16,
         width: u32,
@@ -924,6 +957,18 @@ mod cinema_tests {
         d.extend_from_slice(&[0xFF, 0x5C]);
         d.extend_from_slice(&(2u16 + 4).to_be_bytes());
         d.extend_from_slice(&[guard_bits << 5, 0, 0, 0]);
+
+        // TLM (FF55): Ztlm, Stlm, then per-tile-part lengths the walk ignores
+        d.extend_from_slice(&[0xFF, 0x55]);
+        d.extend_from_slice(&(2u16 + 2).to_be_bytes());
+        d.extend_from_slice(&[0, 0]);
+
+        // POC (FF5F): the 4K profile requires exactly one, 2K none
+        if rsiz == 4 || width > 2048 || height > 1080 {
+            d.extend_from_slice(&[0xFF, 0x5F]);
+            d.extend_from_slice(&((2 + CONFORMANT_POC_PARAMETERS.len()) as u16).to_be_bytes());
+            d.extend_from_slice(CONFORMANT_POC_PARAMETERS);
+        }
 
         // tile-parts
         let count = tp_data_sizes.len() as u8;
@@ -993,6 +1038,83 @@ mod cinema_tests {
         );
     }
 
+    // ─── TLM and POC placement ────────────────────────────────────────────
+
+    #[test]
+    fn well_formed_4k_is_clean() {
+        let d = build_j2k(4, 4096, 2160, 4096, 2160, 2, &[1000; 6]);
+        assert!(
+            validate_cinema_j2k(&d, 24.0).is_empty(),
+            "conformant 4K codestream must be clean, POC marker included"
+        );
+    }
+
+    #[test]
+    fn missing_tlm_fires() {
+        let mut d = build_j2k(3, 2048, 1080, 2048, 1080, 1, &[1000, 1000, 1000]);
+        retag_marker(&mut d, dcpdoctor_parse::j2k::TLM, COM);
+        assert!(
+            validate_cinema_j2k(&d, 24.0)
+                .iter()
+                .any(|n| n.code == Code::J2kMissingTlm),
+            "a codestream with no TLM marker must fire"
+        );
+    }
+
+    // libdcp requires exactly one main-header POC for 4K and none for 2K, so the
+    // browser build's "a POC marker is never permitted" was a false positive on
+    // every conformant 4K DCP.
+    #[test]
+    fn poc_count_follows_the_profile() {
+        let mut without_poc = build_j2k(4, 4096, 2160, 4096, 2160, 2, &[1000; 6]);
+        retag_marker(&mut without_poc, dcpdoctor_parse::j2k::POC, COM);
+        assert!(
+            validate_cinema_j2k(&without_poc, 24.0)
+                .iter()
+                .any(|n| n.code == Code::J2kPocInvalid && n.message.contains("requires 1")),
+            "a 4K codestream with no POC marker must fire"
+        );
+
+        let clean_2k = build_j2k(3, 2048, 1080, 2048, 1080, 1, &[1000, 1000, 1000]);
+        assert!(
+            !validate_cinema_j2k(&clean_2k, 24.0)
+                .iter()
+                .any(|n| n.code == Code::J2kPocInvalid),
+            "a 2K codestream with no POC marker is conformant"
+        );
+    }
+
+    #[test]
+    fn poc_in_a_tile_part_header_fires_and_field_values_are_reported() {
+        let scan = MarkerScan {
+            tlm_present: true,
+            poc_in_main_header: 1,
+            poc_after_main_header: 1,
+            poc_field_mismatches: vec![dcpdoctor_parse::j2k::PocFieldMismatch {
+                field: "Ppoc of progression 1".into(),
+                expected: 4,
+                found: 0,
+            }],
+        };
+        let notes = marker_placement_notes(&scan, true, "Cinema 4K");
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::J2kPocInvalid && n.message.contains("tile-part header")),
+            "a POC outside the main header must fire, got: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::J2kPocInvalid && n.message.contains("Ppoc")),
+            "a wrong POC parameter must be named, got: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.code == Code::J2kMissingTlm),
+            "TLM was present, got: {notes:?}"
+        );
+    }
+
     #[test]
     fn oversize_4k_resolution_flagged() {
         let d = build_j2k(4, 5000, 2160, 5000, 2160, 2, &[1000; 6]);
@@ -1002,6 +1124,88 @@ mod cinema_tests {
                 .any(|n| n.message.contains("exceeds the Cinema 4K maximum")),
             "resolution beyond 4K must be flagged"
         );
+    }
+}
+
+#[cfg(test)]
+mod frame_scan_tests {
+    use super::cinema_tests::build_j2k;
+    use super::*;
+
+    /// Frames in the fixture asset, and the one that goes non-conformant. Frame 0
+    /// is deliberately clean: that is the whole point of scanning past it.
+    const FIXTURE_FRAMES: u32 = 6;
+    const BAD_FRAME: u32 = 3;
+    const PICTURE_FPS: f64 = 24.0;
+
+    /// A 2K picture MXF whose frames all conform except `BAD_FRAME`, which
+    /// declares 0 guard bits where RDD 52 requires 1.
+    fn write_mxf(dir: &Path) -> PathBuf {
+        use asdcplib::jp2k::{MxfWriter, PictureDescriptor};
+        use asdcplib::{LabelSet, Rational, WriterInfo};
+
+        let path = dir.join("pic.mxf");
+        let info = WriterInfo {
+            asset_uuid: [7; 16],
+            label_set: LabelSet::Smpte,
+            ..Default::default()
+        };
+        let desc = PictureDescriptor {
+            edit_rate: Rational::new(24, 1),
+            sample_rate: Rational::new(24, 1),
+            stored_width: 2048,
+            stored_height: 1080,
+            aspect_ratio: Rational::new(2048, 1080),
+            container_duration: FIXTURE_FRAMES,
+            component_count: 3,
+        };
+        let mut writer = MxfWriter::new();
+        writer
+            .open_write(path.to_str().unwrap(), &info, &desc, 16_384)
+            .unwrap();
+        for frame in 0..FIXTURE_FRAMES {
+            let guard_bits = if frame == BAD_FRAME { 0 } else { 1 };
+            let codestream = build_j2k(3, 2048, 1080, 2048, 1080, guard_bits, &[64, 64, 64]);
+            writer.write_frame(&codestream, None, None).unwrap();
+        }
+        writer.finalize().unwrap();
+        path
+    }
+
+    // reading frame 0 only is blind to a stream that goes non-conformant later,
+    // which is what the whole-asset scan exists for.
+    #[test]
+    fn a_fault_after_frame_zero_is_only_seen_by_the_whole_asset_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let mxf = write_mxf(dir.path());
+        let keys = crate::kdm::ContentKeys::none();
+
+        let first_frame_only = check_picture_j2k_mxf(&mxf, PICTURE_FPS, &keys, false);
+        assert!(
+            !first_frame_only
+                .iter()
+                .any(|n| n.code == Code::J2kGuardBits),
+            "frame 0 conforms, so the cheap scan must stay silent, got: {first_frame_only:?}"
+        );
+
+        let whole_asset = check_picture_j2k_mxf(&mxf, PICTURE_FPS, &keys, true);
+        let guard_bits: Vec<_> = whole_asset
+            .iter()
+            .filter(|n| n.code == Code::J2kGuardBits)
+            .collect();
+        assert_eq!(
+            guard_bits.len(),
+            1,
+            "one note for the whole asset, got: {whole_asset:?}"
+        );
+        assert!(
+            guard_bits[0]
+                .message
+                .contains(&format!("frame {BAD_FRAME}")),
+            "the note must name the first offending frame, got: {}",
+            guard_bits[0].message
+        );
+        assert_eq!(guard_bits[0].file.as_deref(), Some(&*mxf));
     }
 }
 

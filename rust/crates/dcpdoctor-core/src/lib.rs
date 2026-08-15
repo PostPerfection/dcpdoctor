@@ -136,6 +136,8 @@ pub enum Code {
     J2kInvalidComponentCount,
     J2kLegacyFfff,
     J2kGuardBits,
+    J2kMissingTlm,
+    J2kPocInvalid,
 
     // Sound
     SoundInvalidSampleRate,
@@ -256,6 +258,8 @@ impl Code {
             Code::J2kInvalidComponentCount => "j2k_invalid_component_count",
             Code::J2kLegacyFfff => "j2k_legacy_ffff",
             Code::J2kGuardBits => "j2k_guard_bits",
+            Code::J2kMissingTlm => "j2k_missing_tlm",
+            Code::J2kPocInvalid => "j2k_poc_invalid",
             Code::SoundInvalidSampleRate => "sound_invalid_sample_rate",
             Code::SoundInvalidChannelCount => "sound_invalid_channel_count",
             Code::SoundInvalidQuantization => "sound_invalid_quantization",
@@ -362,6 +366,10 @@ pub struct VerifyOptions {
     pub check_hashes: bool,
     pub check_signatures: bool,
     pub check_picture_details: bool,
+    /// Run the picture codestream checks over every frame instead of only the
+    /// first. Expensive on a feature, so it is opt-in the way hash checking is.
+    #[serde(default)]
+    pub scan_every_frame: bool,
     pub strict_smpte: bool,
     /// OV IMP directory to resolve cross-package references when validating a
     /// supplemental IMF package. Ignored for plain DCPs.
@@ -382,6 +390,7 @@ impl VerifyOptions {
             check_hashes: true,
             check_signatures: true,
             check_picture_details: false,
+            scan_every_frame: false,
             strict_smpte: false,
             ov: None,
             kdm: None,
@@ -394,6 +403,7 @@ impl VerifyOptions {
             check_hashes: true,
             check_signatures: true,
             check_picture_details: true,
+            scan_every_frame: false,
             strict_smpte: true,
             ov: None,
             kdm: None,

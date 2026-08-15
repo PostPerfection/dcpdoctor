@@ -3,12 +3,15 @@
 ## Unreleased
 
 ### Added
+- J2K TLM and POC checks on the native path: a codestream with no TLM marker errors as `j2k_missing_tlm`, and `j2k_poc_invalid` covers the POC marker count the profile fixes (none for 2K, exactly one for 4K), a POC in a tile-part header, and the two fixed 4K progressions' parameter values. The marker walk is shared with the browser build.
+- `--deep-j2k` now runs the codestream checks over every frame instead of frame 0 only, in the same pass as the RDD 52 guard-bit scan, so a stream that goes non-conformant partway through is caught. Each finding reports once with the first offending frame and how many frames carried it.
 - Subtitle documents are schema-validated: SMPTE ST 428-7 timed text routes to the DCDMSubtitle XSD for the DCST namespace it declares (2007, 2010 or 2014) and Interop DCSubtitle to `DCSubtitle.xsd`, both loose and MXF-wrapped, so a schema-invalid subtitle now reports `xml_schema_violation` instead of passing.
 - `schema_validation_skipped`: the XSD pass used to skip itself silently when the schema directory or `xmllint` was absent, so a machine without either reported a clean run with no XSD coverage. It now warns and names the reason.
 - CPL asset hashes: every reel asset's `<Hash>` is now read and compared with the PKL's for the same asset, so a disagreement errors as `cpl_pkl_hash_mismatch` (libdcp MISMATCHED_PICTURE_HASHES / MISMATCHED_SOUND_HASHES) and an MXF-backed asset with no `<Hash>` warns as `cpl_missing_hash`. Servers that hash-check against the CPL rather than the PKL reject the first case.
 - KDM digest rules the schema cannot express, all errors: a DeviceList `<CertificateThumbprint>` that does not decode to a 20-byte SHA-1 digest (`kdm_thumbprint_invalid`), the same for `<ContentAuthenticator>` when present (`kdm_content_authenticator_invalid`), and the DCI assume-trust marker (DCSS 9.4.3.5) sharing a DeviceList with a real device thumbprint (`kdm_assume_trust_conflict`). Checked against real DCP-o-matic KDMs, one per ISDCF formulation, under `tests/fixtures/kdm`.
 
 ### Fixed
+- The browser build rejected any POC marker as "not permitted for DCI", which is a false positive on every conformant 4K DCP: the 4K profile requires exactly one in the main header. It now applies the same per-profile rule as the native path.
 - The accepted picture sizes were the 2K/4K containers only, so every standard scope DCP (2048x858, 4096x1716) drew a spurious `picture_invalid_resolution` warning under `--strict`. Both coded scope sizes are now accepted.
 
 ## [0.2.0] - 2026-08-13

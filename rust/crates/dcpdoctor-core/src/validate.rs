@@ -635,7 +635,12 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 } else {
                     24.0
                 };
-                for note in crate::j2k::check_picture_j2k_mxf(&full_path, fps, &content_keys) {
+                for note in crate::j2k::check_picture_j2k_mxf(
+                    &full_path,
+                    fps,
+                    &content_keys,
+                    opts.scan_every_frame,
+                ) {
                     result.add(note);
                 }
 

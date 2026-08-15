@@ -1643,6 +1643,8 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
         check_hashes: !flags.no_hashes,
         check_signatures: !flags.no_signatures,
         check_picture_details: flags.check_mxf || flags.deep_j2k,
+        // --deep-j2k is what pays for reading past frame 0
+        scan_every_frame: flags.deep_j2k,
         strict_smpte: flags.strict,
         ov: flags.ov.clone(),
         kdm: flags.kdm.clone(),
@@ -1692,7 +1694,7 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
 
         // Deep J2K validation
         if flags.deep_j2k {
-            let j2k_notes = run_deep_j2k(dir, &flags);
+            let j2k_notes = run_deep_j2k(dir);
             for note in j2k_notes {
                 result.add(note);
             }
@@ -1802,17 +1804,11 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
     }
 }
 
-/// Run deep J2K validation on MXF files in a DCP.
-fn run_deep_j2k(dcp_dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdoctor_core::Note> {
+/// Run the descriptor-level J2K profile checks on the MXF files in a DCP. The
+/// per-frame codestream scan --deep-j2k also turns on runs inside verify_dcp,
+/// which already holds the KDM keys and reads the essence once.
+fn run_deep_j2k(dcp_dir: &std::path::Path) -> Vec<dcpdoctor_core::Note> {
     let mut notes = Vec::new();
-
-    // KDM keys for decrypting encrypted picture essence, if supplied. verify_dcp
-    // already surfaced any unwrap error, so build silently here.
-    let keys = match (&flags.kdm, &flags.recipient_key) {
-        (Some(kdm), Some(key)) => dcpdoctor_core::kdm::ContentKeys::from_kdm(kdm, key)
-            .unwrap_or_else(|_| dcpdoctor_core::kdm::ContentKeys::none()),
-        _ => dcpdoctor_core::kdm::ContentKeys::none(),
-    };
 
     let entries = match std::fs::read_dir(dcp_dir) {
         Ok(e) => e,
@@ -1834,9 +1830,6 @@ fn run_deep_j2k(dcp_dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdoct
                     // Not a picture MXF or ffprobe unavailable; skip
                 }
             }
-            // per-frame guard-bit constraint (RDD 52); reports the offending
-            // frame + timecode. Non-picture MXFs yield no notes.
-            notes.extend(dcpdoctor_core::j2k::check_guard_bits_mxf(&path, &keys));
         }
     }
 
