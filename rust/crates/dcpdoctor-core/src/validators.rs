@@ -68,6 +68,33 @@ fn mxf_asset_uuid(path: &Path) -> Option<[u8; 16]> {
     }
 }
 
+/// Stored width and height from a picture MXF's own descriptor. Read through
+/// asdcplib rather than `mxf::read_mxf_info`, which shells out to ffprobe: this
+/// number lives in the MXF header, and sourcing it from an external decoder made
+/// the rule that uses it disappear silently wherever ffmpeg is not installed.
+/// `None` when the file is not picture essence or cannot be opened.
+fn probe_picture_size(path: &Path) -> Option<(u32, u32)> {
+    use asdcplib::EssenceType;
+
+    let path_str = path.to_str()?;
+
+    macro_rules! size_from {
+        ($reader:path) => {{
+            let mut reader = <$reader>::new();
+            reader.open_read(path_str).ok()?;
+            let descriptor = reader.picture_descriptor().ok()?;
+            Some((descriptor.stored_width, descriptor.stored_height))
+        }};
+    }
+
+    match asdcplib::essence_type(path_str).ok()? {
+        EssenceType::Jpeg2000 => size_from!(asdcplib::jp2k::MxfReader),
+        EssenceType::Jpeg2000Stereo => size_from!(asdcplib::jp2k::StereoMxfReader),
+        EssenceType::As02Jpeg2000 => size_from!(asdcplib::as02::jp2k::MxfReader),
+        _ => None,
+    }
+}
+
 /// ST 429-2: the Id a CPL uses for a track file is that file's own AssetUUID, so
 /// a package can satisfy every ASSETMAP and PKL reference and still hand the
 /// projector an asset that disagrees about what it is. ClairMeta rejects this in
@@ -668,12 +695,11 @@ pub fn check_main_picture_active_area(
 
         let picture_size = essence_block(reel, PICTURE_ASSETS)
             .and_then(|picture| asset_file(picture, id_to_file))
-            .map(|path| crate::mxf::read_mxf_info(&path))
-            .and_then(|info| info.picture)
-            .map(|picture| (u64::from(picture.width), u64::from(picture.height)));
+            .and_then(|path| probe_picture_size(&path));
         let Some((asset_width, asset_height)) = picture_size else {
             continue;
         };
+        let (asset_width, asset_height) = (u64::from(asset_width), u64::from(asset_height));
         if asset_width > 0 && width > asset_width {
             invalid(format!(
                 "width {width} is bigger than the asset width {asset_width}"
@@ -3764,16 +3790,32 @@ mod tests {
         );
     }
 
+    /// Stored size of the fixture essence, which is also the ceiling the size half
+    /// of the rule compares against.
+    const FIXTURE_PICTURE_SIZE: (u32, u32) = (2048, 1080);
+
     #[test]
     fn an_active_area_bigger_than_the_picture_asset_fires() {
         let dir = tempfile::tempdir().unwrap();
         let mxf = dir.path().join("pic.mxf");
-        write_picture_mxf(&mxf, 2048, 1080);
+        let (fixture_width, fixture_height) = FIXTURE_PICTURE_SIZE;
+        write_picture_mxf(&mxf, fixture_width, fixture_height);
+
+        // the size half of the rule needs the essence dimensions, and a skipped
+        // size check and a wrong message both otherwise surface as "no note", so
+        // state the precondition separately and let it name its own failure
+        assert_eq!(
+            probe_picture_size(&mxf),
+            Some(FIXTURE_PICTURE_SIZE),
+            "the fixture essence's stored size must be readable, or the size half \
+             of the rule skips and the assertions below prove nothing"
+        );
+
         let map: HashMap<String, PathBuf> = HashMap::from([(PICTURE_ID.to_string(), mxf)]);
 
         let oversize = cpl_with_metadata(&metadata_block(&format!(
             "{VERSION_NUMBER}{}",
-            active_area(4096, 1080)
+            active_area(fixture_width * 2, fixture_height)
         )));
         let notes = check_main_picture_active_area(oversize.path(), &map);
         assert!(
@@ -3784,7 +3826,7 @@ mod tests {
 
         let fitting = cpl_with_metadata(&metadata_block(&format!(
             "{VERSION_NUMBER}{}",
-            active_area(2048, 1080)
+            active_area(fixture_width, fixture_height)
         )));
         assert!(
             check_main_picture_active_area(fitting.path(), &map).is_empty(),
@@ -3815,7 +3857,8 @@ mod tests {
         writer
             .open_write(path.to_str().unwrap(), &info, &desc, 16_384)
             .unwrap();
-        // a minimal codestream: this test reads the descriptor, not the essence
+        // the stored size the rule compares against lives in the descriptor
+        // written above, so the frame body only has to exist
         writer
             .write_frame(&[0xFF, 0x4F, 0xFF, 0x93, 0, 0, 0, 0], None, None)
             .unwrap();
