@@ -217,7 +217,9 @@ impl Scan {
     }
 
     fn on_text(&mut self, text: &str) {
-        if self.text_depth > 0 && !text.trim().is_empty() {
+        // whitespace counts as content, as in libdcp: DCP-o-matic fills a reel
+        // without subtitles with a one-space cue
+        if self.text_depth > 0 && !text.is_empty() {
             self.text_has_content = true;
         }
     }
@@ -1094,11 +1096,7 @@ pub(crate) mod tests {
 
     #[test]
     fn an_empty_text_element_is_error() {
-        for empty in [
-            "<dcst:Text></dcst:Text>",
-            "<dcst:Text/>",
-            "<dcst:Text>  </dcst:Text>",
-        ] {
+        for empty in ["<dcst:Text></dcst:Text>", "<dcst:Text/>"] {
             let doc = valid_smpte().replace("<dcst:Text>Hello</dcst:Text>", empty);
             let f = write_tmp(&doc);
             let notes = validate_subtitle(f.path(), Standard::Smpte);
@@ -1109,6 +1107,19 @@ pub(crate) mod tests {
                 "{empty} must fire, got: {notes:?}"
             );
         }
+    }
+
+    // the one-space placeholder cue DCP-o-matic writes on a reel without
+    // subtitles passes libdcp, so it passes here
+    #[test]
+    fn a_whitespace_only_text_is_content() {
+        let doc = valid_smpte().replace("<dcst:Text>Hello</dcst:Text>", "<dcst:Text> </dcst:Text>");
+        let f = write_tmp(&doc);
+        let notes = validate_subtitle(f.path(), Standard::Smpte);
+        assert!(
+            !notes.iter().any(|n| n.code == Code::SubtitleEmptyText),
+            "got: {notes:?}"
+        );
     }
 
     // text nested in a formatting element still counts as content
