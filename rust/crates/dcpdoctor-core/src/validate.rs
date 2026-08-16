@@ -964,18 +964,13 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
 
             // Codestream checks on picture essence: 0xFFFF legacy constraint
             // (SMPTE Cat. 862) and ISO 15444-1 cinema profile constraints.
-            if let Some(ref pic) = mxf_info.picture {
-                let fps = if pic.frame_rate_num > 0 && pic.frame_rate_den > 0 {
-                    pic.frame_rate_num as f64 / pic.frame_rate_den as f64
-                } else {
-                    24.0
-                };
-                for note in crate::j2k::check_picture_j2k_mxf(
+            if mxf_info.picture.is_some() {
+                let (codestream_notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
                     &full_path,
-                    fps,
                     &content_keys,
                     opts.scan_every_frame,
-                ) {
+                );
+                for note in codestream_notes {
                     result.add(note);
                 }
 

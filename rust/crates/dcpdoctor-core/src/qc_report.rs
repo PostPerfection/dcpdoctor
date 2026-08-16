@@ -13,6 +13,9 @@ pub struct DetailedQcOptions {
     pub title: String,
     pub client: String,
     pub include_loudness: bool,
+    /// Scan every picture track's codestreams for the forensics section. Costs a
+    /// pass over the picture essence, the way loudness costs one over the audio.
+    pub include_codestream_forensics: bool,
 }
 
 /// Result of QC report generation.
@@ -113,6 +116,29 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
     }
     html.push_str("</table>\n");
 
+    // Codestream forensics per picture essence, if requested
+    if opts.include_codestream_forensics {
+        let mut sections = String::new();
+        for t in &tracks {
+            if t.track_type != "essence" {
+                continue;
+            }
+            let path = opts.imp_dir.join(&t.filename);
+            let (_notes, forensics) =
+                crate::j2k::check_picture_j2k_mxf(&path, &crate::kdm::ContentKeys::none(), true);
+            // sound and unreadable essence yield nothing to report
+            let Some(forensics) = forensics else {
+                continue;
+            };
+            let _ = writeln!(sections, "<h3>{}</h3>", t.filename);
+            sections.push_str(&codestream_forensics_table(&forensics));
+        }
+        if !sections.is_empty() {
+            html.push_str("<h2>Codestream forensics</h2>\n");
+            html.push_str(&sections);
+        }
+    }
+
     // Loudness (EBU R128) per audio essence, if requested
     if opts.include_loudness {
         let mut rows = String::new();
@@ -181,6 +207,95 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
     result
 }
 
+/// One picture track's codestream forensics as a parameter/value table.
+fn codestream_forensics_table(forensics: &crate::j2k::CodestreamForensics) -> String {
+    let reference = &forensics.reference;
+    let info = &reference.info;
+    let (codeblock_width, codeblock_height) = info.codeblock_size();
+    let present = |yes: bool| if yes { "present" } else { "absent" }.to_string();
+    let rows = [
+        ("Resolution", format!("{}x{}", info.width, info.height)),
+        ("Profile", info.profile.clone()),
+        (
+            "Components",
+            format!("{} x {}-bit", info.components, info.bit_depth),
+        ),
+        (
+            "Decomposition levels",
+            info.decomposition_levels.to_string(),
+        ),
+        (
+            "Code-block size",
+            format!("{codeblock_width}x{codeblock_height}"),
+        ),
+        (
+            "Wavelet transform",
+            if info.irreversible_transform {
+                "9-7 irreversible".to_string()
+            } else {
+                "5-3 reversible".to_string()
+            },
+        ),
+        ("Quality layers", info.layers.to_string()),
+        ("Progression order", info.progression_order.clone()),
+        ("Tiles", reference.tile_count.to_string()),
+        (
+            "Tile-parts",
+            format!(
+                "{} (max {} at frame {})",
+                reference.tile_part_count,
+                forensics.max_tile_part_count,
+                forensics.max_tile_part_count_frame
+            ),
+        ),
+        (
+            "Multiple component transform",
+            if reference.multiple_component_transform {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            },
+        ),
+        ("TLM marker", present(reference.tlm_present)),
+        ("POC marker", present(reference.poc_present)),
+        (
+            "Frames scanned",
+            format!(
+                "{}{}",
+                forensics.frames_scanned,
+                if forensics.stereoscopic {
+                    " (both eyes)"
+                } else {
+                    ""
+                }
+            ),
+        ),
+        (
+            "Worst frame",
+            format!(
+                "{} bytes, {:.0}% of the {} byte DCI cap, at frame {} / {}",
+                forensics.worst_frame_bytes,
+                forensics.cap_percentage(),
+                forensics.dci_frame_byte_cap,
+                forensics.worst_frame_index,
+                forensics.worst_frame_timecode()
+            ),
+        ),
+        (
+            "Frames over the DCI cap",
+            forensics.frames_over_dci_cap.to_string(),
+        ),
+        ("Parameters constant", forensics.parameters_constant_text()),
+    ];
+
+    let mut table = String::from("<table>\n");
+    for (name, value) in rows {
+        let _ = writeln!(table, "<tr><th>{name}</th><td>{value}</td></tr>");
+    }
+    table.push_str("</table>\n");
+    table
+}
+
 fn gather_track_info(dir: &std::path::Path) -> Vec<TrackInfo> {
     let mut tracks = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -211,4 +326,66 @@ fn gather_track_info(dir: &std::path::Path) -> Vec<TrackInfo> {
         });
     }
     tracks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CONFORMANT_DECOMPOSITION_LEVELS: u8 = 5;
+    const PAYLOAD_BYTES: usize = 64;
+
+    #[test]
+    fn the_report_carries_a_codestream_forensics_section_per_picture_track() {
+        let dir = tempfile::tempdir().unwrap();
+        let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, PAYLOAD_BYTES); 3];
+        crate::j2k::frame_scan_tests::write_picture_mxf(dir.path(), "picture.mxf", &frames);
+
+        let output = dir.path().join("report.html");
+        let result = generate_detailed_qc(&DetailedQcOptions {
+            imp_dir: dir.path().to_path_buf(),
+            output_file: output.clone(),
+            title: "Forensics".into(),
+            client: String::new(),
+            include_loudness: false,
+            include_codestream_forensics: true,
+        });
+        assert!(result.success, "report failed: {}", result.error);
+
+        let html = std::fs::read_to_string(&output).unwrap();
+        assert!(html.contains("<h2>Codestream forensics</h2>"));
+        assert!(html.contains("<h3>picture.mxf</h3>"));
+        for expected in [
+            "<td>2048x1080</td>",
+            "<td>Cinema 2K</td>",
+            "<th>Decomposition levels</th><td>5</td>",
+            "<th>Tile-parts</th><td>3 (max 3 at frame 0)</td>",
+            "<th>Parameters constant</th><td>yes</td>",
+        ] {
+            assert!(html.contains(expected), "report must carry {expected:?}");
+        }
+    }
+
+    #[test]
+    fn the_forensics_section_is_left_out_when_not_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, PAYLOAD_BYTES); 3];
+        crate::j2k::frame_scan_tests::write_picture_mxf(dir.path(), "picture.mxf", &frames);
+
+        let output = dir.path().join("report.html");
+        let result = generate_detailed_qc(&DetailedQcOptions {
+            imp_dir: dir.path().to_path_buf(),
+            output_file: output.clone(),
+            title: "Forensics".into(),
+            client: String::new(),
+            include_loudness: false,
+            include_codestream_forensics: false,
+        });
+        assert!(result.success, "report failed: {}", result.error);
+        assert!(
+            !std::fs::read_to_string(&output)
+                .unwrap()
+                .contains("Codestream forensics")
+        );
+    }
 }

@@ -1268,6 +1268,7 @@ fn main() {
                 title: title.unwrap_or_else(|| "QC Report".to_string()),
                 client: client.unwrap_or_default(),
                 include_loudness: true,
+                include_codestream_forensics: true,
             };
             let result = dcpdoctor_core::qc_report::generate_detailed_qc(&opts);
             if cli.json {

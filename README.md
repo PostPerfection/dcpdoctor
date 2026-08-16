@@ -36,6 +36,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **DCI bitrate limit**: 250 Mbps at every resolution. IMF has no such limit, so an IMP's measured peak is reported as an info note
 - **4K frame rate (ST 429-2 Table 1)**: 4K picture essence must run at 24/1, 25/1 or 30/1 (`--check-mxf`)
 - **Deep J2K codestream**: Profile (RSIZ), decomposition levels, code-block sizes, wavelet type, component validation
+- **Codestream forensics** (`--deep-j2k`): one pass over every frame reports the track's codestream parameters, the fattest frame against the DCI per-frame byte cap, and any parameter that changes partway through (`j2k_parameters_vary`); also a section in `qc-report`
 - **4K/2K detection**: Resolution and aspect ratio verification
 
 ### Sound Validation

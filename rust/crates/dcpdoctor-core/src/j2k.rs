@@ -7,6 +7,7 @@
 /// - Wavelet transform type
 /// - Component count and bit depth
 use crate::{Code, Note};
+use asdcplib::jp2k::{MxfReader, StereoMxfReader, StereoscopicPhase};
 use dcpdoctor_parse::j2k::{
     COD, MarkerScan, QCD, SIZ, SOC, find_first_sot, main_header_segment, scan_markers, tile_parts,
 };
@@ -42,6 +43,16 @@ pub struct J2kCodestreamInfo {
     pub progression_order: String,
     /// Frame size in bytes
     pub frame_bytes: u64,
+}
+
+impl J2kCodestreamInfo {
+    /// Code-block dimensions in samples, from the COD exponents.
+    pub fn codeblock_size(&self) -> (u32, u32) {
+        (
+            1u32 << (self.codeblock_width_exp + 2),
+            1u32 << (self.codeblock_height_exp + 2),
+        )
+    }
 }
 
 /// Analyze a JPEG 2000 codestream file or extract from MXF.
@@ -224,8 +235,7 @@ pub fn validate_j2k_dci(info: &J2kCodestreamInfo) -> Vec<Note> {
 
     // DCI requires code-block size 32x32 or 64x64 (exp = 3 or 4 → size = 2^(exp+2))
     if info.codeblock_width_exp > 0 {
-        let cb_w = 1u32 << (info.codeblock_width_exp + 2);
-        let cb_h = 1u32 << (info.codeblock_height_exp + 2);
+        let (cb_w, cb_h) = info.codeblock_size();
         if !matches!((cb_w, cb_h), (32, 32) | (64, 64)) {
             notes.push(Note::warning(
                 Code::J2kInvalidProfile,
@@ -699,11 +709,318 @@ impl CodestreamFindings {
     }
 }
 
+/// The codestream parameters the first frame of a track sets, which every later
+/// frame is compared against.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodestreamReference {
+    pub info: J2kCodestreamInfo,
+    /// Tiles the image is divided into, from the SIZ image and tile dimensions.
+    pub tile_count: u64,
+    pub tile_part_count: u32,
+    pub multiple_component_transform: bool,
+    pub tlm_present: bool,
+    pub poc_present: bool,
+}
+
+/// One codestream parameter that changed partway through a track, and where.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParameterDeviation {
+    pub parameter: String,
+    pub first_frame: u32,
+    pub frames: u32,
+}
+
+/// What one pass over a picture track's codestreams found: the parameters the
+/// first frame sets, every later frame that departs from them, and how close the
+/// fattest codestream comes to the DCI per-frame byte cap.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodestreamForensics {
+    /// Codestreams read, which is two per edit unit on stereoscopic essence.
+    pub frames_scanned: u32,
+    pub stereoscopic: bool,
+    /// Picture edit rate, rounded, which the frame timecodes are derived from.
+    pub frame_rate: u32,
+    pub reference: CodestreamReference,
+    pub deviations: Vec<ParameterDeviation>,
+    pub max_tile_part_count: u32,
+    pub max_tile_part_count_frame: u32,
+    pub worst_frame_bytes: u64,
+    pub worst_frame_index: u32,
+    pub dci_frame_byte_cap: u64,
+    pub frames_over_dci_cap: u32,
+}
+
+/// Tiles the image is divided into, from the SIZ image and tile dimensions.
+fn header_tile_count(header: &postkit::j2k::J2kHeader) -> u64 {
+    if header.tile_width == 0 || header.tile_height == 0 {
+        return 0;
+    }
+    header.width.div_ceil(header.tile_width) as u64
+        * header.height.div_ceil(header.tile_height) as u64
+}
+
+/// Reads one codestream parameter off a header as a comparable value.
+type ParameterReader = fn(&postkit::j2k::J2kHeader) -> u64;
+
+/// Codestream parameters an encoder holds constant over a track, each reduced to
+/// one comparable value. The names are the codestream header's own, so a warning
+/// points at something greppable in the standard.
+const CONSTANT_PARAMETERS: &[(&str, ParameterReader)] = &[
+    ("image_size", |h| {
+        ((h.width as u64) << 32) | (h.height as u64)
+    }),
+    ("num_components", |h| h.num_components as u64),
+    ("bit_depth", |h| h.bit_depth as u64),
+    ("profile", |h| h.profile as u64),
+    ("num_decomp_levels", |h| h.num_decomp_levels as u64),
+    ("codeblock_size", |h| {
+        ((h.codeblock_width_exp as u64) << 32) | (h.codeblock_height_exp as u64)
+    }),
+    ("irreversible_transform", |h| {
+        h.irreversible_transform as u64
+    }),
+    ("num_layers", |h| h.num_layers as u64),
+    ("progression_order", |h| h.progression_order as u64),
+    ("mct", |h| h.mct as u64),
+    ("tlm_present", |h| h.tlm_present as u64),
+    ("poc_present", |h| h.poc_present as u64),
+    ("tile_count", header_tile_count),
+];
+
+/// Parameters this frame's header sets differently from the first frame's.
+fn deviating_parameters(
+    reference: &postkit::j2k::J2kHeader,
+    header: &postkit::j2k::J2kHeader,
+) -> Vec<&'static str> {
+    CONSTANT_PARAMETERS
+        .iter()
+        .filter(|(_, value)| value(reference) != value(header))
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+impl CodestreamForensics {
+    /// Start a scan from the first frame's header. `frame_rate` drives the
+    /// timecodes and `codestream_rate` the DCI byte cap, which differ on
+    /// stereoscopic essence: two codestreams share one edit unit's budget.
+    fn from_first_frame(
+        header: &postkit::j2k::J2kHeader,
+        frame_bytes: u64,
+        frame_rate: u32,
+        codestream_rate: u32,
+        stereoscopic: bool,
+    ) -> Self {
+        Self {
+            stereoscopic,
+            frame_rate,
+            reference: CodestreamReference {
+                info: info_from_header(header, frame_bytes),
+                tile_count: header_tile_count(header),
+                tile_part_count: header.tile_part_count,
+                multiple_component_transform: header.mct,
+                tlm_present: header.tlm_present,
+                poc_present: header.poc_present,
+            },
+            dci_frame_byte_cap: postkit::j2k::dci_codestream_byte_cap(codestream_rate),
+            ..Default::default()
+        }
+    }
+
+    /// Fold one codestream into the running totals. The tile-part count is
+    /// allowed to vary from frame to frame, so it is reported, not flagged.
+    fn observe_frame(&mut self, frame: u32, header: &postkit::j2k::J2kHeader, frame_bytes: u64) {
+        self.frames_scanned += 1;
+        if header.tile_part_count > self.max_tile_part_count {
+            self.max_tile_part_count = header.tile_part_count;
+            self.max_tile_part_count_frame = frame;
+        }
+        if frame_bytes > self.worst_frame_bytes {
+            self.worst_frame_bytes = frame_bytes;
+            self.worst_frame_index = frame;
+        }
+        if frame_bytes > self.dci_frame_byte_cap {
+            self.frames_over_dci_cap += 1;
+        }
+    }
+
+    fn record_deviation(&mut self, parameter: &str, frame: u32) {
+        if let Some(seen) = self
+            .deviations
+            .iter_mut()
+            .find(|deviation| deviation.parameter == parameter)
+        {
+            seen.frames += 1;
+            return;
+        }
+        self.deviations.push(ParameterDeviation {
+            parameter: parameter.to_string(),
+            first_frame: frame,
+            frames: 1,
+        });
+    }
+
+    /// Worst frame as a percentage of the DCI per-frame byte cap.
+    pub fn cap_percentage(&self) -> f64 {
+        if self.dci_frame_byte_cap == 0 {
+            return 0.0;
+        }
+        self.worst_frame_bytes as f64 * 100.0 / self.dci_frame_byte_cap as f64
+    }
+
+    /// SMPTE timecode of the worst frame, at the picture edit rate.
+    pub fn worst_frame_timecode(&self) -> String {
+        frame_to_timecode(self.worst_frame_index, self.frame_rate)
+    }
+
+    /// "yes", or "no" and every parameter that changed, with where.
+    pub fn parameters_constant_text(&self) -> String {
+        if self.deviations.is_empty() {
+            return "yes".to_string();
+        }
+        let varying: Vec<String> = self
+            .deviations
+            .iter()
+            .map(|deviation| {
+                format!(
+                    "{} from frame {} ({} frames)",
+                    deviation.parameter, deviation.first_frame, deviation.frames
+                )
+            })
+            .collect();
+        format!("no: {}", varying.join(", "))
+    }
+
+    /// The one-line summary the whole-asset scan reports as an INFO note.
+    fn summary(&self) -> String {
+        let reference = &self.reference;
+        let info = &reference.info;
+        let (codeblock_width, codeblock_height) = info.codeblock_size();
+        let constancy = if self.deviations.is_empty() {
+            format!("parameters identical across {} frames", self.frames_scanned)
+        } else {
+            let varying: Vec<&str> = self
+                .deviations
+                .iter()
+                .map(|deviation| deviation.parameter.as_str())
+                .collect();
+            format!(
+                "{} parameter(s) vary across {} frames: {}",
+                varying.len(),
+                self.frames_scanned,
+                varying.join(", ")
+            )
+        };
+        let over_cap = if self.frames_over_dci_cap > 0 {
+            format!(", {} frames over the cap", self.frames_over_dci_cap)
+        } else {
+            String::new()
+        };
+        format!(
+            "JPEG 2000 codestream: {}x{}, {}, {} decomposition levels, {codeblock_width}x{codeblock_height} code-blocks, {} tile(s), up to {} tile-parts, {}, {}, {}{}; {constancy}; worst frame {} bytes, {:.0}% of the {} byte DCI cap, at frame {} / {}{over_cap}",
+            info.width,
+            info.height,
+            info.profile,
+            info.decomposition_levels,
+            reference.tile_count,
+            self.max_tile_part_count,
+            if reference.tlm_present {
+                "TLM present"
+            } else {
+                "no TLM"
+            },
+            if reference.poc_present {
+                "POC present"
+            } else {
+                "no POC"
+            },
+            if reference.multiple_component_transform {
+                "MCT on"
+            } else {
+                "MCT off"
+            },
+            if self.stereoscopic { ", both eyes" } else { "" },
+            self.worst_frame_bytes,
+            self.cap_percentage(),
+            self.dci_frame_byte_cap,
+            self.worst_frame_index,
+            self.worst_frame_timecode(),
+        )
+    }
+}
+
+/// The first frame's header and the running forensics, held together so a later
+/// frame has something to be compared against.
+struct PictureScanState {
+    reference: postkit::j2k::J2kHeader,
+    forensics: CodestreamForensics,
+}
+
+/// A picture track's codestream reader: AS-DCP OP-Atom monoscopic essence, or the
+/// stereoscopic form whose every edit unit carries a left and a right eye.
+enum PictureEssenceReader {
+    Monoscopic(MxfReader),
+    Stereoscopic(StereoMxfReader),
+}
+
+/// The eyes to read per edit unit. The monoscopic reader ignores the phase.
+const MONOSCOPIC_EYES: &[StereoscopicPhase] = &[StereoscopicPhase::Left];
+const STEREOSCOPIC_EYES: &[StereoscopicPhase] =
+    &[StereoscopicPhase::Left, StereoscopicPhase::Right];
+
+impl PictureEssenceReader {
+    fn open(path: &str) -> Option<Self> {
+        let mut monoscopic = MxfReader::new();
+        if monoscopic.open_read(path).is_ok() {
+            return Some(Self::Monoscopic(monoscopic));
+        }
+        let mut stereoscopic = StereoMxfReader::new();
+        if stereoscopic.open_read(path).is_ok() {
+            return Some(Self::Stereoscopic(stereoscopic));
+        }
+        None
+    }
+
+    fn picture_descriptor(&mut self) -> asdcplib::Result<asdcplib::jp2k::PictureDescriptor> {
+        match self {
+            Self::Monoscopic(reader) => reader.picture_descriptor(),
+            Self::Stereoscopic(reader) => reader.picture_descriptor(),
+        }
+    }
+
+    fn writer_info(&mut self) -> asdcplib::Result<asdcplib::WriterInfo> {
+        match self {
+            Self::Monoscopic(reader) => reader.writer_info(),
+            Self::Stereoscopic(reader) => reader.writer_info(),
+        }
+    }
+
+    fn eyes(&self) -> &'static [StereoscopicPhase] {
+        match self {
+            Self::Monoscopic(_) => MONOSCOPIC_EYES,
+            Self::Stereoscopic(_) => STEREOSCOPIC_EYES,
+        }
+    }
+
+    fn read_frame(
+        &mut self,
+        index: u32,
+        eye: StereoscopicPhase,
+        buffer: &mut [u8],
+        decrypt: Option<&mut asdcplib::crypto::AesDecContext>,
+        hmac: Option<&mut asdcplib::crypto::HmacContext>,
+    ) -> asdcplib::Result<usize> {
+        match self {
+            Self::Monoscopic(reader) => reader.read_frame(index, buffer, decrypt, hmac),
+            Self::Stereoscopic(reader) => reader.read_frame(index, eye, buffer, decrypt, hmac),
+        }
+    }
+}
+
 /// Read a picture MXF's codestreams and run every per-frame check on each: the
 /// 0xFFFF legacy-decoder constraint (DoM #2740), the ISO 15444-1 cinema profile
 /// constraints (DoM #2451/#1664, TLM and POC placement included) and the RDD 52
-/// guard-bit rule (DoM #2984). `fps` is the picture edit rate, used for the
-/// per-component byte limit.
+/// guard-bit rule (DoM #2984). The same pass collects the codestream forensics,
+/// which is what the report section and the INFO summary are built from.
 ///
 /// `scan_every_frame` false reads only frame 0, which catches an encoder that was
 /// wrong for the whole asset; reading the rest is what catches a stream that goes
@@ -713,40 +1030,47 @@ impl CodestreamFindings {
 /// the KeyId).
 pub fn check_picture_j2k_mxf(
     path: &Path,
-    fps: f64,
     keys: &crate::kdm::ContentKeys,
     scan_every_frame: bool,
-) -> Vec<Note> {
+) -> (Vec<Note>, Option<CodestreamForensics>) {
     let mut notes = Vec::new();
     let Some(s) = path.to_str() else {
-        return notes;
+        return (notes, None);
     };
-    let mut reader = asdcplib::jp2k::MxfReader::new();
-    if reader.open_read(s).is_err() {
-        return notes;
-    }
+    let Some(mut reader) = PictureEssenceReader::open(s) else {
+        return (notes, None);
+    };
     let Ok(desc) = reader.picture_descriptor() else {
-        return notes;
+        return (notes, None);
     };
     let Ok(info) = reader.writer_info() else {
-        return notes;
+        return (notes, None);
     };
     let essence = keys.resolve(&info);
     if essence.is_missing() {
         notes.extend(essence.skip_note(path));
-        return notes;
+        return (notes, None);
     }
     let mut ctx = match essence.contexts() {
         Ok(c) => c,
         Err(e) => {
             notes.push(Note::error(Code::MxfUnreadable, e).with_file(path));
-            return notes;
+            return (notes, None);
         }
     };
 
     let width = desc.stored_width;
-    let timecode_rate =
-        (desc.edit_rate.numerator as f64 / desc.edit_rate.denominator.max(1) as f64).round() as u32;
+    let edit_rate = desc.edit_rate.numerator as f64 / desc.edit_rate.denominator.max(1) as f64;
+    let timecode_rate = edit_rate.round() as u32;
+    let stereoscopic = matches!(reader, PictureEssenceReader::Stereoscopic(_));
+    // stereoscopic essence sends a left and a right codestream per edit unit, so
+    // each eye lives on half an edit unit's byte budget
+    let codestream_rate = if stereoscopic {
+        edit_rate * 2.0
+    } else {
+        edit_rate
+    };
+    let eyes = reader.eyes();
     let frames = if scan_every_frame {
         desc.container_duration
     } else {
@@ -756,66 +1080,99 @@ pub fn check_picture_j2k_mxf(
     let mut findings = CodestreamFindings::default();
     let mut buf = vec![0u8; FRAME_BUFFER_BYTES];
     let mut scanned = 0u32;
-    for i in 0..frames {
-        let (dec, hmac) = match ctx.as_mut() {
-            Some(c) => (Some(&mut c.dec), Some(&mut c.hmac)),
-            None => (None, None),
-        };
-        let n = match reader.read_frame(i, &mut buf, dec, hmac) {
-            Ok(n) => n,
-            Err(e) => {
-                // with a key set, a read failure on frame 0 is a decrypt/MIC
-                // integrity failure; report it. Later frames just end the scan.
-                if i == 0 && info.encrypted_essence {
-                    notes.push(
-                        Note::error(
-                            Code::MxfHashMismatch,
-                            format!("frame 0 integrity check (HMAC/MIC) failed: {e}"),
-                        )
-                        .with_file(path),
+    let mut scan: Option<PictureScanState> = None;
+    'edit_units: for i in 0..frames {
+        for &eye in eyes {
+            let (dec, hmac) = match ctx.as_mut() {
+                Some(c) => (Some(&mut c.dec), Some(&mut c.hmac)),
+                None => (None, None),
+            };
+            let n = match reader.read_frame(i, eye, &mut buf, dec, hmac) {
+                Ok(n) => n,
+                Err(e) => {
+                    // with a key set, a read failure on frame 0 is a decrypt/MIC
+                    // integrity failure; report it. Later frames just end the scan.
+                    if scanned == 0 && info.encrypted_essence {
+                        notes.push(
+                            Note::error(
+                                Code::MxfHashMismatch,
+                                format!("frame 0 integrity check (HMAC/MIC) failed: {e}"),
+                            )
+                            .with_file(path),
+                        );
+                    }
+                    break 'edit_units;
+                }
+            };
+            let frame = &buf[..n];
+            // essence that isn't a readable codestream (encrypted without a KDM, or
+            // not picture) can't be checked; bail on the first frame.
+            if scanned == 0 && !starts_with_soc(frame) {
+                return (notes, None);
+            }
+            scanned += 1;
+
+            if let Some(offset) = detect_legacy_ffff(frame) {
+                findings.record(
+                    i,
+                    Note::warning(
+                        Code::J2kLegacyFfff,
+                        format!(
+                            "JPEG 2000 codestream triggers the 0xFFFF legacy-decoder error condition (SMPTE Cat. 862) at byte offset {offset}"
+                        ),
+                    ),
+                );
+            }
+            if let Some((expected, actual)) = guard_bit_violation(frame, width) {
+                let profile = if width > 2048 { "4K" } else { "2K" };
+                findings.record(
+                    i,
+                    Note::error(
+                        Code::J2kGuardBits,
+                        format!(
+                            "JPEG 2000 QCD declares {actual} guard bit(s); SMPTE RDD 52 requires {expected} for {profile}"
+                        ),
+                    ),
+                );
+            }
+            for note in validate_cinema_j2k(frame, codestream_rate) {
+                findings.record(i, note);
+            }
+
+            if let Some(header) = postkit::j2k::parse_j2k_header(frame) {
+                let state = scan.get_or_insert_with(|| PictureScanState {
+                    reference: header.clone(),
+                    forensics: CodestreamForensics::from_first_frame(
+                        &header,
+                        n as u64,
+                        timecode_rate,
+                        codestream_rate.round() as u32,
+                        stereoscopic,
+                    ),
+                });
+                for parameter in deviating_parameters(&state.reference, &header) {
+                    state.forensics.record_deviation(parameter, i);
+                    findings.record(
+                        i,
+                        Note::warning(
+                            Code::J2kParametersVary,
+                            format!(
+                                "JPEG 2000 codestream parameter {parameter} differs from the first frame's"
+                            ),
+                        ),
                     );
                 }
-                break;
+                state.forensics.observe_frame(i, &header, n as u64);
             }
-        };
-        let frame = &buf[..n];
-        // essence that isn't a readable codestream (encrypted without a KDM, or
-        // not picture) can't be checked; bail on the first frame.
-        if i == 0 && !starts_with_soc(frame) {
-            return notes;
-        }
-        scanned += 1;
-
-        if let Some(offset) = detect_legacy_ffff(frame) {
-            findings.record(
-                i,
-                Note::warning(
-                    Code::J2kLegacyFfff,
-                    format!(
-                        "JPEG 2000 codestream triggers the 0xFFFF legacy-decoder error condition (SMPTE Cat. 862) at byte offset {offset}"
-                    ),
-                ),
-            );
-        }
-        if let Some((expected, actual)) = guard_bit_violation(frame, width) {
-            let profile = if width > 2048 { "4K" } else { "2K" };
-            findings.record(
-                i,
-                Note::error(
-                    Code::J2kGuardBits,
-                    format!(
-                        "JPEG 2000 QCD declares {actual} guard bit(s); SMPTE RDD 52 requires {expected} for {profile}"
-                    ),
-                ),
-            );
-        }
-        for note in validate_cinema_j2k(frame, fps) {
-            findings.record(i, note);
         }
     }
 
+    let forensics = scan.map(|state| state.forensics);
+    if scan_every_frame && let Some(summarised) = &forensics {
+        notes.push(Note::info(Code::J2kCodestreamSummary, summarised.summary()).with_file(path));
+    }
     notes.extend(findings.into_notes(path, timecode_rate, scanned));
-    notes
+    (notes, forensics)
 }
 
 use std::path::PathBuf;
@@ -1128,40 +1485,72 @@ mod cinema_tests {
 }
 
 #[cfg(test)]
-mod frame_scan_tests {
+pub(crate) mod frame_scan_tests {
     use super::cinema_tests::build_j2k;
     use super::*;
+    use asdcplib::jp2k::{MxfWriter, PictureDescriptor, StereoMxfWriter};
+    use asdcplib::{LabelSet, Rational, WriterInfo};
 
-    /// Frames in the fixture asset, and the one that goes non-conformant. Frame 0
-    /// is deliberately clean: that is the whole point of scanning past it.
+    /// Frames in the guard-bit fixture asset, and the one that goes
+    /// non-conformant. Frame 0 is deliberately clean: that is the whole point of
+    /// scanning past it.
     const FIXTURE_FRAMES: u32 = 6;
     const BAD_FRAME: u32 = 3;
-    const PICTURE_FPS: f64 = 24.0;
 
-    /// A 2K picture MXF whose frames all conform except `BAD_FRAME`, which
-    /// declares 0 guard bits where RDD 52 requires 1.
-    fn write_mxf(dir: &Path) -> PathBuf {
-        use asdcplib::jp2k::{MxfWriter, PictureDescriptor};
-        use asdcplib::{LabelSet, Rational, WriterInfo};
+    /// Decomposition levels a conformant DCI codestream declares, and the count
+    /// the deviating fixture frame declares instead.
+    const CONFORMANT_DECOMPOSITION_LEVELS: u8 = 5;
+    const DEVIATING_DECOMPOSITION_LEVELS: u8 = 3;
 
-        let path = dir.join("pic.mxf");
-        let info = WriterInfo {
+    /// Tile-part payload bytes in a fixture frame, and in the one fat frame the
+    /// worst-frame assertions look for.
+    const FIXTURE_PAYLOAD_BYTES: usize = 64;
+    const FAT_PAYLOAD_BYTES: usize = 512;
+
+    fn fixture_writer_info() -> WriterInfo {
+        WriterInfo {
             asset_uuid: [7; 16],
             label_set: LabelSet::Smpte,
             ..Default::default()
-        };
-        let desc = PictureDescriptor {
+        }
+    }
+
+    fn fixture_descriptor(frames: u32) -> PictureDescriptor {
+        PictureDescriptor {
             edit_rate: Rational::new(24, 1),
             sample_rate: Rational::new(24, 1),
             stored_width: 2048,
             stored_height: 1080,
             aspect_ratio: Rational::new(2048, 1080),
-            container_duration: FIXTURE_FRAMES,
+            container_duration: frames,
             component_count: 3,
-        };
+        }
+    }
+
+    /// Overwrite the COD decomposition-level count, the parameter the deviation
+    /// fixture varies. COD parameters start 4 bytes past the marker, and the
+    /// level count is the sixth of them.
+    fn set_decomposition_levels(codestream: &mut [u8], levels: u8) {
+        let marker = COD.to_be_bytes();
+        let at = codestream
+            .windows(2)
+            .position(|window| window == marker)
+            .expect("the fixture codestream carries a COD marker");
+        codestream[at + 4 + 5] = levels;
+    }
+
+    /// A 2K picture MXF whose frames all conform except `BAD_FRAME`, which
+    /// declares 0 guard bits where RDD 52 requires 1.
+    pub(crate) fn write_mxf(dir: &Path) -> PathBuf {
+        let path = dir.join("pic.mxf");
         let mut writer = MxfWriter::new();
         writer
-            .open_write(path.to_str().unwrap(), &info, &desc, 16_384)
+            .open_write(
+                path.to_str().unwrap(),
+                &fixture_writer_info(),
+                &fixture_descriptor(FIXTURE_FRAMES),
+                16_384,
+            )
             .unwrap();
         for frame in 0..FIXTURE_FRAMES {
             let guard_bits = if frame == BAD_FRAME { 0 } else { 1 };
@@ -1172,6 +1561,74 @@ mod frame_scan_tests {
         path
     }
 
+    /// A 2K picture MXF, one conformant codestream per entry in `frames`, each
+    /// declaring that entry's decomposition levels and carrying that many payload
+    /// bytes per tile-part.
+    pub(crate) fn write_picture_mxf(dir: &Path, name: &str, frames: &[(u8, usize)]) -> PathBuf {
+        let path = dir.join(name);
+        let mut writer = MxfWriter::new();
+        writer
+            .open_write(
+                path.to_str().unwrap(),
+                &fixture_writer_info(),
+                &fixture_descriptor(frames.len() as u32),
+                16_384,
+            )
+            .unwrap();
+        for (levels, payload) in frames {
+            let mut codestream = build_j2k(3, 2048, 1080, 2048, 1080, 1, &[*payload; 3]);
+            set_decomposition_levels(&mut codestream, *levels);
+            writer.write_frame(&codestream, None, None).unwrap();
+        }
+        writer.finalize().unwrap();
+        path
+    }
+
+    /// The same, stereoscopic: every edit unit carries a left and a right eye.
+    fn write_stereoscopic_mxf(dir: &Path, edit_units: u32) -> PathBuf {
+        let path = dir.join("pic_3d.mxf");
+        let mut descriptor = fixture_descriptor(edit_units);
+        descriptor.sample_rate = Rational::new(48, 1);
+        let mut writer = StereoMxfWriter::new();
+        writer
+            .open_write(
+                path.to_str().unwrap(),
+                &fixture_writer_info(),
+                &descriptor,
+                16_384,
+            )
+            .unwrap();
+        let mut codestream = build_j2k(3, 2048, 1080, 2048, 1080, 1, &[FIXTURE_PAYLOAD_BYTES; 3]);
+        set_decomposition_levels(&mut codestream, CONFORMANT_DECOMPOSITION_LEVELS);
+        for _ in 0..edit_units {
+            for eye in [StereoscopicPhase::Left, StereoscopicPhase::Right] {
+                writer.write_frame(&codestream, eye, None, None).unwrap();
+            }
+        }
+        writer.finalize().unwrap();
+        path
+    }
+
+    /// Five frames where frame 3 alone declares different decomposition levels,
+    /// and frame 1 alone is fat.
+    fn deviating_frames() -> Vec<(u8, usize)> {
+        (0..5)
+            .map(|frame| {
+                let levels = if frame == BAD_FRAME {
+                    DEVIATING_DECOMPOSITION_LEVELS
+                } else {
+                    CONFORMANT_DECOMPOSITION_LEVELS
+                };
+                let payload = if frame == 1 {
+                    FAT_PAYLOAD_BYTES
+                } else {
+                    FIXTURE_PAYLOAD_BYTES
+                };
+                (levels, payload)
+            })
+            .collect()
+    }
+
     // reading frame 0 only is blind to a stream that goes non-conformant later,
     // which is what the whole-asset scan exists for.
     #[test]
@@ -1180,7 +1637,7 @@ mod frame_scan_tests {
         let mxf = write_mxf(dir.path());
         let keys = crate::kdm::ContentKeys::none();
 
-        let first_frame_only = check_picture_j2k_mxf(&mxf, PICTURE_FPS, &keys, false);
+        let (first_frame_only, _) = check_picture_j2k_mxf(&mxf, &keys, false);
         assert!(
             !first_frame_only
                 .iter()
@@ -1188,7 +1645,7 @@ mod frame_scan_tests {
             "frame 0 conforms, so the cheap scan must stay silent, got: {first_frame_only:?}"
         );
 
-        let whole_asset = check_picture_j2k_mxf(&mxf, PICTURE_FPS, &keys, true);
+        let (whole_asset, _) = check_picture_j2k_mxf(&mxf, &keys, true);
         let guard_bits: Vec<_> = whole_asset
             .iter()
             .filter(|n| n.code == Code::J2kGuardBits)
@@ -1206,6 +1663,146 @@ mod frame_scan_tests {
             guard_bits[0].message
         );
         assert_eq!(guard_bits[0].file.as_deref(), Some(&*mxf));
+    }
+
+    #[test]
+    fn a_parameter_change_partway_through_is_reported_with_its_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let mxf = write_picture_mxf(dir.path(), "varying.mxf", &deviating_frames());
+        let keys = crate::kdm::ContentKeys::none();
+
+        let (notes, forensics) = check_picture_j2k_mxf(&mxf, &keys, true);
+        let forensics = forensics.expect("a readable picture track yields forensics");
+
+        assert_eq!(forensics.frames_scanned, 5, "every frame is scanned");
+        assert_eq!(forensics.deviations.len(), 1, "{:?}", forensics.deviations);
+        let deviation = &forensics.deviations[0];
+        assert_eq!(deviation.parameter, "num_decomp_levels");
+        assert_eq!(deviation.first_frame, BAD_FRAME);
+        assert_eq!(deviation.frames, 1);
+        assert_eq!(
+            forensics.reference.info.decomposition_levels, CONFORMANT_DECOMPOSITION_LEVELS,
+            "the reference comes from frame 0"
+        );
+        assert_eq!(
+            forensics.worst_frame_index, 1,
+            "frame 1 carries the fattest codestream"
+        );
+        assert!(
+            forensics.worst_frame_bytes > FAT_PAYLOAD_BYTES as u64,
+            "the worst frame is the fat one, got {} bytes",
+            forensics.worst_frame_bytes
+        );
+        assert_eq!(forensics.reference.tile_part_count, 3);
+        assert_eq!(forensics.max_tile_part_count, 3);
+        assert_eq!(
+            forensics.dci_frame_byte_cap,
+            postkit::j2k::dci_codestream_byte_cap(24)
+        );
+        assert_eq!(forensics.frames_over_dci_cap, 0);
+
+        let varying: Vec<_> = notes
+            .iter()
+            .filter(|n| n.code == Code::J2kParametersVary)
+            .collect();
+        assert_eq!(varying.len(), 1, "one note for the asset, got: {notes:?}");
+        assert!(
+            varying[0].message.contains("num_decomp_levels")
+                && varying[0].message.contains(&format!("frame {BAD_FRAME}")),
+            "the warning must name the parameter and the first frame, got: {}",
+            varying[0].message
+        );
+    }
+
+    #[test]
+    fn a_track_encoded_the_same_throughout_reports_no_deviation() {
+        let dir = tempfile::tempdir().unwrap();
+        let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, FIXTURE_PAYLOAD_BYTES); 5];
+        let mxf = write_picture_mxf(dir.path(), "constant.mxf", &frames);
+
+        let (notes, forensics) =
+            check_picture_j2k_mxf(&mxf, &crate::kdm::ContentKeys::none(), true);
+        let forensics = forensics.expect("a readable picture track yields forensics");
+
+        assert!(
+            forensics.deviations.is_empty(),
+            "{:?}",
+            forensics.deviations
+        );
+        assert!(
+            !notes.iter().any(|n| n.code == Code::J2kParametersVary),
+            "no parameter changed, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn the_summary_note_carries_the_reference_parameters_and_the_worst_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, FIXTURE_PAYLOAD_BYTES); 5];
+        let mxf = write_picture_mxf(dir.path(), "summary.mxf", &frames);
+        let keys = crate::kdm::ContentKeys::none();
+
+        let (notes, _) = check_picture_j2k_mxf(&mxf, &keys, true);
+        let summary = notes
+            .iter()
+            .find(|n| n.code == Code::J2kCodestreamSummary)
+            .expect("the whole-asset scan reports a summary");
+        assert_eq!(summary.severity, crate::Severity::Info);
+        for expected in [
+            "2048x1080",
+            "Cinema 2K",
+            "5 decomposition levels",
+            "1 tile(s)",
+            "up to 3 tile-parts",
+            "TLM present",
+            "no POC",
+            "MCT off",
+            "parameters identical across 5 frames",
+            "% of the 1302083 byte DCI cap",
+            "at frame 0 / 00:00:00:00",
+        ] {
+            assert!(
+                summary.message.contains(expected),
+                "summary must carry {expected:?}, got: {}",
+                summary.message
+            );
+        }
+
+        let (cheap, _) = check_picture_j2k_mxf(&mxf, &keys, false);
+        assert!(
+            !cheap.iter().any(|n| n.code == Code::J2kCodestreamSummary),
+            "the frame-0 scan has nothing to summarise, got: {cheap:?}"
+        );
+    }
+
+    #[test]
+    fn stereoscopic_essence_scans_both_eyes() {
+        let dir = tempfile::tempdir().unwrap();
+        let edit_units = 4;
+        let mxf = write_stereoscopic_mxf(dir.path(), edit_units);
+
+        let (notes, forensics) =
+            check_picture_j2k_mxf(&mxf, &crate::kdm::ContentKeys::none(), true);
+        let forensics = forensics.expect("stereoscopic picture essence yields forensics");
+
+        assert!(forensics.stereoscopic);
+        assert_eq!(
+            forensics.frames_scanned,
+            edit_units * 2,
+            "both eyes of every edit unit are read"
+        );
+        assert!(forensics.deviations.is_empty(), "both eyes match frame 0");
+        assert_eq!(
+            forensics.dci_frame_byte_cap,
+            postkit::j2k::dci_codestream_byte_cap(48),
+            "each eye gets half an edit unit's byte cap"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::J2kCodestreamSummary && n.message.contains("both eyes")),
+            "the summary must say both eyes were scanned, got: {notes:?}"
+        );
     }
 }
 

@@ -142,6 +142,8 @@ pub enum Code {
     J2kGuardBits,
     J2kMissingTlm,
     J2kPocInvalid,
+    J2kParametersVary,
+    J2kCodestreamSummary,
 
     // Sound
     SoundInvalidSampleRate,
@@ -288,6 +290,8 @@ impl Code {
             Code::J2kGuardBits => "j2k_guard_bits",
             Code::J2kMissingTlm => "j2k_missing_tlm",
             Code::J2kPocInvalid => "j2k_poc_invalid",
+            Code::J2kParametersVary => "j2k_parameters_vary",
+            Code::J2kCodestreamSummary => "j2k_codestream_summary",
             Code::SoundInvalidSampleRate => "sound_invalid_sample_rate",
             Code::SoundInvalidChannelCount => "sound_invalid_channel_count",
             Code::SoundInvalidQuantization => "sound_invalid_quantization",
