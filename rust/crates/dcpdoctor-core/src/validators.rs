@@ -1686,6 +1686,211 @@ pub fn check_first_subtitle_timing(
     notes
 }
 
+// ─── Timed-text reel structure (Bv2.1 §8.3.2) ─────────────────────────────────
+
+/// The two timed-text track kinds a CPL reel can carry, and how the CPL names
+/// them. `MainClosedCaption` is the digicine CC-CPL spelling real packages ship.
+const TIMED_TEXT_TRACKS: [(TimedTextKind, &str); 2] = [
+    (TimedTextKind::Subtitle, "MainSubtitle"),
+    (TimedTextKind::ClosedCaption, "(?:Main)?ClosedCaption"),
+];
+
+fn track_regex(element: &str) -> regex_lite::Regex {
+    regex_lite::Regex::new(&format!(
+        r"<(?:[\w-]+:)?{element}(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?{element}>"
+    ))
+    .unwrap()
+}
+
+/// Reel-level timed-text rules that need the whole CPL rather than one document:
+/// every timed-text asset must declare a zero `EntryPoint` (Bv2.1 §8.3.2); a
+/// composition with subtitles must carry them on every reel and the same number
+/// of closed captions on each; every subtitle asset must declare the same
+/// `Language`; and no cue may run past the reel holding it.
+pub fn check_timed_text_reels(
+    cpl_path: &Path,
+    standard: Standard,
+    id_to_file: &HashMap<String, PathBuf>,
+    keys: &crate::kdm::ContentKeys,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    let reels: Vec<&str> = reel_re
+        .captures_iter(&content)
+        .map(|c| c.get(1).unwrap().as_str())
+        .collect();
+    if reels.is_empty() {
+        return notes;
+    }
+
+    let mut reels_with_subtitle = 0usize;
+    let mut caption_counts: Vec<usize> = Vec::new();
+    let mut language: Option<String> = None;
+    let mut mismatched_language = false;
+
+    for (reel_index, reel) in reels.iter().enumerate() {
+        let mut captions_here = 0usize;
+        let mut subtitle_here = false;
+        for (kind, element) in TIMED_TEXT_TRACKS {
+            for cap in track_regex(element).captures_iter(reel) {
+                let block = cap.get(1).unwrap().as_str();
+                match kind {
+                    TimedTextKind::Subtitle => subtitle_here = true,
+                    TimedTextKind::ClosedCaption => captions_here += 1,
+                }
+                notes.extend(entry_point_notes(block, kind, reel_index, cpl_path));
+
+                let TimedTextSource::Document(xml) = timed_text_source(block, id_to_file, keys)
+                else {
+                    continue; // absence and encryption are reported once per CPL
+                };
+                if let TimedTextKind::Subtitle = kind
+                    && let Some(found) = element_text(&xml, "Language")
+                {
+                    match &language {
+                        None => language = Some(found),
+                        Some(first) if *first != found => mismatched_language = true,
+                        Some(_) => {}
+                    }
+                }
+                let fps = extract_rate(block, "EditRate")
+                    .or_else(|| reel_picture_edit_rate(reel))
+                    .map(|(n, d)| n as f64 / d.max(1) as f64)
+                    .unwrap_or(24.0);
+                notes.extend(reel_boundary_notes(
+                    &xml, block, reel, standard, fps, reel_index, cpl_path,
+                ));
+            }
+        }
+        reels_with_subtitle += usize::from(subtitle_here);
+        caption_counts.push(captions_here);
+    }
+
+    if reels_with_subtitle > 0 && reels_with_subtitle < reels.len() {
+        notes.push(
+            Note::error(
+                Code::SubtitleMissingFromReel,
+                format!(
+                    "{reels_with_subtitle} of {} reels carry a MainSubtitle; a composition with subtitles must have one on every reel",
+                    reels.len()
+                ),
+            )
+            .with_file(cpl_path),
+        );
+    }
+    if let (Some(fewest), Some(most)) = (caption_counts.iter().min(), caption_counts.iter().max())
+        && fewest != most
+    {
+        notes.push(
+            Note::error(
+                Code::ClosedCaptionCountMismatch,
+                format!(
+                    "reels carry between {fewest} and {most} closed captions; every reel must carry the same number"
+                ),
+            )
+            .with_file(cpl_path),
+        );
+    }
+    if mismatched_language {
+        notes.push(
+            Note::error(
+                Code::SubtitleLanguageMismatch,
+                "subtitle assets do not all declare the same <Language>".to_string(),
+            )
+            .with_file(cpl_path),
+        );
+    }
+
+    notes
+}
+
+/// Bv2.1 §8.3.2: a timed-text reel asset must declare `<EntryPoint>`, and it
+/// must be zero. A non-zero entry point makes the player drop the head of the
+/// document, which reads on screen as missing subtitles rather than as an error.
+fn entry_point_notes(
+    block: &str,
+    kind: TimedTextKind,
+    reel_index: usize,
+    cpl_path: &Path,
+) -> Vec<Note> {
+    let (track, code) = match kind {
+        TimedTextKind::Subtitle => ("MainSubtitle", Code::SubtitleEntryPoint),
+        TimedTextKind::ClosedCaption => ("ClosedCaption", Code::ClosedCaptionEntryPoint),
+    };
+    let Some(entry) = extract_u64(block, "EntryPoint") else {
+        return vec![
+            Note::error(
+                code,
+                format!("Reel {} {track} has no <EntryPoint>", reel_index + 1),
+            )
+            .with_file(cpl_path),
+        ];
+    };
+    if entry == 0 {
+        return Vec::new();
+    }
+    vec![
+        Note::error(
+            code,
+            format!(
+                "Reel {} {track} <EntryPoint> is {entry}, which must be 0",
+                reel_index + 1
+            ),
+        )
+        .with_file(cpl_path),
+    ]
+}
+
+/// A cue that ends after the reel does never finishes on screen: the player cuts
+/// to the next reel with the text still up, or drops it outright.
+#[allow(clippy::too_many_arguments)]
+fn reel_boundary_notes(
+    xml: &str,
+    block: &str,
+    reel: &str,
+    standard: Standard,
+    fps: f64,
+    reel_index: usize,
+    cpl_path: &Path,
+) -> Vec<Note> {
+    let Some(duration) = extract_u64(block, "Duration").or_else(|| {
+        track_regex("MainPicture")
+            .captures(reel)
+            .and_then(|c| extract_u64(c.get(1).unwrap().as_str(), "Duration"))
+    }) else {
+        return Vec::new();
+    };
+    let reel_seconds = duration as f64 / fps;
+    let entry_seconds = extract_u64(block, "EntryPoint").unwrap_or(0) as f64 / fps;
+
+    let time_re = regex_lite::Regex::new(r#"TimeOut\s*=\s*"([^"]*)""#).unwrap();
+    let latest = time_re
+        .captures_iter(xml)
+        .filter_map(|cap| subtitle_time_seconds(&cap[1], standard, fps))
+        .fold(f64::NEG_INFINITY, f64::max);
+    if latest == f64::NEG_INFINITY {
+        return Vec::new();
+    }
+    let shown = latest - entry_seconds;
+    if shown <= reel_seconds {
+        return Vec::new();
+    }
+    vec![
+        Note::error(
+            Code::SubtitleOverlapsReel,
+            format!(
+                "Reel {}: a cue ends at {shown:.3}s, past the reel's {reel_seconds:.3}s",
+                reel_index + 1
+            ),
+        )
+        .with_file(cpl_path),
+    ]
+}
+
 /// A reel's timed-text document, or why the rules could not see one.
 enum TimedTextSource {
     /// the document, whether it was a loose XML asset or wrapped essence
@@ -1787,11 +1992,23 @@ enum TimedTextKind {
     ClosedCaption,
 }
 
-/// One `<Subtitle>` cue: its in/out in seconds and one string per `<Text>` line.
+/// Where one `<Text>` sits on screen. Both spellings of each attribute appear in
+/// the wild, and a document that gives neither takes the DCST defaults.
+struct Placement {
+    valign: String,
+    vposition: f64,
+}
+
+const DEFAULT_VALIGN: &str = "center";
+const DEFAULT_VPOSITION: f64 = 50.0;
+
+/// One `<Subtitle>` cue: its in/out in seconds, one string per `<Text>` line and
+/// where each of those lines sits.
 struct Cue {
     in_s: f64,
     out_s: f64,
     lines: Vec<String>,
+    placements: Vec<Placement>,
 }
 
 /// Bv2.1 timed-text content checks over every MainSubtitle and ClosedCaption
@@ -1918,6 +2135,7 @@ fn content_notes(
     check_durations_and_spacing(&cues, fps, cpl_path, notes);
     if let TimedTextKind::ClosedCaption = kind {
         check_ccap_charset(&cues, cpl_path, notes);
+        check_ccap_layout(&cues, cpl_path, notes);
     }
 }
 
@@ -1946,12 +2164,16 @@ fn parse_timed_text_cues(xml: &str, standard: Standard, fps: f64) -> Vec<Cue> {
                             in_s: i,
                             out_s: o,
                             lines: Vec::new(),
+                            placements: Vec::new(),
                         });
                     }
                 }
                 "Text" if cur.is_some() => {
                     if text_depth == 0 {
                         line.clear();
+                        if let Some(c) = cur.as_mut() {
+                            c.placements.push(placement_of(&e));
+                        }
                     }
                     text_depth += 1;
                 }
@@ -1984,6 +2206,41 @@ fn parse_timed_text_cues(xml: &str, standard: Standard, fps: f64) -> Vec<Cue> {
         }
     }
     cues
+}
+
+/// Text of the first element with this local name. Subtitle documents carry a
+/// namespace prefix, which the plain `<tag>` search cannot see through.
+fn element_text(xml: &str, name: &str) -> Option<String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_str(xml);
+    let mut wanted = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => wanted = local_name(e.name()) == name,
+            Ok(Event::Text(e)) if wanted => {
+                let text = dcpdoctor_parse::text_of(&e).trim().to_string();
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+    }
+}
+
+fn placement_of(e: &quick_xml::events::BytesStart) -> Placement {
+    Placement {
+        valign: attr_val(e, "VAlign")
+            .or_else(|| attr_val(e, "Valign"))
+            .unwrap_or_else(|| DEFAULT_VALIGN.to_string()),
+        vposition: attr_val(e, "VPosition")
+            .or_else(|| attr_val(e, "Vposition"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(DEFAULT_VPOSITION),
+    }
 }
 
 fn local_name(name: quick_xml::name::QName) -> String {
@@ -2123,6 +2380,58 @@ fn check_durations_and_spacing(cues: &[Cue], fps: f64, cpl: &Path, notes: &mut V
                 format!(
                     "Two timed-text events are separated by less than the Bv2.1 minimum of {MIN_SPACING_FRAMES} frames"
                 ),
+            )
+            .with_file(cpl),
+        );
+    }
+}
+
+/// Within one caption cue every line must share a vertical alignment, and the
+/// lines must be listed in the order they appear on screen. A caption renderer
+/// draws them in document order, so a mixed alignment or a reversed list puts the
+/// lines on screen in the wrong order with nothing else to show for it.
+fn check_ccap_layout(cues: &[Cue], cpl: &Path, notes: &mut Vec<Note>) {
+    let mut mismatched_valign = false;
+    let mut incorrect_order = false;
+
+    for cue in cues {
+        let mut previous: Option<&Placement> = None;
+        for placement in &cue.placements {
+            let Some(last) = previous else {
+                previous = Some(placement);
+                continue;
+            };
+            if last.valign != placement.valign {
+                mismatched_valign = true;
+                break; // ordering is meaningless once the alignments disagree
+            }
+            // measured downward from the top for top/center, upward from the
+            // bottom for bottom, so "further along" flips with the alignment
+            let out_of_order = match last.valign.as_str() {
+                "top" | "center" => placement.vposition < last.vposition,
+                _ => placement.vposition > last.vposition,
+            };
+            if out_of_order {
+                incorrect_order = true;
+            }
+            previous = Some(placement);
+        }
+    }
+
+    if mismatched_valign {
+        notes.push(
+            Note::error(
+                Code::ClosedCaptionLayout,
+                "A caption cue mixes vertical alignments across its lines".to_string(),
+            )
+            .with_file(cpl),
+        );
+    }
+    if incorrect_order {
+        notes.push(
+            Note::error(
+                Code::ClosedCaptionLayout,
+                "A caption cue lists its lines out of the order they appear on screen".to_string(),
             )
             .with_file(cpl),
         );
@@ -3987,6 +4296,311 @@ mod tests {
         assert!(
             check_cpl_languages(f.path(), Standard::Smpte).is_empty(),
             "well-formed tags must stay silent"
+        );
+    }
+
+    // ─── Timed-text reel structure (Bv2.1 §8.3.2) ──────────────────────────
+
+    /// One reel of a timed-text CPL: the subtitle document it carries (if any)
+    /// and how many closed captions sit beside it.
+    struct ReelSpec<'a> {
+        subtitle: Option<&'a str>,
+        captions: usize,
+    }
+
+    const REEL_FRAMES: u64 = 240; // 10s at 24fps
+
+    /// Build a CPL over `reels`, writing each subtitle document to disk and
+    /// mapping its id. `entry_point` is written into every timed-text block, or
+    /// omitted entirely when `None`.
+    fn reel_case(
+        reels: &[ReelSpec],
+        entry_point: Option<u64>,
+    ) -> (
+        tempfile::NamedTempFile,
+        tempfile::TempDir,
+        HashMap<String, PathBuf>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut id_to_file = HashMap::new();
+        let entry = match entry_point {
+            Some(e) => format!("<EntryPoint>{e}</EntryPoint>"),
+            None => String::new(),
+        };
+
+        let mut body = String::new();
+        for (index, spec) in reels.iter().enumerate() {
+            let mut assets = format!(
+                r#"<MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><EditRate>24 1</EditRate><Duration>{REEL_FRAMES}</Duration></MainPicture>"#
+            );
+            if let Some(doc) = spec.subtitle {
+                let id = format!("aaaaaaaa-0000-0000-0000-00000000{index:04}");
+                let path = dir.path().join(format!("sub{index}.xml"));
+                std::fs::write(&path, doc).unwrap();
+                id_to_file.insert(id.clone(), path);
+                assets.push_str(&format!(
+                    r#"<MainSubtitle><Id>urn:uuid:{id}</Id><EditRate>24 1</EditRate><Duration>{REEL_FRAMES}</Duration>{entry}</MainSubtitle>"#
+                ));
+            }
+            for caption in 0..spec.captions {
+                assets.push_str(&format!(
+                    r#"<ClosedCaption><Id>urn:uuid:bbbbbbbb-0000-0000-0000-{index:04}{caption:04}</Id><EditRate>24 1</EditRate><Duration>{REEL_FRAMES}</Duration>{entry}</ClosedCaption>"#
+                ));
+            }
+            body.push_str(&format!("<Reel><AssetList>{assets}</AssetList></Reel>"));
+        }
+        let cpl = write_cpl(&format!(
+            "<CompositionPlaylist>{body}</CompositionPlaylist>"
+        ));
+        (cpl, dir, id_to_file)
+    }
+
+    /// A SMPTE document whose one cue runs from `tin` to `tout`, in `language`.
+    fn reel_doc(language: &str, tin: &str, tout: &str) -> String {
+        format!(
+            r#"<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
+  <dcst:Language>{language}</dcst:Language>
+  <dcst:SubtitleList><dcst:Subtitle SpotNumber="1" TimeIn="{tin}" TimeOut="{tout}"/></dcst:SubtitleList>
+</dcst:SubtitleReel>"#
+        )
+    }
+
+    fn reel_notes(cpl: &Path, id_to_file: &HashMap<String, PathBuf>) -> Vec<Note> {
+        check_timed_text_reels(cpl, Standard::Smpte, id_to_file, &no_keys())
+    }
+
+    #[test]
+    fn a_zero_entry_point_on_every_track_is_clean() {
+        let doc = reel_doc("en", "00:00:01:000", "00:00:03:000");
+        let (cpl, _d, map) = reel_case(
+            &[
+                ReelSpec {
+                    subtitle: Some(&doc),
+                    captions: 1,
+                },
+                ReelSpec {
+                    subtitle: Some(&doc),
+                    captions: 1,
+                },
+            ],
+            Some(0),
+        );
+        assert!(
+            reel_notes(cpl.path(), &map).is_empty(),
+            "expected clean, got: {:?}",
+            reel_notes(cpl.path(), &map)
+        );
+    }
+
+    #[test]
+    fn a_missing_entry_point_is_error() {
+        let doc = reel_doc("en", "00:00:01:000", "00:00:03:000");
+        let (cpl, _d, map) = reel_case(
+            &[ReelSpec {
+                subtitle: Some(&doc),
+                captions: 1,
+            }],
+            None,
+        );
+        let notes = reel_notes(cpl.path(), &map);
+        for code in [Code::SubtitleEntryPoint, Code::ClosedCaptionEntryPoint] {
+            assert!(
+                notes
+                    .iter()
+                    .any(|n| n.code == code && n.severity == Severity::Error),
+                "{code} must fire, got: {notes:?}"
+            );
+        }
+    }
+
+    // a non-zero entry point drops the head of the document, which shows up as
+    // missing subtitles rather than as anything the player complains about
+    #[test]
+    fn a_non_zero_entry_point_is_error() {
+        let doc = reel_doc("en", "00:00:01:000", "00:00:03:000");
+        let (cpl, _d, map) = reel_case(
+            &[ReelSpec {
+                subtitle: Some(&doc),
+                captions: 0,
+            }],
+            Some(24),
+        );
+        let notes = reel_notes(cpl.path(), &map);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleEntryPoint && n.message.contains("is 24")),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_cue_running_past_the_reel_is_error() {
+        // the reel is 240 frames at 24fps, so 10s; this cue ends at 12s
+        let doc = reel_doc("en", "00:00:09:000", "00:00:12:000");
+        let (cpl, _d, map) = reel_case(
+            &[ReelSpec {
+                subtitle: Some(&doc),
+                captions: 0,
+            }],
+            Some(0),
+        );
+        let notes = reel_notes(cpl.path(), &map);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleOverlapsReel && n.severity == Severity::Error),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn subtitles_on_only_some_reels_is_error() {
+        let doc = reel_doc("en", "00:00:01:000", "00:00:03:000");
+        let (cpl, _d, map) = reel_case(
+            &[
+                ReelSpec {
+                    subtitle: Some(&doc),
+                    captions: 0,
+                },
+                ReelSpec {
+                    subtitle: None,
+                    captions: 0,
+                },
+            ],
+            Some(0),
+        );
+        let notes = reel_notes(cpl.path(), &map);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleMissingFromReel && n.severity == Severity::Error),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn differing_subtitle_languages_is_error() {
+        let english = reel_doc("en", "00:00:01:000", "00:00:03:000");
+        let french = reel_doc("fr", "00:00:01:000", "00:00:03:000");
+        let (cpl, _d, map) = reel_case(
+            &[
+                ReelSpec {
+                    subtitle: Some(&english),
+                    captions: 0,
+                },
+                ReelSpec {
+                    subtitle: Some(&french),
+                    captions: 0,
+                },
+            ],
+            Some(0),
+        );
+        let notes = reel_notes(cpl.path(), &map);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleLanguageMismatch),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn differing_closed_caption_counts_is_error() {
+        let doc = reel_doc("en", "00:00:01:000", "00:00:03:000");
+        let (cpl, _d, map) = reel_case(
+            &[
+                ReelSpec {
+                    subtitle: Some(&doc),
+                    captions: 2,
+                },
+                ReelSpec {
+                    subtitle: Some(&doc),
+                    captions: 1,
+                },
+            ],
+            Some(0),
+        );
+        let notes = reel_notes(cpl.path(), &map);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionCountMismatch
+                    && n.message.contains("between 1 and 2")),
+            "got: {notes:?}"
+        );
+    }
+
+    // ─── Closed-caption layout ─────────────────────────────────────────────
+
+    /// One cue whose lines carry the (VAlign, VPosition) pairs given.
+    fn placed_cue(placements: &[(&str, f64)]) -> String {
+        let texts: String = placements
+            .iter()
+            .enumerate()
+            .map(|(i, (valign, vpos))| {
+                format!(r#"<dcst:Text VAlign="{valign}" VPosition="{vpos}">line {i}</dcst:Text>"#)
+            })
+            .collect();
+        format!(
+            r#"<dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">{texts}</dcst:Subtitle>"#
+        )
+    }
+
+    #[test]
+    fn a_caption_mixing_vertical_alignments_is_error() {
+        let xml = reel_of(&placed_cue(&[("top", 10.0), ("bottom", 10.0)]));
+        let (cpl, _d, map) = tt_case("ClosedCaption", &xml);
+        assert!(
+            content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionLayout
+                    && n.message.contains("mixes vertical alignments")),
+            "got: {:?}",
+            content(cpl.path(), &map)
+        );
+    }
+
+    // top and centre alignments measure downward, so a later line must sit lower
+    #[test]
+    fn a_caption_listing_lines_out_of_order_is_error() {
+        let xml = reel_of(&placed_cue(&[("top", 20.0), ("top", 10.0)]));
+        let (cpl, _d, map) = tt_case("ClosedCaption", &xml);
+        assert!(
+            content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionLayout
+                    && n.message.contains("out of the order")),
+            "got: {:?}",
+            content(cpl.path(), &map)
+        );
+    }
+
+    // bottom alignment measures upward, so the same numbers are correct there
+    #[test]
+    fn bottom_aligned_captions_count_upward() {
+        let xml = reel_of(&placed_cue(&[("bottom", 20.0), ("bottom", 10.0)]));
+        let (cpl, _d, map) = tt_case("ClosedCaption", &xml);
+        assert!(
+            !content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionLayout),
+            "got: {:?}",
+            content(cpl.path(), &map)
+        );
+    }
+
+    // the layout rule is a caption rule; subtitles place text freely
+    #[test]
+    fn subtitle_layout_is_not_checked() {
+        let xml = reel_of(&placed_cue(&[("top", 10.0), ("bottom", 10.0)]));
+        let (cpl, _d, map) = tt_case("MainSubtitle", &xml);
+        assert!(
+            !content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionLayout),
+            "got: {:?}",
+            content(cpl.path(), &map)
         );
     }
 }

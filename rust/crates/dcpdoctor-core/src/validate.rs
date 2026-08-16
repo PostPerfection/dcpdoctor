@@ -846,6 +846,14 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         ) {
             result.add(note);
         }
+        for note in crate::validators::check_timed_text_reels(
+            cpl_path,
+            dcp.standard,
+            &id_to_file,
+            &content_keys,
+        ) {
+            result.add(note);
+        }
         for note in crate::validators::check_reel_continuity(cpl_path) {
             result.add(note);
         }
