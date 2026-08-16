@@ -199,6 +199,10 @@ fn check_pkl_duplicate_asset_ids(pkl_path: &Path, pkl: &crate::pkl::Pkl) -> Vec<
 const MAX_TIMED_TEXT_ASSET_BYTES: u64 = 115 * 1024 * 1024;
 const MAX_TIMED_TEXT_FONT_BYTES: usize = 10 * 1024 * 1024;
 
+/// No standard sets this, but a font past it is very likely to cause playback
+/// problems, which is the threshold DCP-o-matic warns authors at.
+const MAX_SINGLE_FONT_BYTES: usize = 640 * 1024;
+
 /// Bv2.1 §7.2.3 caps a closed-caption XML document at 256 kB. Subtitles have no
 /// equivalent cap, so this applies to caption tracks only.
 const MAX_CLOSED_CAPTION_XML_BYTES: usize = 256 * 1024;
@@ -334,6 +338,23 @@ impl TimedTextContext<'_> {
                     format!(
                         "embedded fonts total {} bytes, over the Bv2.1 maximum {MAX_TIMED_TEXT_FONT_BYTES}",
                         wrapped.font_bytes
+                    ),
+                )
+                .with_file(path),
+            );
+        }
+
+        // the aggregate cap above is the conformance limit; a single font this
+        // big is under it and still stalls playback on real players, so it is a
+        // warning rather than an error
+        if let Some(largest) = wrapped.fonts.values().map(Vec::len).max()
+            && largest > MAX_SINGLE_FONT_BYTES
+        {
+            notes.push(
+                Note::warning(
+                    Code::SubtitleFontTooLarge,
+                    format!(
+                        "an embedded font is {largest} bytes, over the {MAX_SINGLE_FONT_BYTES} that plays back reliably"
                     ),
                 )
                 .with_file(path),
@@ -852,6 +873,12 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             &id_to_file,
             &content_keys,
         ) {
+            result.add(note);
+        }
+        for note in crate::validators::check_playback_compatibility(cpl_path, &id_to_file) {
+            result.add(note);
+        }
+        for note in crate::validators::check_partial_encryption(cpl_path) {
             result.add(note);
         }
         for note in crate::validators::check_reel_continuity(cpl_path) {

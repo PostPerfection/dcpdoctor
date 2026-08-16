@@ -899,7 +899,9 @@ mod tests {
 #[cfg(test)]
 mod decrypt_tests {
     use super::*;
-    use postkit::certificate::{KdmConfig, KdmContentKey, build_kdm, generate_chain};
+    use postkit::certificate::{
+        KdmConfig, KdmContentKey, KdmFormulation, build_kdm, generate_chain,
+    };
     use std::path::PathBuf;
 
     /// Edit rate the fixture MXF declares, which the codestream checks scale the
@@ -960,6 +962,22 @@ mod decrypt_tests {
         w.finalize().unwrap();
     }
 
+    /// An ST 430-1 timestamp one day out. The chain is minted now, and a signer
+    /// may not start on or after the day its KDM's window starts, so a window
+    /// starting today would be refused the way libdcp refuses it.
+    fn tomorrow() -> String {
+        let t = time::OffsetDateTime::now_utc() + time::Duration::days(1);
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}+00:00",
+            t.year(),
+            u8::from(t.month()),
+            t.day(),
+            t.hour(),
+            t.minute(),
+            t.second()
+        )
+    }
+
     // Generate a cert chain and a KDM carrying `content_key` for `key_id`, bound to
     // the given (fake) CPL id. Returns (kdm_path, recipient_key, wrong_key, dir).
     fn make_kdm(
@@ -982,9 +1000,9 @@ mod decrypt_tests {
             signer_key_file: root_key.clone(),
             signer_chain_files: vec![],
             output_file: PathBuf::from("unused"),
-            valid_from: "now".to_string(),
+            valid_from: tomorrow(),
             valid_to: "7 days".to_string(),
-            formulation: "dci-any".to_string(),
+            formulation: KdmFormulation::DciAny,
             content_keys: vec![KdmContentKey {
                 key_type: *b"MDIK",
                 key_id,

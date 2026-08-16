@@ -892,12 +892,146 @@ fn essence_block<'a>(reel: &'a str, tags: &[&str]) -> Option<&'a str> {
 }
 
 /// ClairMeta keys per-asset encryption off `<KeyId>` presence in the CPL.
+/// An asset carries a `<KeyId>` exactly when its essence is encrypted.
+fn is_encrypted(block: &str) -> bool {
+    block.contains("<KeyId>")
+}
+
 fn encrypted_str(block: &str) -> String {
-    if block.contains("<KeyId>") {
+    if is_encrypted(block) {
         "encrypted".into()
     } else {
         "clear".into()
     }
+}
+
+/// Reel elements that name real essence, so the ones that can be encrypted.
+/// `MainMarkers` is deliberately absent: it carries no essence and so never a
+/// `<KeyId>`, and counting it would make every encrypted DCP look partial.
+const ESSENCE_TRACKS: [&str; 5] = [
+    "MainPicture",
+    "MainStereoscopicPicture",
+    "MainSound",
+    "MainSubtitle",
+    "(?:Main)?ClosedCaption",
+];
+
+/// A composition must be wholly encrypted or wholly clear. Mixing the two
+/// leaves part of the content playable by anyone while the rest needs a KDM,
+/// and distributors reject the result even though each asset is well formed.
+pub fn check_partial_encryption(cpl_path: &Path) -> Vec<Note> {
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return Vec::new();
+    };
+
+    let mut encrypted = Vec::new();
+    let mut clear = Vec::new();
+    for element in ESSENCE_TRACKS {
+        for cap in track_regex(element).captures_iter(&content) {
+            let block = cap.get(1).unwrap().as_str();
+            let name = element.replace("(?:Main)?", "");
+            if is_encrypted(block) {
+                encrypted.push(name);
+            } else {
+                clear.push(name);
+            }
+        }
+    }
+    if encrypted.is_empty() || clear.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        Note::error(
+            Code::PartiallyEncrypted,
+            format!(
+                "composition mixes encrypted ({}) and clear ({}) essence; it must be wholly one or the other",
+                encrypted.join(", "),
+                clear.join(", ")
+            ),
+        )
+        .with_file(cpl_path),
+    ]
+}
+
+// ─── Playback compatibility ───────────────────────────────────────────────────
+
+/// Frame rates a DCP can legally declare but that installed projectors do not
+/// all play, with the rate to deliver instead where there is an obvious one.
+/// From DCP-o-matic's pre-encode hints: 25 is better delivered at 24, the
+/// high rates halve, and 30 has no good answer so it only carries a warning.
+const UNSUPPORTED_FRAME_RATES: [(u64, Option<u64>); 5] = [
+    (25, Some(24)),
+    (30, None),
+    (48, Some(24)),
+    (50, Some(25)),
+    (60, Some(30)),
+];
+
+/// Audio channel counts distributors accept without question.
+const EXPECTED_AUDIO_CHANNELS: [u64; 2] = [8, 16];
+
+/// Rules about what installed equipment will actually play, as against what the
+/// specifications permit. Everything here is a warning: the package conforms,
+/// but shipping it risks a projector that cannot show it or a distributor QC
+/// rejection, and that is worth saying before the DCP leaves the building.
+pub fn check_playback_compatibility(
+    cpl_path: &Path,
+    id_to_file: &HashMap<String, PathBuf>,
+) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return notes;
+    };
+
+    let warn = |code: Code, message: String| Note::warning(code, message).with_file(cpl_path);
+
+    // one rate for the composition: the reels are already required to agree
+    if let Some((numerator, denominator)) = first_picture_edit_rate(&content) {
+        let rate = numerator / denominator.max(1);
+        if let Some((_, instead)) = UNSUPPORTED_FRAME_RATES.iter().find(|(r, _)| *r == rate) {
+            let advice = match instead {
+                Some(better) => format!(", so consider delivering at {better} fps instead"),
+                None => String::new(),
+            };
+            notes.push(warn(
+                Code::ProjectorFrameRateSupport,
+                format!("DCP is {rate} fps, which not all projectors play{advice}"),
+            ));
+        }
+    }
+
+    // 4K 3D doubles an already-demanding decode; very few projectors manage it
+    let is_stereo = content.contains("MainStereoscopicPicture");
+    let is_four_k = extract_tag(&content, "Resolution")
+        .is_some_and(|r| r.contains("4096") || r.contains("3996"));
+    if is_stereo && is_four_k {
+        notes.push(warn(
+            Code::ProjectorFourKStereoSupport,
+            "DCP is 4K 3D, which only a very limited number of projectors play".into(),
+        ));
+    }
+
+    if let Some(channels) = first_sound_channel_count_of_cpl(cpl_path, id_to_file)
+        && !EXPECTED_AUDIO_CHANNELS.contains(&(channels as u64))
+    {
+        notes.push(warn(
+            Code::DistributorAudioChannelCount,
+            format!(
+                "sound has {channels} channels rather than 8 or 16, which some distributors raise QC errors over"
+            ),
+        ));
+    }
+
+    notes
+}
+
+/// EditRate of the first picture asset in the composition, whichever track type
+/// carries it.
+fn first_picture_edit_rate(content: &str) -> Option<(u64, u64)> {
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").ok()?;
+    reel_re
+        .captures_iter(content)
+        .find_map(|c| reel_picture_edit_rate(c.get(1).unwrap().as_str()))
 }
 
 // ─── Stereoscopic 3D ──────────────────────────────────────────────────────────
@@ -2136,6 +2270,7 @@ fn content_notes(
     if let TimedTextKind::ClosedCaption = kind {
         check_ccap_charset(&cues, cpl_path, notes);
         check_ccap_layout(&cues, cpl_path, notes);
+        check_ccap_interop_overlap(&cues, standard, cpl_path, notes);
     }
 }
 
@@ -2436,6 +2571,29 @@ fn check_ccap_layout(cues: &[Cue], cpl: &Path, notes: &mut Vec<Note>) {
             .with_file(cpl),
         );
     }
+}
+
+/// Interop closed captions may not overlap in time: the format has no way to say
+/// which of two simultaneous captions wins, so a player shows one of them and
+/// the choice is its own. SMPTE allows it, which is the standard to move to.
+fn check_ccap_interop_overlap(cues: &[Cue], standard: Standard, cpl: &Path, notes: &mut Vec<Note>) {
+    if standard != Standard::Interop {
+        return;
+    }
+    let mut ordered: Vec<&Cue> = cues.iter().collect();
+    ordered.sort_by(|a, b| a.in_s.total_cmp(&b.in_s));
+    let overlaps = ordered.windows(2).any(|pair| pair[1].in_s < pair[0].out_s);
+    if !overlaps {
+        return;
+    }
+    notes.push(
+        Note::error(
+            Code::ClosedCaptionInteropOverlap,
+            "Interop closed captions overlap in time, which the format does not allow; use SMPTE"
+                .to_string(),
+        )
+        .with_file(cpl),
+    );
 }
 
 /// ISDCF Doc 9 recommends the ISO 8859-1 set plus U+266A (♪) for closed captions;
@@ -4601,6 +4759,173 @@ mod tests {
                 .any(|n| n.code == Code::ClosedCaptionLayout),
             "got: {:?}",
             content(cpl.path(), &map)
+        );
+    }
+
+    // ─── Playback compatibility ────────────────────────────────────────────
+
+    /// A one-reel CPL at the picture edit rate given, optionally stereoscopic
+    /// and optionally declaring a 4K resolution.
+    fn compat_cpl(rate: &str, stereo: bool, resolution: &str) -> tempfile::NamedTempFile {
+        let element = if stereo {
+            "MainStereoscopicPicture"
+        } else {
+            "MainPicture"
+        };
+        write_cpl(&format!(
+            r#"<CompositionPlaylist><Reel><AssetList>
+  <{element}><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><EditRate>{rate}</EditRate><Duration>240</Duration><Resolution>{resolution}</Resolution></{element}>
+</AssetList></Reel></CompositionPlaylist>"#
+        ))
+    }
+
+    fn compat_notes(cpl: &Path) -> Vec<Note> {
+        check_playback_compatibility(cpl, &HashMap::new())
+    }
+
+    #[test]
+    fn frame_rates_projectors_struggle_with_warn_and_name_the_alternative() {
+        for (rate, instead) in [
+            ("25 1", "24"),
+            ("48 1", "24"),
+            ("50 1", "25"),
+            ("60 1", "30"),
+        ] {
+            let cpl = compat_cpl(rate, false, "2048 1080");
+            let notes = compat_notes(cpl.path());
+            assert!(
+                notes
+                    .iter()
+                    .any(|n| n.code == Code::ProjectorFrameRateSupport
+                        && n.severity == Severity::Warning
+                        && n.message.contains(instead)),
+                "{rate} must warn and suggest {instead}, got: {notes:?}"
+            );
+        }
+    }
+
+    // 30fps has no good alternative, so it warns without suggesting one
+    #[test]
+    fn thirty_fps_warns_without_an_alternative() {
+        let cpl = compat_cpl("30 1", false, "2048 1080");
+        let notes = compat_notes(cpl.path());
+        let note = notes
+            .iter()
+            .find(|n| n.code == Code::ProjectorFrameRateSupport)
+            .expect("30fps must warn");
+        assert!(!note.message.contains("instead"), "got: {}", note.message);
+    }
+
+    #[test]
+    fn twenty_four_fps_is_silent() {
+        let cpl = compat_cpl("24 1", false, "2048 1080");
+        assert!(
+            !compat_notes(cpl.path())
+                .iter()
+                .any(|n| n.code == Code::ProjectorFrameRateSupport),
+            "24fps is the universally supported rate"
+        );
+    }
+
+    #[test]
+    fn four_k_stereo_warns_but_two_k_stereo_does_not() {
+        let four_k = compat_cpl("24 1", true, "4096 2160");
+        assert!(
+            compat_notes(four_k.path())
+                .iter()
+                .any(|n| n.code == Code::ProjectorFourKStereoSupport),
+            "4K 3D must warn"
+        );
+        let two_k = compat_cpl("24 1", true, "2048 1080");
+        assert!(
+            !compat_notes(two_k.path())
+                .iter()
+                .any(|n| n.code == Code::ProjectorFourKStereoSupport),
+            "2K 3D is ordinary"
+        );
+    }
+
+    // ─── Partial encryption ────────────────────────────────────────────────
+
+    /// A one-reel CPL whose picture and sound each carry a KeyId or not.
+    fn encryption_cpl(picture: bool, sound: bool) -> tempfile::NamedTempFile {
+        let key = |on: bool| {
+            if on {
+                "<KeyId>urn:uuid:00000000-0000-0000-0000-0000000000e1</KeyId>"
+            } else {
+                ""
+            }
+        };
+        write_cpl(&format!(
+            r#"<CompositionPlaylist><Reel><AssetList>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><Duration>240</Duration>{}</MainPicture>
+  <MainSound><Id>urn:uuid:00000000-0000-0000-0000-0000000000b2</Id><Duration>240</Duration>{}</MainSound>
+</AssetList></Reel></CompositionPlaylist>"#,
+            key(picture),
+            key(sound)
+        ))
+    }
+
+    #[test]
+    fn mixing_encrypted_and_clear_essence_is_error() {
+        let cpl = encryption_cpl(true, false);
+        let notes = check_partial_encryption(cpl.path());
+        assert!(
+            notes.iter().any(|n| n.code == Code::PartiallyEncrypted
+                && n.severity == Severity::Error
+                && n.message.contains("MainPicture")
+                && n.message.contains("MainSound")),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn wholly_encrypted_and_wholly_clear_are_both_silent() {
+        for (picture, sound) in [(true, true), (false, false)] {
+            let cpl = encryption_cpl(picture, sound);
+            assert!(
+                check_partial_encryption(cpl.path()).is_empty(),
+                "a consistent composition must stay silent ({picture}, {sound})"
+            );
+        }
+    }
+
+    // markers carry no essence, so they must not read as the clear half
+    #[test]
+    fn a_marker_track_does_not_make_an_encrypted_dcp_look_partial() {
+        let cpl = write_cpl(
+            r#"<CompositionPlaylist><Reel><AssetList>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><KeyId>urn:uuid:00000000-0000-0000-0000-0000000000e1</KeyId></MainPicture>
+  <MainMarkers><Id>urn:uuid:00000000-0000-0000-0000-0000000000b9</Id><Duration>240</Duration></MainMarkers>
+</AssetList></Reel></CompositionPlaylist>"#,
+        );
+        assert!(
+            check_partial_encryption(cpl.path()).is_empty(),
+            "a marker track is not unencrypted essence"
+        );
+    }
+
+    // ─── Interop closed-caption overlap ────────────────────────────────────
+
+    #[test]
+    fn overlapping_interop_captions_are_error_but_smpte_is_allowed() {
+        let xml = reel_of(&format!(
+            "{}{}",
+            cue("00:00:05:000", "00:00:09:000", &["first"]),
+            cue("00:00:07:000", "00:00:11:000", &["second"])
+        ));
+        let (cpl, _d, map) = tt_case("ClosedCaption", &xml);
+        assert!(
+            check_timed_text_content(cpl.path(), Standard::Interop, &map, &no_keys())
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionInteropOverlap),
+            "Interop forbids overlapping captions"
+        );
+        assert!(
+            !check_timed_text_content(cpl.path(), Standard::Smpte, &map, &no_keys())
+                .iter()
+                .any(|n| n.code == Code::ClosedCaptionInteropOverlap),
+            "SMPTE allows them"
         );
     }
 }

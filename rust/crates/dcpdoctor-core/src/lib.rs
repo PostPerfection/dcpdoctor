@@ -179,6 +179,14 @@ pub enum Code {
     SubtitleMissingFromReel,
     SubtitleLanguageMismatch,
     ClosedCaptionCountMismatch,
+    SubtitleFontTooLarge,
+    ClosedCaptionInteropOverlap,
+    PartiallyEncrypted,
+
+    // Playback compatibility
+    ProjectorFrameRateSupport,
+    ProjectorFourKStereoSupport,
+    DistributorAudioChannelCount,
 
     // ISDCF naming
     IsdcfNamingViolation,
@@ -313,6 +321,12 @@ impl Code {
             Code::SubtitleMissingFromReel => "subtitle_missing_from_reel",
             Code::SubtitleLanguageMismatch => "subtitle_language_mismatch",
             Code::ClosedCaptionCountMismatch => "closed_caption_count_mismatch",
+            Code::SubtitleFontTooLarge => "subtitle_font_too_large",
+            Code::ClosedCaptionInteropOverlap => "closed_caption_interop_overlap",
+            Code::PartiallyEncrypted => "partially_encrypted",
+            Code::ProjectorFrameRateSupport => "projector_frame_rate_support",
+            Code::ProjectorFourKStereoSupport => "projector_4k_stereo_support",
+            Code::DistributorAudioChannelCount => "distributor_audio_channel_count",
             Code::IsdcfNamingViolation => "isdcf_naming_violation",
             Code::EncryptionDetected => "encryption_detected",
             Code::KdmRequired => "kdm_required",
