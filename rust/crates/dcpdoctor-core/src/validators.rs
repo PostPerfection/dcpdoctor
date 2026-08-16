@@ -731,6 +731,13 @@ const LANGUAGE_TAG_LIST_ELEMENTS: &[&str] =
 const RELEASE_TERRITORY: &str = "ReleaseTerritory";
 const UNDETERMINED_LANGUAGE: &str = "und";
 
+/// ST 429-16 default scope for `ReleaseTerritory`, under which the value is a UN
+/// M.49 numeric code rather than an RFC 5646 region subtag. libdcp skips its
+/// region check for exactly this scope, so a territory declaring it is not
+/// measured against a grammar it was never written to.
+const UNM49_SCOPE: &str =
+    "http://www.smpte-ra.org/schemas/429-16/2014/CPL-Metadata#scope/release-territory/UNM49";
+
 /// True when `tag` is a valid RFC 5646 tag: well-formed *and* built from
 /// subtags in the IANA registry. Grammar alone would accept "Deutsch" as a
 /// language, which is exactly the value a mis-converted Interop package writes,
@@ -763,6 +770,27 @@ fn all_ns_tag_values(xml: &str, tag: &str) -> Vec<String> {
     };
     re.captures_iter(xml)
         .map(|c| c.get(1).unwrap().as_str().trim().to_string())
+        .collect()
+}
+
+/// Each `ReleaseTerritory` as its declared `scope` and its value.
+fn release_territories(xml: &str) -> Vec<(Option<String>, String)> {
+    let Ok(re) = regex_lite::Regex::new(&format!(
+        r"<(?:[\w-]+:)?{RELEASE_TERRITORY}((?:\s[^>]*)?)>([\s\S]*?)</(?:[\w-]+:)?{RELEASE_TERRITORY}>"
+    )) else {
+        return Vec::new();
+    };
+    let Ok(scope_re) = regex_lite::Regex::new(r#"scope\s*=\s*"([^"]*)""#) else {
+        return Vec::new();
+    };
+    re.captures_iter(xml)
+        .map(|c| {
+            let attributes = c.get(1).unwrap().as_str();
+            let scope = scope_re
+                .captures(attributes)
+                .map(|s| s.get(1).unwrap().as_str().to_string());
+            (scope, c.get(2).unwrap().as_str().trim().to_string())
+        })
         .collect()
 }
 
@@ -807,7 +835,10 @@ pub fn check_cpl_languages(cpl_path: &Path, standard: Standard) -> Vec<Note> {
             }
         }
     }
-    for territory in all_ns_tag_values(&content, RELEASE_TERRITORY) {
+    for (scope, territory) in release_territories(&content) {
+        if scope.as_deref() == Some(UNM49_SCOPE) {
+            continue;
+        }
         if !territory.is_empty() && !is_valid_region_subtag(&territory) {
             invalid(RELEASE_TERRITORY, &territory);
         }
@@ -4431,6 +4462,29 @@ mod tests {
         );
         // Interop CPLs predate the rule
         assert!(check_cpl_languages(f.path(), Standard::Interop).is_empty());
+    }
+
+    // a UN M.49 territory is numeric, so measuring it against the RFC 5646
+    // region grammar flags every conformant one
+    #[test]
+    fn a_unm49_scoped_territory_is_not_checked_as_a_region_subtag() {
+        let scoped = cpl_with_metadata(&metadata_block(&format!(
+            "{VERSION_NUMBER}<meta:ReleaseTerritory scope=\"{UNM49_SCOPE}\">826</meta:ReleaseTerritory>"
+        )));
+        assert!(
+            check_cpl_languages(scoped.path(), Standard::Smpte).is_empty(),
+            "826 under the UN M.49 scope is conformant"
+        );
+        // without that scope the value is a region subtag, and 826 is not one
+        let bare = cpl_with_metadata(&metadata_block(&format!(
+            "{VERSION_NUMBER}<meta:ReleaseTerritory>826</meta:ReleaseTerritory>"
+        )));
+        assert!(
+            check_cpl_languages(bare.path(), Standard::Smpte)
+                .iter()
+                .any(|n| n.code == Code::CplInvalidLanguage),
+            "an unscoped 826 is still measured as a region subtag"
+        );
     }
 
     #[test]

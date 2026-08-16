@@ -24,6 +24,7 @@
 - KDM digest rules the schema cannot express, all errors: a DeviceList `<CertificateThumbprint>` that does not decode to a 20-byte SHA-1 digest (`kdm_thumbprint_invalid`), the same for `<ContentAuthenticator>` when present (`kdm_content_authenticator_invalid`), and the DCI assume-trust marker (DCSS 9.4.3.5) sharing a DeviceList with a real device thumbprint (`kdm_assume_trust_conflict`). Checked against real DCP-o-matic KDMs, one per ISDCF formulation, under `tests/fixtures/kdm`.
 
 ### Fixed
+- `cpl_invalid_language` no longer fires on a conformant `ReleaseTerritory`. A territory declaring the ST 429-16 UN M.49 scope carries a numeric code, which was being measured against the RFC 5646 region grammar and flagged every time. It is now checked only where libdcp checks it, outside that scope.
 - The browser build rejected any POC marker as "not permitted for DCI", which is a false positive on every conformant 4K DCP: the 4K profile requires exactly one in the main header. It now applies the same per-profile rule as the native path.
 - The accepted picture sizes were the 2K/4K containers only, so every standard scope DCP (2048x858, 4096x1716) drew a spurious `picture_invalid_resolution` warning under `--strict`. Both coded scope sizes are now accepted.
 
