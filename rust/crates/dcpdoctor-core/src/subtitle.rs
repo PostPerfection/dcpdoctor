@@ -60,7 +60,7 @@ pub fn validate_subtitle_xml(xml: &str, file: &Path, standard: Standard) -> Vec<
         Standard::Unknown => {}
     }
 
-    check_structure(xml, file, &mut notes);
+    check_structure(xml, file, standard, &mut notes);
 
     notes
 }
@@ -102,20 +102,45 @@ struct Scan {
     has_subtitle_id: bool,
     has_text: bool,
     capture_id: bool,
+    /// text of the document's `StartTime`, absent when the element is not there
+    start_time: Option<String>,
+    capture_start_time: bool,
+    /// text of the document's `IssueDate`, absent when the element is not there
+    issue_date: Option<String>,
+    capture_issue_date: bool,
+    /// `xmlns` declarations on the root element
+    root_namespaces: usize,
+    seen_root: bool,
+    /// `<Subtitle>` elements seen, whether or not their times parsed
+    subtitle_count: usize,
+    /// LoadFont ids in document order, which a later `<Font>` must name
+    load_font_ids: Vec<String>,
+    /// first `<Font>` naming an id no earlier `<LoadFont>` introduced
+    font_without_load_font: Option<String>,
+    /// nesting depth inside a `<Text>`, and whether this one has said anything
+    text_depth: u32,
+    text_has_content: bool,
+    has_empty_text: bool,
     spans: Vec<Span>,
 }
 
 impl Scan {
-    fn on_start(&mut self, e: &BytesStart) {
+    fn on_start(&mut self, e: &BytesStart, empty: bool) {
         let qname = e.name();
         let local = qname.local_name();
         let name = String::from_utf8_lossy(local.as_ref()).into_owned();
 
         self.capture_id = false;
+        self.capture_start_time = false;
+        self.capture_issue_date = false;
         match name.as_str() {
             // SMPTE DCST root or Interop root
             "SubtitleReel" | "DCSubtitle" => {
                 self.is_subtitle = true;
+                if !self.seen_root {
+                    self.seen_root = true;
+                    self.root_namespaces = namespace_declarations(e);
+                }
                 // Interop carries the identifier as a SubtitleID attribute
                 if attr(e, "SubtitleID").is_some_and(|v| !v.trim().is_empty()) {
                     self.has_subtitle_id = true;
@@ -123,11 +148,47 @@ impl Scan {
             }
             "ReelNumber" => self.has_reel_number = true,
             "Language" => self.has_language = true,
-            "LoadFont" => self.has_load_font = true,
-            "Text" => self.has_text = true,
+            "LoadFont" => {
+                self.has_load_font = true;
+                if let Some(id) = font_id(e) {
+                    self.load_font_ids.push(id);
+                }
+            }
+            "Font" => {
+                // a Font may only name a font an earlier LoadFont introduced.
+                // libdcp reads only the lowercase `Id` here, so a document using
+                // the ST 428-7 `ID` spelling gets past it.
+                if let Some(id) = font_id(e)
+                    && !self.load_font_ids.contains(&id)
+                    && self.font_without_load_font.is_none()
+                {
+                    self.font_without_load_font = Some(id);
+                }
+            }
+            "Text" => {
+                self.has_text = true;
+                if empty {
+                    self.has_empty_text = true;
+                } else {
+                    if self.text_depth == 0 {
+                        self.text_has_content = false;
+                    }
+                    self.text_depth += 1;
+                }
+            }
             // SMPTE DCST uses <Id>; Interop DCSubtitle uses a <SubtitleID> element
             "Id" | "SubtitleID" => self.capture_id = true,
+            "StartTime" => {
+                self.capture_start_time = true;
+                // an empty element still counts as present, and still not zero
+                self.start_time.get_or_insert_default();
+            }
+            "IssueDate" => {
+                self.capture_issue_date = true;
+                self.issue_date.get_or_insert_default();
+            }
             "Subtitle" => {
+                self.subtitle_count += 1;
                 let spot = attr(e, "SpotNumber").unwrap_or_default();
                 let raw_in = attr(e, "TimeIn").unwrap_or_default();
                 let raw_out = attr(e, "TimeOut").unwrap_or_default();
@@ -145,23 +206,70 @@ impl Scan {
             _ => {}
         }
     }
+
+    fn on_end(&mut self, name: &str) {
+        if name == "Text" && self.text_depth > 0 {
+            self.text_depth -= 1;
+            if self.text_depth == 0 && !self.text_has_content {
+                self.has_empty_text = true;
+            }
+        }
+    }
+
+    fn on_text(&mut self, text: &str) {
+        if self.text_depth > 0 && !text.trim().is_empty() {
+            self.text_has_content = true;
+        }
+    }
 }
 
-fn check_structure(xml: &str, file: &Path, notes: &mut Vec<Note>) {
+/// The `ID` a LoadFont or Font declares. ST 428-7 spells it `ID`, Interop `Id`.
+fn font_id(e: &BytesStart) -> Option<String> {
+    attr(e, "ID")
+        .or_else(|| attr(e, "Id"))
+        .filter(|id| !id.trim().is_empty())
+}
+
+/// Count the `xmlns` declarations an element carries.
+fn namespace_declarations(e: &BytesStart) -> usize {
+    e.attributes()
+        .flatten()
+        .filter(|a| {
+            let key = a.key.as_ref();
+            key == b"xmlns" || key.starts_with(b"xmlns:")
+        })
+        .count()
+}
+
+fn check_structure(xml: &str, file: &Path, standard: Standard, notes: &mut Vec<Note>) {
     let mut reader = Reader::from_str(xml);
     let mut scan = Scan::default();
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) => scan.on_start(&e),
-            Ok(Event::Empty(e)) => scan.on_start(&e),
+            Ok(Event::Start(e)) => scan.on_start(&e, false),
+            Ok(Event::Empty(e)) => scan.on_start(&e, true),
+            Ok(Event::End(e)) => {
+                let name = String::from_utf8_lossy(e.name().local_name().as_ref()).into_owned();
+                scan.on_end(&name);
+            }
             Ok(Event::Text(e)) => {
+                let text = dcpdoctor_parse::text_of(&e);
                 if scan.capture_id {
                     scan.capture_id = false;
-                    if !dcpdoctor_parse::text_of(&e).trim().is_empty() {
+                    if !text.trim().is_empty() {
                         scan.has_subtitle_id = true;
                     }
                 }
+                if scan.capture_start_time {
+                    scan.capture_start_time = false;
+                    scan.start_time = Some(text.trim().to_string());
+                }
+                if scan.capture_issue_date {
+                    scan.capture_issue_date = false;
+                    scan.issue_date = Some(text.trim().to_string());
+                }
+                scan.on_text(&text);
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -217,6 +325,49 @@ fn check_structure(xml: &str, file: &Path, notes: &mut Vec<Note>) {
         }
     }
 
+    notes.extend(start_time_notes(&scan, file, standard));
+    notes.extend(issue_date_notes(&scan, file, standard));
+
+    // ST 428-7 and Interop both declare one namespace on the root; a second one
+    // means the document was assembled from two schema versions, and players
+    // disagree about which wins.
+    if scan.root_namespaces > 1 {
+        notes.push(warn(
+            Code::SubtitleNamespaceCount,
+            &format!(
+                "Subtitle root declares {} namespaces, which must be 1",
+                scan.root_namespaces
+            ),
+            file,
+        ));
+    }
+
+    // an Interop asset with no cues at all displays nothing, and nothing
+    // downstream notices because the reel still has its duration
+    if standard == Standard::Interop && scan.subtitle_count == 0 {
+        notes.push(err(
+            Code::MissingRequiredElement,
+            "Interop subtitle asset contains no subtitles".into(),
+            file,
+        ));
+    }
+
+    if scan.has_empty_text {
+        notes.push(err(
+            Code::SubtitleEmptyText,
+            "Subtitle has a <Text> element with no content".into(),
+            file,
+        ));
+    }
+
+    if let Some(id) = &scan.font_without_load_font {
+        notes.push(err(
+            Code::SubtitleFontMissing,
+            format!("<Font> names '{id}', which no <LoadFont> introduces"),
+            file,
+        ));
+    }
+
     // TimeIn must precede TimeOut on each cue
     for s in &scan.spans {
         if s.time_in >= s.time_out {
@@ -252,6 +403,73 @@ fn check_structure(xml: &str, file: &Path, notes: &mut Vec<Note>) {
             ));
         }
     }
+}
+
+/// ST 428-7 requires a SMPTE timed-text document to declare `StartTime`, and
+/// Bv2.1 §7.2.2 requires it to be zero: a non-zero value shifts every cue in the
+/// reel by that amount, which is the classic reason a package plays with its
+/// subtitles out of sync. Interop documents have no such element.
+fn start_time_notes(scan: &Scan, file: &Path, standard: Standard) -> Vec<Note> {
+    if standard != Standard::Smpte {
+        return Vec::new();
+    }
+    let Some(start_time) = &scan.start_time else {
+        return vec![err(
+            Code::MissingRequiredElement,
+            "SMPTE timed text has no <StartTime>".into(),
+            file,
+        )];
+    };
+    if parse_time(start_time) == Some(0) {
+        return Vec::new();
+    }
+    vec![err(
+        Code::SubtitleInvalidTiming,
+        format!(
+            "<StartTime> is '{start_time}', which shifts every cue; Bv2.1 requires 00:00:00:000"
+        ),
+        file,
+    )]
+}
+
+/// No standard requires a particular `IssueDate` form, but Deluxe QC rejects a
+/// SMPTE package whose date is not `yyyy-mm-ddThh:mm:ss`, so libdcp warns and so
+/// do we. A missing date cannot be checked for form at all, which is why absence
+/// warns here even though libdcp leaves it to the schema.
+fn issue_date_notes(scan: &Scan, file: &Path, standard: Standard) -> Vec<Note> {
+    if standard != Standard::Smpte {
+        return Vec::new();
+    }
+    let Some(issue_date) = &scan.issue_date else {
+        return vec![warn(
+            Code::SubtitleInvalidIssueDate,
+            "SMPTE timed text has no <IssueDate>",
+            file,
+        )];
+    };
+    if is_deluxe_issue_date(issue_date) {
+        return Vec::new();
+    }
+    vec![warn(
+        Code::SubtitleInvalidIssueDate,
+        &format!("<IssueDate> is '{issue_date}', not yyyy-mm-ddThh:mm:ss"),
+        file,
+    )]
+}
+
+/// `yyyy-mm-ddThh:mm:ss`, with no timezone offset and no fractional seconds.
+fn is_deluxe_issue_date(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 19 {
+        return false;
+    }
+    const DIGITS: [usize; 14] = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
+    const DASHES: [usize; 2] = [4, 7];
+    const COLONS: [usize; 2] = [13, 16];
+    DIGITS.iter().all(|&i| bytes[i].is_ascii_digit())
+        && DASHES.iter().all(|&i| bytes[i] == b'-')
+        && COLONS.iter().all(|&i| bytes[i] == b':')
+        && bytes[10] == b'T'
 }
 
 fn spot_label(spot: &str) -> String {
@@ -733,28 +951,219 @@ pub(crate) mod tests {
         f
     }
 
-    const VALID_SMPTE: &str = r#"<?xml version="1.0"?>
-<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">
-  <dcst:Id>urn:uuid:11111111-2222-3333-4444-555555555555</dcst:Id>
+    /// A conformant ST 428-7 document in the namespace given: every element the
+    /// DCST schema requires, one namespace on the root, a zero `StartTime` and an
+    /// `IssueDate` in the form Deluxe QC demands. The schema tests validate this
+    /// same document against the vendored XSDs, so one fixture has to satisfy
+    /// both the structural rules here and the real schema.
+    pub(crate) fn smpte_subtitle_doc(namespace: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<dcst:SubtitleReel xmlns:dcst="{namespace}">
+  <dcst:Id>urn:uuid:22222222-2222-3333-4444-555555555555</dcst:Id>
+  <dcst:ContentTitleText>Test</dcst:ContentTitleText>
+  <dcst:IssueDate>2024-01-01T00:00:00</dcst:IssueDate>
   <dcst:ReelNumber>1</dcst:ReelNumber>
   <dcst:Language>en</dcst:Language>
-  <dcst:LoadFont ID="theFont">urn:uuid:aaaa</dcst:LoadFont>
+  <dcst:EditRate>24 1</dcst:EditRate>
+  <dcst:TimeCodeRate>24</dcst:TimeCodeRate>
+  <dcst:StartTime>00:00:00:000</dcst:StartTime>
+  <dcst:LoadFont ID="theFont">urn:uuid:33333333-2222-3333-4444-555555555555</dcst:LoadFont>
   <dcst:SubtitleList>
-    <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000"/>
-    <dcst:Subtitle SpotNumber="2" TimeIn="00:00:08:000" TimeOut="00:00:10:000"/>
+    <dcst:Font ID="theFont">
+      <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
+        <dcst:Text>Hello</dcst:Text>
+      </dcst:Subtitle>
+      <dcst:Subtitle SpotNumber="2" TimeIn="00:00:08:000" TimeOut="00:00:10:000">
+        <dcst:Text>Again</dcst:Text>
+      </dcst:Subtitle>
+    </dcst:Font>
   </dcst:SubtitleList>
-</dcst:SubtitleReel>"#;
+</dcst:SubtitleReel>"#
+        )
+    }
+
+    /// The same document in the 2010 namespace, which most cases here mutate.
+    fn valid_smpte() -> String {
+        smpte_subtitle_doc("http://www.smpte-ra.org/schemas/428-7/2010/DCST")
+    }
 
     #[test]
     fn valid_smpte_has_no_findings() {
-        let f = write_tmp(VALID_SMPTE);
+        let f = write_tmp(&valid_smpte());
         let notes = validate_subtitle(f.path(), Standard::Smpte);
         assert!(notes.is_empty(), "expected clean, got: {notes:?}");
     }
 
     #[test]
+    fn missing_start_time_is_error() {
+        let stripped =
+            valid_smpte().replace("  <dcst:StartTime>00:00:00:000</dcst:StartTime>\n", "");
+        let f = write_tmp(&stripped);
+        let notes = validate_subtitle(f.path(), Standard::Smpte);
+        assert!(
+            notes.iter().any(|n| n.code == Code::MissingRequiredElement
+                && n.severity == Severity::Error
+                && n.message.contains("StartTime")),
+            "got: {notes:?}"
+        );
+    }
+
+    // a non-zero StartTime shifts every cue in the reel, which is the usual
+    // reason a package plays with its subtitles out of sync
+    #[test]
+    fn non_zero_start_time_is_error() {
+        let shifted = valid_smpte().replace(
+            "<dcst:StartTime>00:00:00:000</dcst:StartTime>",
+            "<dcst:StartTime>00:00:04:000</dcst:StartTime>",
+        );
+        let f = write_tmp(&shifted);
+        let notes = validate_subtitle(f.path(), Standard::Smpte);
+        assert!(
+            notes.iter().any(|n| n.code == Code::SubtitleInvalidTiming
+                && n.severity == Severity::Error
+                && n.message.contains("00:00:04:000")),
+            "got: {notes:?}"
+        );
+    }
+
+    // Interop has no StartTime element, so the SMPTE rule must not reach it
+    #[test]
+    fn interop_is_not_asked_for_a_start_time() {
+        let interop = r#"<?xml version="1.0"?>
+<DCSubtitle Version="1.0" xmlns="http://www.digicine.com/PROTO-ASDCP-TT-DEF"
+    SubtitleID="urn:uuid:abcd">
+  <ReelNumber>1</ReelNumber>
+  <Language>en</Language>
+  <LoadFont Id="Arial" URI="arial.ttf"/>
+  <Font Id="Arial">
+    <Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000"/>
+  </Font>
+</DCSubtitle>"#;
+        let f = write_tmp(interop);
+        let notes = validate_subtitle(f.path(), Standard::Interop);
+        assert!(notes.is_empty(), "expected clean, got: {notes:?}");
+    }
+
+    #[test]
+    fn a_malformed_issue_date_warns() {
+        // the offset form real tools write, which Deluxe QC rejects
+        let offset = valid_smpte().replace(
+            "<dcst:IssueDate>2024-01-01T00:00:00</dcst:IssueDate>",
+            "<dcst:IssueDate>2024-01-01T00:00:00.000-00:00</dcst:IssueDate>",
+        );
+        let f = write_tmp(&offset);
+        let notes = validate_subtitle(f.path(), Standard::Smpte);
+        assert!(
+            notes.iter().any(
+                |n| n.code == Code::SubtitleInvalidIssueDate && n.severity == Severity::Warning
+            ),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_issue_date_warns() {
+        let stripped = valid_smpte().replace(
+            "  <dcst:IssueDate>2024-01-01T00:00:00</dcst:IssueDate>\n",
+            "",
+        );
+        let f = write_tmp(&stripped);
+        let notes = validate_subtitle(f.path(), Standard::Smpte);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleInvalidIssueDate),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_second_root_namespace_warns() {
+        let two = valid_smpte().replace(
+            r#"<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST">"#,
+            r#"<dcst:SubtitleReel xmlns:dcst="http://www.smpte-ra.org/schemas/428-7/2010/DCST" xmlns:other="http://www.smpte-ra.org/schemas/428-7/2007/DCST">"#,
+        );
+        let f = write_tmp(&two);
+        let notes = validate_subtitle(f.path(), Standard::Smpte);
+        assert!(
+            notes.iter().any(|n| n.code == Code::SubtitleNamespaceCount),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_text_element_is_error() {
+        for empty in [
+            "<dcst:Text></dcst:Text>",
+            "<dcst:Text/>",
+            "<dcst:Text>  </dcst:Text>",
+        ] {
+            let doc = valid_smpte().replace("<dcst:Text>Hello</dcst:Text>", empty);
+            let f = write_tmp(&doc);
+            let notes = validate_subtitle(f.path(), Standard::Smpte);
+            assert!(
+                notes
+                    .iter()
+                    .any(|n| n.code == Code::SubtitleEmptyText && n.severity == Severity::Error),
+                "{empty} must fire, got: {notes:?}"
+            );
+        }
+    }
+
+    // text nested in a formatting element still counts as content
+    #[test]
+    fn text_with_only_nested_content_is_not_empty() {
+        let doc = valid_smpte().replace(
+            "<dcst:Text>Hello</dcst:Text>",
+            "<dcst:Text><dcst:Ruby><dcst:Rb>Hello</dcst:Rb></dcst:Ruby></dcst:Text>",
+        );
+        let f = write_tmp(&doc);
+        let notes = validate_subtitle(f.path(), Standard::Smpte);
+        assert!(
+            !notes.iter().any(|n| n.code == Code::SubtitleEmptyText),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_font_with_no_load_font_is_error() {
+        let doc = valid_smpte().replace(
+            r#"<dcst:Font ID="theFont">"#,
+            r#"<dcst:Font ID="neverDeclared">"#,
+        );
+        let f = write_tmp(&doc);
+        let notes = validate_subtitle(f.path(), Standard::Smpte);
+        assert!(
+            notes.iter().any(|n| n.code == Code::SubtitleFontMissing
+                && n.message.contains("neverDeclared")),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_interop_asset_with_no_subtitles_is_error() {
+        let empty = r#"<?xml version="1.0"?>
+<DCSubtitle Version="1.0" xmlns="http://www.digicine.com/PROTO-ASDCP-TT-DEF"
+    SubtitleID="urn:uuid:abcd">
+  <ReelNumber>1</ReelNumber>
+  <Language>en</Language>
+  <LoadFont Id="Arial" URI="arial.ttf"/>
+</DCSubtitle>"#;
+        let f = write_tmp(empty);
+        let notes = validate_subtitle(f.path(), Standard::Interop);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::MissingRequiredElement
+                    && n.message.contains("no subtitles")),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
     fn timein_after_timeout_is_error() {
-        let bad = VALID_SMPTE.replace(
+        let bad = valid_smpte().replace(
             r#"TimeIn="00:00:05:000" TimeOut="00:00:07:000""#,
             r#"TimeIn="00:00:07:000" TimeOut="00:00:05:000""#,
         );
@@ -770,7 +1179,7 @@ pub(crate) mod tests {
 
     #[test]
     fn overlapping_cues_warn() {
-        let overlap = VALID_SMPTE.replace(
+        let overlap = valid_smpte().replace(
             r#"TimeIn="00:00:08:000" TimeOut="00:00:10:000""#,
             r#"TimeIn="00:00:06:000" TimeOut="00:00:10:000""#,
         );
@@ -786,7 +1195,7 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_reel_number_and_language_warn() {
-        let stripped = VALID_SMPTE
+        let stripped = valid_smpte()
             .replace("  <dcst:ReelNumber>1</dcst:ReelNumber>\n", "")
             .replace("  <dcst:Language>en</dcst:Language>\n", "");
         let f = write_tmp(&stripped);
@@ -797,8 +1206,8 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_id_is_error() {
-        let stripped = VALID_SMPTE.replace(
-            "  <dcst:Id>urn:uuid:11111111-2222-3333-4444-555555555555</dcst:Id>\n",
+        let stripped = valid_smpte().replace(
+            "  <dcst:Id>urn:uuid:22222222-2222-3333-4444-555555555555</dcst:Id>\n",
             "",
         );
         let f = write_tmp(&stripped);
@@ -1104,8 +1513,7 @@ pub(crate) mod tests {
     fn all_three_st_428_7_namespaces_are_accepted() {
         let dir = tempfile::tempdir().unwrap();
         for namespace in crate::schema::smpte_subtitle_namespaces() {
-            let doc =
-                VALID_SMPTE.replace("http://www.smpte-ra.org/schemas/428-7/2010/DCST", namespace);
+            let doc = smpte_subtitle_doc(namespace);
             let path = dir.path().join("sub.xml");
             std::fs::write(&path, &doc).unwrap();
             let notes = validate_subtitle(&path, Standard::Smpte);
@@ -1119,10 +1527,7 @@ pub(crate) mod tests {
     #[test]
     fn a_document_in_no_st_428_7_namespace_still_fires() {
         let dir = tempfile::tempdir().unwrap();
-        let doc = VALID_SMPTE.replace(
-            "http://www.smpte-ra.org/schemas/428-7/2010/DCST",
-            "http://example.invalid/DCST",
-        );
+        let doc = smpte_subtitle_doc("http://example.invalid/DCST");
         let path = dir.path().join("sub.xml");
         std::fs::write(&path, &doc).unwrap();
         assert!(

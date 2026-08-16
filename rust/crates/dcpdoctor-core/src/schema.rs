@@ -617,30 +617,10 @@ mod tests {
 
     // ─── subtitle documents ───────────────────────────────────────────────
 
-    /// A conformant ST 428-7 timed-text document in the `dcst` namespace given.
-    fn smpte_subtitle(namespace: &str) -> String {
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<dcst:SubtitleReel xmlns:dcst="{namespace}">
-  <dcst:Id>urn:uuid:22222222-2222-3333-4444-555555555555</dcst:Id>
-  <dcst:ContentTitleText>Test</dcst:ContentTitleText>
-  <dcst:IssueDate>2024-01-01T00:00:00.000-00:00</dcst:IssueDate>
-  <dcst:ReelNumber>1</dcst:ReelNumber>
-  <dcst:Language>en</dcst:Language>
-  <dcst:EditRate>24 1</dcst:EditRate>
-  <dcst:TimeCodeRate>24</dcst:TimeCodeRate>
-  <dcst:StartTime>00:00:00:000</dcst:StartTime>
-  <dcst:LoadFont ID="f">urn:uuid:33333333-2222-3333-4444-555555555555</dcst:LoadFont>
-  <dcst:SubtitleList>
-    <dcst:Font ID="f">
-      <dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
-        <dcst:Text>Hi</dcst:Text>
-      </dcst:Subtitle>
-    </dcst:Font>
-  </dcst:SubtitleList>
-</dcst:SubtitleReel>"#
-        )
-    }
+    /// The conformant ST 428-7 document the structural rules also test against,
+    /// so a change that satisfies one of the two passes cannot quietly break the
+    /// other.
+    use crate::subtitle::tests::smpte_subtitle_doc as smpte_subtitle;
 
     const INTEROP_SUBTITLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <DCSubtitle Version="1.0">
