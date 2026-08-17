@@ -402,8 +402,7 @@ fn validate_wellformed(content: &str) -> SchemaValidationResult {
                 }
             },
             Ok(Event::Text(text))
-                if elements.is_empty()
-                    && text.as_ref().iter().any(|byte| !byte.is_ascii_whitespace()) =>
+                if elements.is_empty() && text.iter().any(|byte| !byte.is_ascii_whitespace()) =>
             {
                 errors.push(SchemaError {
                     line: 0,
