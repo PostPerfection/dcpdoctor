@@ -116,12 +116,14 @@ fn is_imf_composition_playlist(xml: &str) -> bool {
 ///
 /// `check_picture_details` turns on the checks that read every picture frame,
 /// the same gate the DCP path puts them behind, and `scan_every_frame` carries
-/// the codestream scan past frame 0 the way it does for a DCP.
+/// the codestream scan past frame 0 the way it does for a DCP. `keys` are the
+/// content keys those readers decrypt encrypted track files with.
 pub fn validate_imp(
     imp_dir: &Path,
     ov_dir: Option<&Path>,
     check_picture_details: bool,
     scan_every_frame: bool,
+    keys: &crate::kdm::ContentKeys,
 ) -> Vec<Note> {
     let mut notes = Vec::new();
 
@@ -190,6 +192,7 @@ pub fn validate_imp(
             cpl_path,
             check_picture_details,
             scan_every_frame,
+            keys,
             &mut notes,
         );
 
@@ -273,6 +276,7 @@ fn validate_essence_descriptors(
     cpl_path: &Path,
     check_picture_details: bool,
     scan_every_frame: bool,
+    keys: &crate::kdm::ContentKeys,
     notes: &mut Vec<Note>,
 ) {
     let assetmap_path = imp_dir.join("ASSETMAP.xml");
@@ -326,9 +330,9 @@ fn validate_essence_descriptors(
                         &mxf_info,
                         cpl,
                         &full_path,
-                        cpl_path,
                         check_picture_details,
                         scan_every_frame,
+                        keys,
                         notes,
                     );
                 }
@@ -341,27 +345,61 @@ fn validate_essence_descriptors(
     }
 }
 
+/// The note for a picture track file whose essence is encrypted and whose content
+/// key the run does not hold, so neither the bitrate measurement nor the
+/// codestream scan can read it. Informational when no KDM was supplied, which is
+/// a normal way to validate an IMP, and a warning when the KDM that was supplied
+/// does not carry the track's key: the same split the timed-text pass reports.
+/// `None` means the essence is readable, or is not AS-02 picture essence at all.
+fn missing_content_key_note(mxf_path: &Path, keys: &crate::kdm::ContentKeys) -> Option<Note> {
+    let mut reader = asdcplib::as02::jp2k::MxfReader::new();
+    reader.open_read(mxf_path.to_str()?).ok()?;
+    let info = reader.writer_info().ok()?;
+    let crate::kdm::EssenceKey::Missing { key_id, had_kdm } = keys.resolve(&info) else {
+        return None;
+    };
+    let message = format!(
+        "bitrate and codestream checks did not run on encrypted picture essence: {}",
+        if had_kdm {
+            format!("the KDM does not carry the content key for KeyId {key_id}")
+        } else {
+            "no KDM and recipient key were supplied".to_string()
+        }
+    );
+    let note = if had_kdm {
+        Note::warning(Code::KdmRequired, message)
+    } else {
+        Note::info(Code::KdmRequired, message)
+    };
+    Some(note.with_file(mxf_path))
+}
+
 fn validate_picture_essence(
     mxf: &crate::mxf::MxfInfo,
     cpl: &ImfCpl,
     mxf_path: &Path,
-    _cpl_path: &Path,
     check_picture_details: bool,
     scan_every_frame: bool,
+    keys: &crate::kdm::ContentKeys,
     notes: &mut Vec<Note>,
 ) {
     // measured through asdcplib, so it runs even when ffprobe gave no descriptor
     if check_picture_details {
-        let bitrate = crate::bitrate::analyze_picture_bitrate(mxf_path);
-        notes.extend(crate::bitrate::report_measured_bitrate(&bitrate, mxf_path));
+        match missing_content_key_note(mxf_path, keys) {
+            Some(note) => notes.push(note),
+            None => {
+                let bitrate = crate::bitrate::analyze_picture_bitrate(mxf_path, keys);
+                notes.extend(crate::bitrate::report_measured_bitrate(&bitrate, mxf_path));
 
-        let (codestream_notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
-            mxf_path,
-            &crate::kdm::ContentKeys::none(),
-            crate::j2k::PictureEssenceFamily::Imf,
-            scan_every_frame,
-        );
-        notes.extend(codestream_notes);
+                let (codestream_notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
+                    mxf_path,
+                    keys,
+                    crate::j2k::PictureEssenceFamily::Imf,
+                    scan_every_frame,
+                );
+                notes.extend(codestream_notes);
+            }
+        }
     }
 
     let pic = match &mxf.picture {
@@ -1044,6 +1082,10 @@ mod tests {
     const VIDEO_ID: &str = "aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa";
     const AUDIO_ID: &str = "bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb";
 
+    fn no_keys() -> crate::kdm::ContentKeys {
+        crate::kdm::ContentKeys::none()
+    }
+
     #[test]
     fn resolve_track_ref_covers_local_ov_broken_and_needs_ov() {
         let local: HashSet<String> = [AUDIO_ID.to_string()].into();
@@ -1163,7 +1205,7 @@ mod tests {
             &[VIDEO_ID, AUDIO_ID],
         );
 
-        let notes = validate_imp(supp.path(), Some(ov.path()), false, false);
+        let notes = validate_imp(supp.path(), Some(ov.path()), false, false, &no_keys());
         assert!(
             !notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "OV must satisfy the video ref, got: {notes:?}"
@@ -1186,7 +1228,7 @@ mod tests {
             &[VIDEO_ID, AUDIO_ID],
         );
 
-        let notes = validate_imp(supp.path(), None, false, false);
+        let notes = validate_imp(supp.path(), None, false, false, &no_keys());
         assert!(
             !notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "no OV -> must not hard-fail as broken, got: {notes:?}"
@@ -1217,7 +1259,7 @@ mod tests {
             &["deadbeef-0000-0000-0000-000000000000", AUDIO_ID],
         );
 
-        let notes = validate_imp(supp.path(), Some(ov.path()), false, false);
+        let notes = validate_imp(supp.path(), Some(ov.path()), false, false, &no_keys());
         assert!(
             notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "a ref in neither package is a real break even with --ov, got: {notes:?}"
@@ -1268,7 +1310,7 @@ mod tests {
         );
         write_as02_picture(&imp.path().join(format!("{VIDEO_ID}.mxf")), 3, 500_000);
 
-        let measured = validate_imp(imp.path(), None, true, false);
+        let measured = validate_imp(imp.path(), None, true, false, &no_keys());
         let note = measured
             .iter()
             .find(|n| n.code == Code::PictureBitrateMeasured)
@@ -1276,7 +1318,7 @@ mod tests {
         assert_eq!(note.severity, Severity::Info);
         assert!(note.message.contains("96.0"), "{}", note.message);
 
-        let unmeasured = validate_imp(imp.path(), None, false, false);
+        let unmeasured = validate_imp(imp.path(), None, false, false, &no_keys());
         assert!(
             !unmeasured
                 .iter()
@@ -1307,7 +1349,7 @@ mod tests {
             &frames,
         );
 
-        let scanned = validate_imp(imp.path(), None, true, true);
+        let scanned = validate_imp(imp.path(), None, true, true, &no_keys());
         let summary = scanned
             .iter()
             .find(|n| n.code == Code::J2kCodestreamSummary)
@@ -1327,12 +1369,154 @@ mod tests {
             summary.message
         );
 
-        let frame_zero_only = validate_imp(imp.path(), None, true, false);
+        let frame_zero_only = validate_imp(imp.path(), None, true, false, &no_keys());
         assert!(
             !frame_zero_only
                 .iter()
                 .any(|n| n.code == Code::J2kCodestreamSummary),
             "the frame-0 scan has nothing to summarise"
+        );
+    }
+
+    /// An IMP whose picture track file is encrypted, with the KDM that carries its
+    /// content key. `wrong_key` is a private key the KDM was not issued to.
+    struct EncryptedImp {
+        imp: tempfile::TempDir,
+        kdm: PathBuf,
+        recipient_key: PathBuf,
+        wrong_key: PathBuf,
+        /// keeps the generated certificate chain on disk while the KDM is in use
+        _certs: tempfile::TempDir,
+    }
+
+    /// The KDM names a CPL, so the package has to be written with the id the KDM
+    /// was issued for or the cross-reference check would call it a different CPL.
+    const ENCRYPTED_IMP_CPL_ID: &str = "2b2b2b2b-0000-0000-0000-000000000000";
+
+    fn encrypted_imp() -> EncryptedImp {
+        let key_id = uuid::Uuid::new_v4();
+        let content_key = [0x66; 16];
+        let (kdm, recipient_key, wrong_key, certs) =
+            crate::kdm::decrypt_tests::make_kdm(key_id, content_key, ENCRYPTED_IMP_CPL_ID);
+
+        let imp = tempfile::tempdir().unwrap();
+        write_imp(
+            imp.path(),
+            ENCRYPTED_IMP_CPL_ID,
+            &[VIDEO_ID, AUDIO_ID],
+            &[VIDEO_ID, AUDIO_ID],
+        );
+        let frames = vec![(FIXTURE_DECOMPOSITION_LEVELS, FIXTURE_PAYLOAD_BYTES); 4];
+        crate::j2k::frame_scan_tests::write_encrypted_as02_picture_mxf(
+            imp.path(),
+            &format!("{VIDEO_ID}.mxf"),
+            1920,
+            1080,
+            &frames,
+            key_id,
+            content_key,
+        );
+
+        EncryptedImp {
+            imp,
+            kdm,
+            recipient_key,
+            wrong_key,
+            _certs: certs,
+        }
+    }
+
+    // an encrypted track file used to be read with no keys at all, so an IMP with
+    // a KDM got neither of the two things a cleartext one gets.
+    #[test]
+    fn encrypted_imp_picture_track_is_measured_and_scanned_with_its_kdm() {
+        let fixture = encrypted_imp();
+        let keys = crate::kdm::ContentKeys::from_kdm(&fixture.kdm, &fixture.recipient_key)
+            .expect("the fixture KDM opens with its recipient key");
+
+        let notes = validate_imp(fixture.imp.path(), None, true, true, &keys);
+
+        let bitrate = notes
+            .iter()
+            .find(|n| n.code == Code::PictureBitrateMeasured)
+            .unwrap_or_else(|| panic!("expected a measured bitrate, got: {notes:?}"));
+        assert_eq!(bitrate.severity, Severity::Info);
+
+        let summary = notes
+            .iter()
+            .find(|n| n.code == Code::J2kCodestreamSummary)
+            .unwrap_or_else(|| panic!("expected a codestream summary, got: {notes:?}"));
+        assert!(
+            summary.message.contains("1920x1080")
+                && summary
+                    .message
+                    .contains("parameters identical across 4 frames"),
+            "{}",
+            summary.message
+        );
+
+        assert!(
+            !notes.iter().any(|n| n.code == Code::KdmRequired),
+            "nothing is skipped once the content key is available, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn encrypted_imp_picture_track_without_a_key_says_the_checks_did_not_run() {
+        let fixture = encrypted_imp();
+
+        let notes = validate_imp(fixture.imp.path(), None, true, true, &no_keys());
+
+        let skipped = notes
+            .iter()
+            .find(|n| n.code == Code::KdmRequired)
+            .unwrap_or_else(|| {
+                panic!("a skipped encrypted picture track must be reported: {notes:?}")
+            });
+        assert_eq!(
+            skipped.severity,
+            Severity::Info,
+            "validating an encrypted IMP without its KDM is a normal thing to do"
+        );
+        assert!(
+            skipped.message.contains("did not run") && skipped.message.contains("no KDM"),
+            "{}",
+            skipped.message
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.code == Code::PictureBitrateMeasured
+                    || n.code == Code::J2kCodestreamSummary),
+            "ciphertext frames must yield neither a rate nor forensics, got: {notes:?}"
+        );
+    }
+
+    // a KDM the recipient key cannot open is an operator error, and continuing
+    // keyless would report an encrypted IMP as if no keys had been asked for.
+    #[test]
+    fn a_kdm_the_recipient_key_cannot_open_fails_loud() {
+        let fixture = encrypted_imp();
+
+        let result = crate::validate::verify_dcp(
+            fixture.imp.path(),
+            &crate::VerifyOptions {
+                kdm: Some(fixture.kdm.clone()),
+                recipient_key: Some(fixture.wrong_key.clone()),
+                check_picture_details: true,
+                ..Default::default()
+            },
+        );
+
+        let failure = result
+            .notes
+            .iter()
+            .find(|n| n.code == Code::KdmRequired && n.severity == Severity::Error)
+            .unwrap_or_else(|| panic!("a KDM that will not unwrap must error: {:?}", result.notes));
+        assert!(
+            failure.message.contains("failed to unwrap KDM"),
+            "{}",
+            failure.message
         );
     }
 

@@ -1,15 +1,16 @@
 //! Per-frame bitrate analysis of J2K MXF picture tracks.
 //!
-//! The monoscopic per-frame readers live in postkit: `j2k::analyse_mxf_bitrate`
-//! for a DCP's AS-DCP essence, `j2k::analyse_as02_mxf_bitrate` for an IMP's.
-//! Stereoscopic essence needs asdcplib's 3D reader, and one edit unit there
+//! Every frame is read through the picture reader in `j2k`, which covers AS-DCP
+//! monoscopic, AS-DCP stereoscopic and AS-02 wrapping and takes the decryption
+//! contexts encrypted essence needs. postkit's own bitrate readers take none, so
+//! they cannot measure an encrypted track. One edit unit of stereoscopic essence
 //! carries a left and a right codestream that share the frame's time slot, so
 //! the pair counts as one frame. The Note-producing compliance check stays here.
 
 use std::path::Path;
 
-use asdcplib::jp2k::{StereoMxfReader, StereoscopicPhase};
-
+use crate::j2k::{PictureEssenceFamily, PictureEssenceReader};
+use crate::kdm::ContentKeys;
 use crate::{Code, Note};
 
 /// DCI caps a frame near 1.3 MB (2K) / 2.6 MB (4K); 16 MiB is safe headroom.
@@ -21,79 +22,111 @@ const NEAR_LIMIT_FRACTION: f64 = 0.95;
 /// Frame-level bitrate statistics for a picture MXF (postkit's reader output).
 pub type FrameBitrateStats = postkit::j2k::MxfBitrateStats;
 
-/// Measure per-frame bitrate of a picture MXF by reading every frame. Falls back
-/// to the stereoscopic reader for 3D essence, which the mono reader rejects, and
-/// then to AS-02 for an IMP track file. Stereoscopic comes first because the
-/// AS-02 reader also opens 3D AS-DCP essence and sees one eye per frame.
-pub fn analyze_picture_bitrate(mxf_path: &Path) -> FrameBitrateStats {
-    let as_dcp = postkit::j2k::analyse_mxf_bitrate(mxf_path);
+/// Measure per-frame bitrate of a picture MXF by reading every frame, decrypting
+/// with `keys` where the essence is encrypted. Encrypted essence with no covering
+/// key measures nothing: its ciphertext frames are longer than the codestreams
+/// they carry, so a rate read off them is not the asset's rate.
+///
+/// AS-02 is tried after the AS-DCP wrappings because the AS-02 reader also opens
+/// stereoscopic AS-DCP essence and sees one eye per frame.
+pub fn analyze_picture_bitrate(mxf_path: &Path, keys: &ContentKeys) -> FrameBitrateStats {
+    let as_dcp = measure_frames(mxf_path, keys, PictureEssenceFamily::Cinema);
     if as_dcp.valid {
         return as_dcp;
     }
-    if let Some(stereoscopic) = analyze_stereoscopic_bitrate(mxf_path) {
-        return stereoscopic;
-    }
-    let as02 = postkit::j2k::analyse_as02_mxf_bitrate(mxf_path);
+    let as02 = measure_frames(mxf_path, keys, PictureEssenceFamily::Imf);
     if as02.valid { as02 } else { as_dcp }
 }
 
-fn analyze_stereoscopic_bitrate(mxf_path: &Path) -> Option<FrameBitrateStats> {
-    let path = mxf_path.to_str()?;
-    let mut reader = StereoMxfReader::new();
-    reader.open_read(path).ok()?;
-    let descriptor = reader.picture_descriptor().ok()?;
-    let frame_rate =
+/// Read every edit unit of one picture track and turn the codestream sizes into
+/// bitrate statistics. An unopenable file, an essence we hold no key for, or a
+/// track whose first frame will not read all come back invalid, which is how the
+/// caller falls through to the other wrapping and how the reporting stays quiet.
+fn measure_frames(
+    mxf_path: &Path,
+    keys: &ContentKeys,
+    family: PictureEssenceFamily,
+) -> FrameBitrateStats {
+    let mut stats = FrameBitrateStats::default();
+
+    let Some(path) = mxf_path.to_str() else {
+        stats.error = "non-UTF-8 MXF path".into();
+        return stats;
+    };
+    let Some(mut reader) = PictureEssenceReader::open(path, family) else {
+        stats.error = "Failed to open picture essence".into();
+        return stats;
+    };
+    let Ok(descriptor) = reader.picture_descriptor() else {
+        stats.error = "Failed to read picture descriptor".into();
+        return stats;
+    };
+    let Ok(info) = reader.writer_info() else {
+        stats.error = "Failed to read the MXF writer info".into();
+        return stats;
+    };
+
+    let essence = keys.resolve(&info);
+    if essence.is_missing() {
+        stats.error = "Encrypted essence with no content key".into();
+        return stats;
+    }
+    let mut contexts = match essence.contexts() {
+        Ok(contexts) => contexts,
+        Err(e) => {
+            stats.error = e;
+            return stats;
+        }
+    };
+
+    stats.width = descriptor.stored_width;
+    stats.height = descriptor.stored_height;
+    stats.frame_rate =
         descriptor.edit_rate.numerator as f64 / descriptor.edit_rate.denominator.max(1) as f64;
-    if descriptor.container_duration == 0 || frame_rate <= 0.0 {
-        return None;
+    if descriptor.container_duration == 0 || stats.frame_rate <= 0.0 {
+        stats.error = "Invalid frame count or rate".into();
+        return stats;
     }
 
+    let eyes = reader.eyes();
     let mut buffer = vec![0u8; FRAME_BUFFER_BYTES];
-    let mut total_bytes = 0u64;
     let mut min_frame_bytes = u64::MAX;
-    let mut max_frame_bytes = 0u64;
-    let mut max_frame_index = 0u32;
     let mut frames_read = 0u32;
 
-    for index in 0..descriptor.container_duration {
-        let Ok(left) = reader.read_frame(index, StereoscopicPhase::Left, &mut buffer, None, None)
-        else {
-            break;
-        };
-        let Ok(right) = reader.read_frame(index, StereoscopicPhase::Right, &mut buffer, None, None)
-        else {
-            break;
-        };
-        let frame_bytes = (left + right) as u64;
-        total_bytes += frame_bytes;
-        if frame_bytes > max_frame_bytes {
-            max_frame_bytes = frame_bytes;
-            max_frame_index = index;
+    'edit_units: for index in 0..descriptor.container_duration {
+        let mut frame_bytes = 0u64;
+        for &eye in eyes {
+            let (dec, hmac) = match contexts.as_mut() {
+                Some(contexts) => (Some(&mut contexts.dec), Some(&mut contexts.hmac)),
+                None => (None, None),
+            };
+            let Ok(read) = reader.read_frame(index, eye, &mut buffer, dec, hmac) else {
+                break 'edit_units;
+            };
+            frame_bytes += read as u64;
+        }
+        stats.total_bytes += frame_bytes;
+        if frame_bytes > stats.max_frame_bytes {
+            stats.max_frame_bytes = frame_bytes;
+            stats.max_frame_index = index;
         }
         min_frame_bytes = min_frame_bytes.min(frame_bytes);
         frames_read += 1;
     }
 
     if frames_read == 0 {
-        return None;
+        stats.error = "No frames could be read".into();
+        return stats;
     }
 
-    let megabits_per_second = |bytes: f64| bytes * 8.0 * frame_rate / 1_000_000.0;
-    Some(FrameBitrateStats {
-        valid: true,
-        error: String::new(),
-        frame_count: frames_read,
-        width: descriptor.stored_width,
-        height: descriptor.stored_height,
-        frame_rate,
-        total_bytes,
-        min_frame_bytes,
-        max_frame_bytes,
-        max_frame_index,
-        avg_bitrate_mbps: megabits_per_second(total_bytes as f64 / frames_read as f64),
-        min_bitrate_mbps: megabits_per_second(min_frame_bytes as f64),
-        max_bitrate_mbps: megabits_per_second(max_frame_bytes as f64),
-    })
+    let megabits_per_second = |bytes: f64| bytes * 8.0 * stats.frame_rate / 1_000_000.0;
+    stats.frame_count = frames_read;
+    stats.min_frame_bytes = min_frame_bytes;
+    stats.avg_bitrate_mbps = megabits_per_second(stats.total_bytes as f64 / frames_read as f64);
+    stats.min_bitrate_mbps = megabits_per_second(min_frame_bytes as f64);
+    stats.max_bitrate_mbps = megabits_per_second(stats.max_frame_bytes as f64);
+    stats.valid = true;
+    stats
 }
 
 /// Check measured bitrate against the DCI peak limit. One limit at every
@@ -160,7 +193,7 @@ pub fn report_measured_bitrate(stats: &FrameBitrateStats, mxf_path: &Path) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asdcplib::jp2k::{MxfWriter, PictureDescriptor, StereoMxfWriter};
+    use asdcplib::jp2k::{MxfWriter, PictureDescriptor, StereoMxfWriter, StereoscopicPhase};
     use asdcplib::{LabelSet, Rational, WriterInfo};
 
     const FRAMES: u32 = 3;
@@ -246,7 +279,7 @@ mod tests {
     }
 
     fn measure(path: &Path) -> FrameBitrateStats {
-        let stats = analyze_picture_bitrate(path);
+        let stats = analyze_picture_bitrate(path, &ContentKeys::none());
         assert!(stats.valid, "analysis failed: {}", stats.error);
         stats
     }
@@ -359,6 +392,56 @@ mod tests {
         let notes = report_measured_bitrate(&stats, &path);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].severity, crate::Severity::Info);
+    }
+
+    /// Codestream shape of the encrypted fixture's frames, and the CPL its KDM is
+    /// issued for, which nothing here validates the package against.
+    const ENCRYPTED_DECOMPOSITION_LEVELS: u8 = 5;
+    const ENCRYPTED_PAYLOAD_BYTES: usize = 1_100_000;
+    const ENCRYPTED_CPL_ID: &str = "3c3c3c3c-0000-0000-0000-000000000000";
+
+    // an AES frame is longer than the codestream inside it, so reading ciphertext
+    // measures the wrapping rather than the essence.
+    #[test]
+    fn encrypted_as02_essence_measures_the_codestreams_not_the_ciphertext() {
+        let key_id = uuid::Uuid::new_v4();
+        let content_key = [0x9A; 16];
+        let (kdm, recipient_key, _wrong, _certs) =
+            crate::kdm::decrypt_tests::make_kdm(key_id, content_key, ENCRYPTED_CPL_ID);
+
+        let dir = tempfile::tempdir().unwrap();
+        let frames =
+            vec![(ENCRYPTED_DECOMPOSITION_LEVELS, ENCRYPTED_PAYLOAD_BYTES); FRAMES as usize];
+        let path = crate::j2k::frame_scan_tests::write_encrypted_as02_picture_mxf(
+            dir.path(),
+            "picture_as02_encrypted.mxf",
+            2048,
+            1080,
+            &frames,
+            key_id,
+            content_key,
+        );
+        let frame_bytes = crate::j2k::frame_scan_tests::as02_frame_bytes(
+            2048,
+            1080,
+            ENCRYPTED_DECOMPOSITION_LEVELS,
+            ENCRYPTED_PAYLOAD_BYTES,
+        ) as u64;
+
+        let keys = ContentKeys::from_kdm(&kdm, &recipient_key).expect("unwrap kdm");
+        let stats = analyze_picture_bitrate(&path, &keys);
+        assert!(stats.valid, "measurement failed: {}", stats.error);
+        assert_eq!(stats.frame_count, FRAMES);
+        assert_eq!(stats.max_frame_bytes, frame_bytes);
+
+        let without_key = analyze_picture_bitrate(&path, &ContentKeys::none());
+        assert!(
+            !without_key.valid,
+            "ciphertext frames must not be reported as a rate, got {} Mbps peak",
+            without_key.max_bitrate_mbps
+        );
+        assert!(report_measured_bitrate(&without_key, &path).is_empty());
+        assert!(check_bitrate_compliance(&without_key, &path).is_empty());
     }
 
     // 1_000_000 bytes per frame at 24 fps is 192 Mb/s, under the limit at any

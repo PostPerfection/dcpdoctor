@@ -16,15 +16,6 @@ citing no source, stricter than the document defining it. Neither is normative,
 and either would need the essence coding UL, which dcpdoctor does not read. Same
 note in postkit's DESIGN_TODO.
 
-## Encrypted IMF essence is read without keys
-
-The IMF path builds no content keys: `verify_imp` ignores `VerifyOptions.kdm`
-and `recipient_key`, so both the bitrate measurement and the codestream scan
-call the essence readers with an empty key set. An encrypted AS-02 track file
-therefore yields no forensics and no bitrate, silently, where a DCP with a KDM
-yields both. Closing it means resolving IMF content keys the way the DCP path
-does and threading them into `validate_essence_descriptors`.
-
 ## Photon has to be fetched, not built
 
 `bootstrap_photon` is gone (see Done, 2026-08-12). dcpdoctor now runs Photon only
@@ -44,6 +35,35 @@ the four codes already moved to ERROR (see "Severity escalations to spec" under
 Done).
 
 # Done
+
+## Encrypted IMF essence reads with the run's content keys (2026-08-17)
+
+`verify_imp` now takes the whole `VerifyOptions` and calls the same
+`build_content_keys` the DCP path calls, so `--kdm` plus `--recipient-key`
+reaches an IMP. No second resolver: the function's only change is that its
+directory argument is a package rather than a DCP, which the KDM's CPL-id lookup
+never cared about. The keys thread through `validate_imp` into
+`validate_essence_descriptors`, and an encrypted AS-02 picture track now yields
+the same peak/average INFO and the same codestream forensics a DCP with a KDM
+does.
+
+- `bitrate::analyze_picture_bitrate` takes the keys and walks frames through
+  `j2k::PictureEssenceReader`, the reader the codestream scan already used,
+  instead of postkit's `analyse_mxf_bitrate` / `analyse_as02_mxf_bitrate`. Those
+  take no decryption context, so they cannot measure an encrypted track, and
+  postkit is a dependency here rather than something to change. The local
+  stereoscopic walk this file carried is gone, folded into the one walk.
+- Encrypted essence with no covering key now measures nothing, on both paths.
+  asdcplib hands back ciphertext when no context is given, and an AES frame
+  carries an IV, a padding block and an integrity pack the codestream does not,
+  so the old measurement was of the wrapping. On a DCP that number fed the DCI
+  verdict, where a frame just under the cap could read as just over.
+- An encrypted picture track the run holds no key for is reported rather than
+  skipped in silence (`kdm_required`): INFO when no KDM was supplied, WARNING
+  when the KDM does not carry the track's KeyId, the split the timed-text pass
+  already used. The DCP path's own picture skip note is untouched.
+- `qc-report` still builds its forensics tables with no keys. Its options carry
+  no KDM, so an encrypted track has no table there.
 
 ## One DCI bitrate limit at every resolution (2026-08-12)
 

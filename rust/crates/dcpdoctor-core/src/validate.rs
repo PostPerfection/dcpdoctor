@@ -447,12 +447,7 @@ fn format_uuid(bytes: &[u8; 16]) -> String {
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
-        return verify_imp(
-            dcp_dir,
-            opts.ov.as_deref(),
-            opts.check_picture_details,
-            opts.scan_every_frame,
-        );
+        return verify_imp(dcp_dir, opts);
     }
 
     let mut result = VerifyResult::default();
@@ -980,7 +975,7 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     result.add(note);
                 }
 
-                let bitrate = crate::bitrate::analyze_picture_bitrate(&full_path);
+                let bitrate = crate::bitrate::analyze_picture_bitrate(&full_path, &content_keys);
                 for note in crate::bitrate::check_bitrate_compliance(&bitrate, &full_path) {
                     result.add(note);
                 }
@@ -1066,10 +1061,6 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     result
 }
 
-/// Build the content keys from `opts.kdm` + `opts.recipient_key`, adding any
-/// KDM window / CPL-match / unwrap-failure notes to `result`. Returns
-/// `ContentKeys::none()` when no KDM is supplied (or unwrap fails), so encrypted
-/// essence keeps skipping instead of producing garbage findings.
 /// True when an `EditRate` is one of the six ST 429-2 §8.1 composition rates.
 ///
 /// Compares the value, not the text: a CPL may write 48 2 for 24 fps, and
@@ -1091,8 +1082,13 @@ fn edit_rate_is_permitted(edit_rate: &str) -> bool {
         && PERMITTED_RATES.contains(&(numerator / denominator))
 }
 
+/// Build the content keys from `opts.kdm` + `opts.recipient_key`, adding any
+/// KDM window / CPL-match / unwrap-failure notes to `result`. Returns
+/// `ContentKeys::none()` when no KDM is supplied (or unwrap fails), so encrypted
+/// essence keeps skipping instead of producing garbage findings. Serves a DCP and
+/// an IMP alike: both are a directory of XML the KDM's CPL id is looked for in.
 fn build_content_keys(
-    dcp_dir: &Path,
+    package_dir: &Path,
     opts: &VerifyOptions,
     result: &mut VerifyResult,
 ) -> crate::kdm::ContentKeys {
@@ -1101,7 +1097,7 @@ fn build_content_keys(
     };
 
     // window (expired / not-yet-valid) + CPL-match checks (extends the validator)
-    for note in crate::kdm::validate_kdm(kdm_path, Some(dcp_dir)) {
+    for note in crate::kdm::validate_kdm(kdm_path, Some(package_dir)) {
         result.add(note);
     }
 
@@ -1142,19 +1138,24 @@ fn dcp_asset_ids(dir: &Path) -> HashSet<String> {
     }
 }
 
-fn verify_imp(
-    imp_dir: &Path,
-    ov_dir: Option<&Path>,
-    check_picture_details: bool,
-    scan_every_frame: bool,
-) -> VerifyResult {
+fn verify_imp(imp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     let mut result = VerifyResult {
         standard: crate::Standard::Smpte,
         ..Default::default()
     };
 
+    // same KDM handling as the DCP path: the window and CPL-match checks, then
+    // the content keys the encrypted-essence passes read AS-02 track files with.
+    let content_keys = build_content_keys(imp_dir, opts, &mut result);
+
     // Native IMF validation works everywhere including WASM.
-    for note in crate::imf::validate_imp(imp_dir, ov_dir, check_picture_details, scan_every_frame) {
+    for note in crate::imf::validate_imp(
+        imp_dir,
+        opts.ov.as_deref(),
+        opts.check_picture_details,
+        opts.scan_every_frame,
+        &content_keys,
+    ) {
         result.add(note);
     }
 

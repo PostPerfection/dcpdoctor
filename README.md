@@ -66,6 +66,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
   - Validity period checking (expired / not-yet-valid)
   - CPL reference cross-validation against DCP
   - Content title extraction
+- **Encrypted essence checks**: With `--kdm` and `--recipient-key` the essence checks decrypt and run, on a DCP's AS-DCP essence and an IMP's AS-02 track files alike. Without a key that covers a track, the checks that cannot run say so rather than passing quietly
 
 ### Dolby Atmos
 - **IAB detection**: Identifies Immersive Audio Bitstream essence via ffprobe (with an estimated object count)
@@ -275,7 +276,7 @@ dcpdoctor kdm /path/to/kdm.xml
 # Validate KDM against specific DCP
 dcpdoctor kdm /path/to/kdm.xml --dcp /path/to/dcp
 
-# Verify an encrypted DCP: decrypt essence with a KDM and run the full checks
+# Verify an encrypted DCP or IMP: decrypt essence with a KDM and run the full checks
 dcpdoctor validate /path/to/dcp --kdm /path/to/kdm.xml --recipient-key /path/to/private.pem
 ```
 

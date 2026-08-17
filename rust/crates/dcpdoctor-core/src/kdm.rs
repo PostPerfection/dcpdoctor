@@ -897,7 +897,7 @@ mod tests {
 // KDM for it, and prove the encrypted-essence checks skip without a KDM, fire on
 // decrypted essence with the right KDM, and fail loud on a wrong key / bad MIC.
 #[cfg(test)]
-mod decrypt_tests {
+pub(crate) mod decrypt_tests {
     use super::*;
     use postkit::certificate::{
         KdmConfig, KdmContentKey, KdmFormulation, build_kdm, generate_chain,
@@ -976,7 +976,7 @@ mod decrypt_tests {
 
     // Generate a cert chain and a KDM carrying `content_key` for `key_id`, bound to
     // the given (fake) CPL id. Returns (kdm_path, recipient_key, wrong_key, dir).
-    fn make_kdm(
+    pub(crate) fn make_kdm(
         key_id: uuid::Uuid,
         content_key: [u8; 16],
         cpl_id: &str,

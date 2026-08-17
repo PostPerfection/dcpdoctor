@@ -971,8 +971,8 @@ pub enum PictureEssenceFamily {
 
 /// A picture track's codestream reader: AS-DCP OP-Atom monoscopic essence, the
 /// stereoscopic form whose every edit unit carries a left and a right eye, or
-/// AS-02 essence.
-enum PictureEssenceReader {
+/// AS-02 essence. Shared with the bitrate walk, which reads the same frames.
+pub(crate) enum PictureEssenceReader {
     Monoscopic(MxfReader),
     Stereoscopic(StereoMxfReader),
     As02(As02MxfReader),
@@ -987,7 +987,7 @@ impl PictureEssenceReader {
     /// Open the essence with the readers its family wraps its picture in. The
     /// families do not fall through to each other: an OP-Atom file the AS-DCP
     /// reader rejects is a broken DCP asset, not an IMF one.
-    fn open(path: &str, family: PictureEssenceFamily) -> Option<Self> {
+    pub(crate) fn open(path: &str, family: PictureEssenceFamily) -> Option<Self> {
         if family == PictureEssenceFamily::Imf {
             let mut as02 = As02MxfReader::new();
             return as02.open_read(path).is_ok().then_some(Self::As02(as02));
@@ -1003,7 +1003,9 @@ impl PictureEssenceReader {
         None
     }
 
-    fn picture_descriptor(&mut self) -> asdcplib::Result<asdcplib::jp2k::PictureDescriptor> {
+    pub(crate) fn picture_descriptor(
+        &mut self,
+    ) -> asdcplib::Result<asdcplib::jp2k::PictureDescriptor> {
         match self {
             Self::Monoscopic(reader) => reader.picture_descriptor(),
             Self::Stereoscopic(reader) => reader.picture_descriptor(),
@@ -1011,7 +1013,7 @@ impl PictureEssenceReader {
         }
     }
 
-    fn writer_info(&mut self) -> asdcplib::Result<asdcplib::WriterInfo> {
+    pub(crate) fn writer_info(&mut self) -> asdcplib::Result<asdcplib::WriterInfo> {
         match self {
             Self::Monoscopic(reader) => reader.writer_info(),
             Self::Stereoscopic(reader) => reader.writer_info(),
@@ -1019,14 +1021,14 @@ impl PictureEssenceReader {
         }
     }
 
-    fn eyes(&self) -> &'static [StereoscopicPhase] {
+    pub(crate) fn eyes(&self) -> &'static [StereoscopicPhase] {
         match self {
             Self::Monoscopic(_) | Self::As02(_) => MONOSCOPIC_EYES,
             Self::Stereoscopic(_) => STEREOSCOPIC_EYES,
         }
     }
 
-    fn read_frame(
+    pub(crate) fn read_frame(
         &mut self,
         index: u32,
         eye: StereoscopicPhase,
@@ -1524,6 +1526,7 @@ pub(crate) mod frame_scan_tests {
     use super::cinema_tests::build_j2k;
     use super::*;
     use asdcplib::as02::jp2k::MxfWriter as As02MxfWriter;
+    use asdcplib::crypto::{AesEncContext, HmacContext};
     use asdcplib::jp2k::{MxfWriter, PictureDescriptor, StereoMxfWriter};
     use asdcplib::{LabelSet, Rational, WriterInfo};
 
@@ -1651,23 +1654,74 @@ pub(crate) mod frame_scan_tests {
         height: u32,
         frames: &[(u8, usize)],
     ) -> PathBuf {
+        write_as02(dir, name, width, height, frames, None)
+    }
+
+    /// The same, encrypted with `content_key` under `key_id` and HMAC-guarded, the
+    /// way asdcplib wraps an encrypted track file.
+    pub(crate) fn write_encrypted_as02_picture_mxf(
+        dir: &Path,
+        name: &str,
+        width: u32,
+        height: u32,
+        frames: &[(u8, usize)],
+        key_id: uuid::Uuid,
+        content_key: [u8; 16],
+    ) -> PathBuf {
+        write_as02(
+            dir,
+            name,
+            width,
+            height,
+            frames,
+            Some((key_id, content_key)),
+        )
+    }
+
+    /// Plaintext bytes in one fixture frame, which is the size the bitrate of an
+    /// encrypted track has to be measured from: its ciphertext frames are longer.
+    pub(crate) fn as02_frame_bytes(width: u32, height: u32, levels: u8, payload: usize) -> usize {
+        build_broadcast_j2k(width, height, levels, payload).len()
+    }
+
+    fn write_as02(
+        dir: &Path,
+        name: &str,
+        width: u32,
+        height: u32,
+        frames: &[(u8, usize)],
+        encryption: Option<(uuid::Uuid, [u8; 16])>,
+    ) -> PathBuf {
         let path = dir.join(name);
         let mut descriptor = fixture_descriptor(frames.len() as u32);
         descriptor.stored_width = width;
         descriptor.stored_height = height;
         descriptor.aspect_ratio = Rational::new(width as i32, height as i32);
+
+        let mut info = fixture_writer_info();
+        let mut crypto = encryption.map(|(key_id, content_key)| {
+            info.context_id = *uuid::Uuid::new_v4().as_bytes();
+            info.cryptographic_key_id = *key_id.as_bytes();
+            info.encrypted_essence = true;
+            info.uses_hmac = true;
+            let mut encrypt = AesEncContext::new();
+            encrypt.init_key(&content_key).unwrap();
+            let mut hmac = HmacContext::new();
+            hmac.init_key(&content_key, LabelSet::Smpte).unwrap();
+            (encrypt, hmac)
+        });
+
         let mut writer = As02MxfWriter::new();
         writer
-            .open_write(
-                path.to_str().unwrap(),
-                &fixture_writer_info(),
-                &descriptor,
-                16_384,
-            )
+            .open_write(path.to_str().unwrap(), &info, &descriptor, 16_384)
             .unwrap();
         for (levels, payload) in frames {
             let codestream = build_broadcast_j2k(width, height, *levels, *payload);
-            writer.write_frame(&codestream, None, None).unwrap();
+            let (encrypt, hmac) = match crypto.as_mut() {
+                Some((encrypt, hmac)) => (Some(encrypt), Some(hmac)),
+                None => (None, None),
+            };
+            writer.write_frame(&codestream, encrypt, hmac).unwrap();
         }
         writer.finalize().unwrap();
         path
