@@ -447,7 +447,12 @@ fn format_uuid(bytes: &[u8; 16]) -> String {
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
-        return verify_imp(dcp_dir, opts.ov.as_deref(), opts.check_picture_details);
+        return verify_imp(
+            dcp_dir,
+            opts.ov.as_deref(),
+            opts.check_picture_details,
+            opts.scan_every_frame,
+        );
     }
 
     let mut result = VerifyResult::default();
@@ -968,6 +973,7 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 let (codestream_notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
                     &full_path,
                     &content_keys,
+                    crate::j2k::PictureEssenceFamily::Cinema,
                     opts.scan_every_frame,
                 );
                 for note in codestream_notes {
@@ -1136,14 +1142,19 @@ fn dcp_asset_ids(dir: &Path) -> HashSet<String> {
     }
 }
 
-fn verify_imp(imp_dir: &Path, ov_dir: Option<&Path>, check_picture_details: bool) -> VerifyResult {
+fn verify_imp(
+    imp_dir: &Path,
+    ov_dir: Option<&Path>,
+    check_picture_details: bool,
+    scan_every_frame: bool,
+) -> VerifyResult {
     let mut result = VerifyResult {
         standard: crate::Standard::Smpte,
         ..Default::default()
     };
 
     // Native IMF validation works everywhere including WASM.
-    for note in crate::imf::validate_imp(imp_dir, ov_dir, check_picture_details) {
+    for note in crate::imf::validate_imp(imp_dir, ov_dir, check_picture_details, scan_every_frame) {
         result.add(note);
     }
 

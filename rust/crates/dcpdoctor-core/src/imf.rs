@@ -115,11 +115,13 @@ fn is_imf_composition_playlist(xml: &str) -> bool {
 /// tell a legitimate supplemental reference from a corrupt one without the OV.
 ///
 /// `check_picture_details` turns on the checks that read every picture frame,
-/// the same gate the DCP path puts them behind.
+/// the same gate the DCP path puts them behind, and `scan_every_frame` carries
+/// the codestream scan past frame 0 the way it does for a DCP.
 pub fn validate_imp(
     imp_dir: &Path,
     ov_dir: Option<&Path>,
     check_picture_details: bool,
+    scan_every_frame: bool,
 ) -> Vec<Note> {
     let mut notes = Vec::new();
 
@@ -182,7 +184,14 @@ pub fn validate_imp(
         validate_track_file_refs(&cpl, imp_dir, &ov_ids, ov_provided, cpl_path, &mut notes);
 
         // MXF essence validation (filesystem)
-        validate_essence_descriptors(&cpl, imp_dir, cpl_path, check_picture_details, &mut notes);
+        validate_essence_descriptors(
+            &cpl,
+            imp_dir,
+            cpl_path,
+            check_picture_details,
+            scan_every_frame,
+            &mut notes,
+        );
 
         // TTML subtitle tracks (filesystem)
         validate_ttml_tracks(&cpl, imp_dir, cpl_path, &mut notes);
@@ -263,6 +272,7 @@ fn validate_essence_descriptors(
     imp_dir: &Path,
     cpl_path: &Path,
     check_picture_details: bool,
+    scan_every_frame: bool,
     notes: &mut Vec<Note>,
 ) {
     let assetmap_path = imp_dir.join("ASSETMAP.xml");
@@ -318,6 +328,7 @@ fn validate_essence_descriptors(
                         &full_path,
                         cpl_path,
                         check_picture_details,
+                        scan_every_frame,
                         notes,
                     );
                 }
@@ -336,12 +347,21 @@ fn validate_picture_essence(
     mxf_path: &Path,
     _cpl_path: &Path,
     check_picture_details: bool,
+    scan_every_frame: bool,
     notes: &mut Vec<Note>,
 ) {
     // measured through asdcplib, so it runs even when ffprobe gave no descriptor
     if check_picture_details {
         let bitrate = crate::bitrate::analyze_picture_bitrate(mxf_path);
         notes.extend(crate::bitrate::report_measured_bitrate(&bitrate, mxf_path));
+
+        let (codestream_notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
+            mxf_path,
+            &crate::kdm::ContentKeys::none(),
+            crate::j2k::PictureEssenceFamily::Imf,
+            scan_every_frame,
+        );
+        notes.extend(codestream_notes);
     }
 
     let pic = match &mxf.picture {
@@ -1143,7 +1163,7 @@ mod tests {
             &[VIDEO_ID, AUDIO_ID],
         );
 
-        let notes = validate_imp(supp.path(), Some(ov.path()), false);
+        let notes = validate_imp(supp.path(), Some(ov.path()), false, false);
         assert!(
             !notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "OV must satisfy the video ref, got: {notes:?}"
@@ -1166,7 +1186,7 @@ mod tests {
             &[VIDEO_ID, AUDIO_ID],
         );
 
-        let notes = validate_imp(supp.path(), None, false);
+        let notes = validate_imp(supp.path(), None, false, false);
         assert!(
             !notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "no OV -> must not hard-fail as broken, got: {notes:?}"
@@ -1197,7 +1217,7 @@ mod tests {
             &["deadbeef-0000-0000-0000-000000000000", AUDIO_ID],
         );
 
-        let notes = validate_imp(supp.path(), Some(ov.path()), false);
+        let notes = validate_imp(supp.path(), Some(ov.path()), false, false);
         assert!(
             notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "a ref in neither package is a real break even with --ov, got: {notes:?}"
@@ -1248,7 +1268,7 @@ mod tests {
         );
         write_as02_picture(&imp.path().join(format!("{VIDEO_ID}.mxf")), 3, 500_000);
 
-        let measured = validate_imp(imp.path(), None, true);
+        let measured = validate_imp(imp.path(), None, true, false);
         let note = measured
             .iter()
             .find(|n| n.code == Code::PictureBitrateMeasured)
@@ -1256,12 +1276,63 @@ mod tests {
         assert_eq!(note.severity, Severity::Info);
         assert!(note.message.contains("96.0"), "{}", note.message);
 
-        let unmeasured = validate_imp(imp.path(), None, false);
+        let unmeasured = validate_imp(imp.path(), None, false, false);
         assert!(
             !unmeasured
                 .iter()
                 .any(|n| n.code == Code::PictureBitrateMeasured),
             "reading every frame stays behind the picture-details gate"
+        );
+    }
+
+    /// Decomposition levels the codestream forensics fixture holds constant.
+    const FIXTURE_DECOMPOSITION_LEVELS: u8 = 5;
+    const FIXTURE_PAYLOAD_BYTES: usize = 64;
+
+    #[test]
+    fn imp_picture_track_reports_its_codestream_summary_when_every_frame_is_scanned() {
+        let imp = tempfile::tempdir().unwrap();
+        write_imp(
+            imp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[VIDEO_ID, AUDIO_ID],
+            &[VIDEO_ID, AUDIO_ID],
+        );
+        let frames = vec![(FIXTURE_DECOMPOSITION_LEVELS, FIXTURE_PAYLOAD_BYTES); 4];
+        crate::j2k::frame_scan_tests::write_as02_picture_mxf(
+            imp.path(),
+            &format!("{VIDEO_ID}.mxf"),
+            1920,
+            1080,
+            &frames,
+        );
+
+        let scanned = validate_imp(imp.path(), None, true, true);
+        let summary = scanned
+            .iter()
+            .find(|n| n.code == Code::J2kCodestreamSummary)
+            .unwrap_or_else(|| panic!("expected a codestream summary, got: {scanned:?}"));
+        assert_eq!(summary.severity, Severity::Info);
+        assert!(
+            summary.message.contains("1920x1080")
+                && summary
+                    .message
+                    .contains("parameters identical across 4 frames"),
+            "{}",
+            summary.message
+        );
+        assert!(
+            !summary.message.contains("DCI cap"),
+            "IMF essence is held to no DCI cap, got: {}",
+            summary.message
+        );
+
+        let frame_zero_only = validate_imp(imp.path(), None, true, false);
+        assert!(
+            !frame_zero_only
+                .iter()
+                .any(|n| n.code == Code::J2kCodestreamSummary),
+            "the frame-0 scan has nothing to summarise"
         );
     }
 

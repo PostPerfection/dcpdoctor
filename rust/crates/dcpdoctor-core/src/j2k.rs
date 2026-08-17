@@ -7,6 +7,7 @@
 /// - Wavelet transform type
 /// - Component count and bit depth
 use crate::{Code, Note};
+use asdcplib::as02::jp2k::MxfReader as As02MxfReader;
 use asdcplib::jp2k::{MxfReader, StereoMxfReader, StereoscopicPhase};
 use dcpdoctor_parse::j2k::{
     COD, MarkerScan, QCD, SIZ, SOC, find_first_sot, main_header_segment, scan_markers, tile_parts,
@@ -732,7 +733,7 @@ pub struct ParameterDeviation {
 
 /// What one pass over a picture track's codestreams found: the parameters the
 /// first frame sets, every later frame that departs from them, and how close the
-/// fattest codestream comes to the DCI per-frame byte cap.
+/// fattest codestream comes to the DCI per-frame byte cap, where one applies.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CodestreamForensics {
     /// Codestreams read, which is two per edit unit on stereoscopic essence.
@@ -746,7 +747,8 @@ pub struct CodestreamForensics {
     pub max_tile_part_count_frame: u32,
     pub worst_frame_bytes: u64,
     pub worst_frame_index: u32,
-    pub dci_frame_byte_cap: u64,
+    /// The DCI per-frame byte cap this essence is held to. IMF essence has none.
+    pub dci_frame_byte_cap: Option<u64>,
     pub frames_over_dci_cap: u32,
 }
 
@@ -801,13 +803,13 @@ fn deviating_parameters(
 
 impl CodestreamForensics {
     /// Start a scan from the first frame's header. `frame_rate` drives the
-    /// timecodes and `codestream_rate` the DCI byte cap, which differ on
-    /// stereoscopic essence: two codestreams share one edit unit's budget.
+    /// timecodes, and `dci_frame_byte_cap` is the per-frame byte budget the
+    /// essence is held to, which IMF essence does not have.
     fn from_first_frame(
         header: &postkit::j2k::J2kHeader,
         frame_bytes: u64,
         frame_rate: u32,
-        codestream_rate: u32,
+        dci_frame_byte_cap: Option<u64>,
         stereoscopic: bool,
     ) -> Self {
         Self {
@@ -821,7 +823,7 @@ impl CodestreamForensics {
                 tlm_present: header.tlm_present,
                 poc_present: header.poc_present,
             },
-            dci_frame_byte_cap: postkit::j2k::dci_codestream_byte_cap(codestream_rate),
+            dci_frame_byte_cap,
             ..Default::default()
         }
     }
@@ -838,7 +840,7 @@ impl CodestreamForensics {
             self.worst_frame_bytes = frame_bytes;
             self.worst_frame_index = frame;
         }
-        if frame_bytes > self.dci_frame_byte_cap {
+        if self.dci_frame_byte_cap.is_some_and(|cap| frame_bytes > cap) {
             self.frames_over_dci_cap += 1;
         }
     }
@@ -859,12 +861,11 @@ impl CodestreamForensics {
         });
     }
 
-    /// Worst frame as a percentage of the DCI per-frame byte cap.
-    pub fn cap_percentage(&self) -> f64 {
-        if self.dci_frame_byte_cap == 0 {
-            return 0.0;
-        }
-        self.worst_frame_bytes as f64 * 100.0 / self.dci_frame_byte_cap as f64
+    /// Worst frame as a percentage of the DCI per-frame byte cap, for the
+    /// essence that has one.
+    pub fn cap_percentage(&self) -> Option<f64> {
+        let cap = self.dci_frame_byte_cap.filter(|cap| *cap > 0)?;
+        Some(self.worst_frame_bytes as f64 * 100.0 / cap as f64)
     }
 
     /// SMPTE timecode of the worst frame, at the picture edit rate.
@@ -915,8 +916,12 @@ impl CodestreamForensics {
         } else {
             String::new()
         };
+        let against_cap = match self.dci_frame_byte_cap.zip(self.cap_percentage()) {
+            Some((cap, percentage)) => format!(", {percentage:.0}% of the {cap} byte DCI cap"),
+            None => String::new(),
+        };
         format!(
-            "JPEG 2000 codestream: {}x{}, {}, {} decomposition levels, {codeblock_width}x{codeblock_height} code-blocks, {} tile(s), up to {} tile-parts, {}, {}, {}{}; {constancy}; worst frame {} bytes, {:.0}% of the {} byte DCI cap, at frame {} / {}{over_cap}",
+            "JPEG 2000 codestream: {}x{}, {}, {} decomposition levels, {codeblock_width}x{codeblock_height} code-blocks, {} tile(s), up to {} tile-parts, {}, {}, {}{}; {constancy}; worst frame {} bytes{against_cap}, at frame {} / {}{over_cap}",
             info.width,
             info.height,
             info.profile,
@@ -940,8 +945,6 @@ impl CodestreamForensics {
             },
             if self.stereoscopic { ", both eyes" } else { "" },
             self.worst_frame_bytes,
-            self.cap_percentage(),
-            self.dci_frame_byte_cap,
             self.worst_frame_index,
             self.worst_frame_timecode(),
         )
@@ -955,11 +958,24 @@ struct PictureScanState {
     forensics: CodestreamForensics,
 }
 
-/// A picture track's codestream reader: AS-DCP OP-Atom monoscopic essence, or the
-/// stereoscopic form whose every edit unit carries a left and a right eye.
+/// Which package a picture track belongs to, which decides both the reader its
+/// essence is opened with and the per-frame rules it is held to: the DCI cinema
+/// constraints apply to a DCP and to nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PictureEssenceFamily {
+    /// A DCP's AS-DCP OP-Atom essence, monoscopic or stereoscopic.
+    Cinema,
+    /// An IMP's AS-02 essence, which is monoscopic.
+    Imf,
+}
+
+/// A picture track's codestream reader: AS-DCP OP-Atom monoscopic essence, the
+/// stereoscopic form whose every edit unit carries a left and a right eye, or
+/// AS-02 essence.
 enum PictureEssenceReader {
     Monoscopic(MxfReader),
     Stereoscopic(StereoMxfReader),
+    As02(As02MxfReader),
 }
 
 /// The eyes to read per edit unit. The monoscopic reader ignores the phase.
@@ -968,7 +984,14 @@ const STEREOSCOPIC_EYES: &[StereoscopicPhase] =
     &[StereoscopicPhase::Left, StereoscopicPhase::Right];
 
 impl PictureEssenceReader {
-    fn open(path: &str) -> Option<Self> {
+    /// Open the essence with the readers its family wraps its picture in. The
+    /// families do not fall through to each other: an OP-Atom file the AS-DCP
+    /// reader rejects is a broken DCP asset, not an IMF one.
+    fn open(path: &str, family: PictureEssenceFamily) -> Option<Self> {
+        if family == PictureEssenceFamily::Imf {
+            let mut as02 = As02MxfReader::new();
+            return as02.open_read(path).is_ok().then_some(Self::As02(as02));
+        }
         let mut monoscopic = MxfReader::new();
         if monoscopic.open_read(path).is_ok() {
             return Some(Self::Monoscopic(monoscopic));
@@ -984,6 +1007,7 @@ impl PictureEssenceReader {
         match self {
             Self::Monoscopic(reader) => reader.picture_descriptor(),
             Self::Stereoscopic(reader) => reader.picture_descriptor(),
+            Self::As02(reader) => reader.picture_descriptor(),
         }
     }
 
@@ -991,12 +1015,13 @@ impl PictureEssenceReader {
         match self {
             Self::Monoscopic(reader) => reader.writer_info(),
             Self::Stereoscopic(reader) => reader.writer_info(),
+            Self::As02(reader) => reader.writer_info(),
         }
     }
 
     fn eyes(&self) -> &'static [StereoscopicPhase] {
         match self {
-            Self::Monoscopic(_) => MONOSCOPIC_EYES,
+            Self::Monoscopic(_) | Self::As02(_) => MONOSCOPIC_EYES,
             Self::Stereoscopic(_) => STEREOSCOPIC_EYES,
         }
     }
@@ -1012,15 +1037,18 @@ impl PictureEssenceReader {
         match self {
             Self::Monoscopic(reader) => reader.read_frame(index, buffer, decrypt, hmac),
             Self::Stereoscopic(reader) => reader.read_frame(index, eye, buffer, decrypt, hmac),
+            Self::As02(reader) => reader.read_frame(index, buffer, decrypt, hmac),
         }
     }
 }
 
-/// Read a picture MXF's codestreams and run every per-frame check on each: the
-/// 0xFFFF legacy-decoder constraint (DoM #2740), the ISO 15444-1 cinema profile
-/// constraints (DoM #2451/#1664, TLM and POC placement included) and the RDD 52
-/// guard-bit rule (DoM #2984). The same pass collects the codestream forensics,
-/// which is what the report section and the INFO summary are built from.
+/// Read a picture MXF's codestreams and run every per-frame check on each. On
+/// `Cinema` essence that is the 0xFFFF legacy-decoder constraint (DoM #2740),
+/// the ISO 15444-1 cinema profile constraints (DoM #2451/#1664, TLM and POC
+/// placement included) and the RDD 52 guard-bit rule (DoM #2984); none of the
+/// three applies to `Imf` essence, which is not encoded to the cinema profile.
+/// The same pass collects the codestream forensics for both families, which is
+/// what the report section and the INFO summary are built from.
 ///
 /// `scan_every_frame` false reads only frame 0, which catches an encoder that was
 /// wrong for the whole asset; reading the rest is what catches a stream that goes
@@ -1031,13 +1059,14 @@ impl PictureEssenceReader {
 pub fn check_picture_j2k_mxf(
     path: &Path,
     keys: &crate::kdm::ContentKeys,
+    family: PictureEssenceFamily,
     scan_every_frame: bool,
 ) -> (Vec<Note>, Option<CodestreamForensics>) {
     let mut notes = Vec::new();
     let Some(s) = path.to_str() else {
         return (notes, None);
     };
-    let Some(mut reader) = PictureEssenceReader::open(s) else {
+    let Some(mut reader) = PictureEssenceReader::open(s, family) else {
         return (notes, None);
     };
     let Ok(desc) = reader.picture_descriptor() else {
@@ -1071,6 +1100,10 @@ pub fn check_picture_j2k_mxf(
         edit_rate
     };
     let eyes = reader.eyes();
+    let cinema = family == PictureEssenceFamily::Cinema;
+    // ST 2067-21 sets no per-frame byte budget on IMF picture essence
+    let dci_frame_byte_cap =
+        cinema.then(|| postkit::j2k::dci_codestream_byte_cap(codestream_rate.round() as u32));
     let frames = if scan_every_frame {
         desc.container_duration
     } else {
@@ -1112,31 +1145,33 @@ pub fn check_picture_j2k_mxf(
             }
             scanned += 1;
 
-            if let Some(offset) = detect_legacy_ffff(frame) {
-                findings.record(
-                    i,
-                    Note::warning(
-                        Code::J2kLegacyFfff,
-                        format!(
-                            "JPEG 2000 codestream triggers the 0xFFFF legacy-decoder error condition (SMPTE Cat. 862) at byte offset {offset}"
+            if cinema {
+                if let Some(offset) = detect_legacy_ffff(frame) {
+                    findings.record(
+                        i,
+                        Note::warning(
+                            Code::J2kLegacyFfff,
+                            format!(
+                                "JPEG 2000 codestream triggers the 0xFFFF legacy-decoder error condition (SMPTE Cat. 862) at byte offset {offset}"
+                            ),
                         ),
-                    ),
-                );
-            }
-            if let Some((expected, actual)) = guard_bit_violation(frame, width) {
-                let profile = if width > 2048 { "4K" } else { "2K" };
-                findings.record(
-                    i,
-                    Note::error(
-                        Code::J2kGuardBits,
-                        format!(
-                            "JPEG 2000 QCD declares {actual} guard bit(s); SMPTE RDD 52 requires {expected} for {profile}"
+                    );
+                }
+                if let Some((expected, actual)) = guard_bit_violation(frame, width) {
+                    let profile = if width > 2048 { "4K" } else { "2K" };
+                    findings.record(
+                        i,
+                        Note::error(
+                            Code::J2kGuardBits,
+                            format!(
+                                "JPEG 2000 QCD declares {actual} guard bit(s); SMPTE RDD 52 requires {expected} for {profile}"
+                            ),
                         ),
-                    ),
-                );
-            }
-            for note in validate_cinema_j2k(frame, codestream_rate) {
-                findings.record(i, note);
+                    );
+                }
+                for note in validate_cinema_j2k(frame, codestream_rate) {
+                    findings.record(i, note);
+                }
             }
 
             if let Some(header) = postkit::j2k::parse_j2k_header(frame) {
@@ -1146,7 +1181,7 @@ pub fn check_picture_j2k_mxf(
                         &header,
                         n as u64,
                         timecode_rate,
-                        codestream_rate.round() as u32,
+                        dci_frame_byte_cap,
                         stereoscopic,
                     ),
                 });
@@ -1488,6 +1523,7 @@ mod cinema_tests {
 pub(crate) mod frame_scan_tests {
     use super::cinema_tests::build_j2k;
     use super::*;
+    use asdcplib::as02::jp2k::MxfWriter as As02MxfWriter;
     use asdcplib::jp2k::{MxfWriter, PictureDescriptor, StereoMxfWriter};
     use asdcplib::{LabelSet, Rational, WriterInfo};
 
@@ -1584,6 +1620,59 @@ pub(crate) mod frame_scan_tests {
         path
     }
 
+    /// Broadcast-profile RSIZ, what an IMF codestream declares instead of one of
+    /// the cinema profiles, and the guard-bit count RDD 52 forbids at 2K, so a
+    /// DCP scan of the same codestream has something to reject.
+    const BROADCAST_PROFILE_RSIZ: u16 = 0x0102;
+    const NON_CINEMA_GUARD_BITS: u8 = 0;
+
+    /// A broadcast-profile codestream of `payload` bytes in its single tile-part,
+    /// declaring `levels` decomposition levels.
+    fn build_broadcast_j2k(width: u32, height: u32, levels: u8, payload: usize) -> Vec<u8> {
+        let mut codestream = build_j2k(
+            BROADCAST_PROFILE_RSIZ,
+            width,
+            height,
+            width,
+            height,
+            NON_CINEMA_GUARD_BITS,
+            &[payload],
+        );
+        set_decomposition_levels(&mut codestream, levels);
+        codestream
+    }
+
+    /// An AS-02 picture MXF, the wrapping an IMP carries, one broadcast-profile
+    /// codestream per entry in `frames`.
+    pub(crate) fn write_as02_picture_mxf(
+        dir: &Path,
+        name: &str,
+        width: u32,
+        height: u32,
+        frames: &[(u8, usize)],
+    ) -> PathBuf {
+        let path = dir.join(name);
+        let mut descriptor = fixture_descriptor(frames.len() as u32);
+        descriptor.stored_width = width;
+        descriptor.stored_height = height;
+        descriptor.aspect_ratio = Rational::new(width as i32, height as i32);
+        let mut writer = As02MxfWriter::new();
+        writer
+            .open_write(
+                path.to_str().unwrap(),
+                &fixture_writer_info(),
+                &descriptor,
+                16_384,
+            )
+            .unwrap();
+        for (levels, payload) in frames {
+            let codestream = build_broadcast_j2k(width, height, *levels, *payload);
+            writer.write_frame(&codestream, None, None).unwrap();
+        }
+        writer.finalize().unwrap();
+        path
+    }
+
     /// The same, stereoscopic: every edit unit carries a left and a right eye.
     fn write_stereoscopic_mxf(dir: &Path, edit_units: u32) -> PathBuf {
         let path = dir.join("pic_3d.mxf");
@@ -1637,7 +1726,8 @@ pub(crate) mod frame_scan_tests {
         let mxf = write_mxf(dir.path());
         let keys = crate::kdm::ContentKeys::none();
 
-        let (first_frame_only, _) = check_picture_j2k_mxf(&mxf, &keys, false);
+        let (first_frame_only, _) =
+            check_picture_j2k_mxf(&mxf, &keys, PictureEssenceFamily::Cinema, false);
         assert!(
             !first_frame_only
                 .iter()
@@ -1645,7 +1735,8 @@ pub(crate) mod frame_scan_tests {
             "frame 0 conforms, so the cheap scan must stay silent, got: {first_frame_only:?}"
         );
 
-        let (whole_asset, _) = check_picture_j2k_mxf(&mxf, &keys, true);
+        let (whole_asset, _) =
+            check_picture_j2k_mxf(&mxf, &keys, PictureEssenceFamily::Cinema, true);
         let guard_bits: Vec<_> = whole_asset
             .iter()
             .filter(|n| n.code == Code::J2kGuardBits)
@@ -1671,7 +1762,8 @@ pub(crate) mod frame_scan_tests {
         let mxf = write_picture_mxf(dir.path(), "varying.mxf", &deviating_frames());
         let keys = crate::kdm::ContentKeys::none();
 
-        let (notes, forensics) = check_picture_j2k_mxf(&mxf, &keys, true);
+        let (notes, forensics) =
+            check_picture_j2k_mxf(&mxf, &keys, PictureEssenceFamily::Cinema, true);
         let forensics = forensics.expect("a readable picture track yields forensics");
 
         assert_eq!(forensics.frames_scanned, 5, "every frame is scanned");
@@ -1697,7 +1789,7 @@ pub(crate) mod frame_scan_tests {
         assert_eq!(forensics.max_tile_part_count, 3);
         assert_eq!(
             forensics.dci_frame_byte_cap,
-            postkit::j2k::dci_codestream_byte_cap(24)
+            Some(postkit::j2k::dci_codestream_byte_cap(24))
         );
         assert_eq!(forensics.frames_over_dci_cap, 0);
 
@@ -1720,8 +1812,12 @@ pub(crate) mod frame_scan_tests {
         let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, FIXTURE_PAYLOAD_BYTES); 5];
         let mxf = write_picture_mxf(dir.path(), "constant.mxf", &frames);
 
-        let (notes, forensics) =
-            check_picture_j2k_mxf(&mxf, &crate::kdm::ContentKeys::none(), true);
+        let (notes, forensics) = check_picture_j2k_mxf(
+            &mxf,
+            &crate::kdm::ContentKeys::none(),
+            PictureEssenceFamily::Cinema,
+            true,
+        );
         let forensics = forensics.expect("a readable picture track yields forensics");
 
         assert!(
@@ -1742,7 +1838,7 @@ pub(crate) mod frame_scan_tests {
         let mxf = write_picture_mxf(dir.path(), "summary.mxf", &frames);
         let keys = crate::kdm::ContentKeys::none();
 
-        let (notes, _) = check_picture_j2k_mxf(&mxf, &keys, true);
+        let (notes, _) = check_picture_j2k_mxf(&mxf, &keys, PictureEssenceFamily::Cinema, true);
         let summary = notes
             .iter()
             .find(|n| n.code == Code::J2kCodestreamSummary)
@@ -1768,10 +1864,152 @@ pub(crate) mod frame_scan_tests {
             );
         }
 
-        let (cheap, _) = check_picture_j2k_mxf(&mxf, &keys, false);
+        let (cheap, _) = check_picture_j2k_mxf(&mxf, &keys, PictureEssenceFamily::Cinema, false);
         assert!(
             !cheap.iter().any(|n| n.code == Code::J2kCodestreamSummary),
             "the frame-0 scan has nothing to summarise, got: {cheap:?}"
+        );
+    }
+
+    /// IMF picture resolution the DCP path has no profile for.
+    const IMF_WIDTH: u32 = 1920;
+    const IMF_HEIGHT: u32 = 1080;
+
+    #[test]
+    fn a_parameter_change_partway_through_as02_essence_is_reported_with_its_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let mxf = write_as02_picture_mxf(
+            dir.path(),
+            "varying_as02.mxf",
+            IMF_WIDTH,
+            IMF_HEIGHT,
+            &deviating_frames(),
+        );
+
+        let (notes, forensics) = check_picture_j2k_mxf(
+            &mxf,
+            &crate::kdm::ContentKeys::none(),
+            PictureEssenceFamily::Imf,
+            true,
+        );
+        let forensics = forensics.expect("a readable AS-02 picture track yields forensics");
+
+        assert_eq!(forensics.frames_scanned, 5, "every frame is scanned");
+        assert_eq!(forensics.deviations.len(), 1, "{:?}", forensics.deviations);
+        let deviation = &forensics.deviations[0];
+        assert_eq!(deviation.parameter, "num_decomp_levels");
+        assert_eq!(deviation.first_frame, BAD_FRAME);
+        assert_eq!(deviation.frames, 1);
+        assert_eq!(forensics.worst_frame_index, 1, "frame 1 is the fat one");
+        assert_eq!(forensics.dci_frame_byte_cap, None, "no DCI cap for IMF");
+
+        let varying: Vec<_> = notes
+            .iter()
+            .filter(|n| n.code == Code::J2kParametersVary)
+            .collect();
+        assert_eq!(varying.len(), 1, "one note for the asset, got: {notes:?}");
+        assert!(
+            varying[0].message.contains("num_decomp_levels")
+                && varying[0].message.contains(&format!("frame {BAD_FRAME}")),
+            "the warning must name the parameter and the first frame, got: {}",
+            varying[0].message
+        );
+    }
+
+    #[test]
+    fn constant_as02_essence_draws_no_cinema_profile_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, FIXTURE_PAYLOAD_BYTES); 5];
+        let mxf = write_as02_picture_mxf(
+            dir.path(),
+            "constant_as02.mxf",
+            IMF_WIDTH,
+            IMF_HEIGHT,
+            &frames,
+        );
+
+        // the same codestream fails the cinema checks, so silence here is the
+        // family gate and not a stream that happens to conform
+        let codestream = build_broadcast_j2k(
+            IMF_WIDTH,
+            IMF_HEIGHT,
+            CONFORMANT_DECOMPOSITION_LEVELS,
+            FIXTURE_PAYLOAD_BYTES,
+        );
+        assert!(
+            !validate_cinema_j2k(&codestream, 24.0).is_empty(),
+            "the fixture codestream must be one a DCP scan rejects"
+        );
+        assert!(
+            guard_bit_violation(&codestream, IMF_WIDTH).is_some(),
+            "the fixture codestream must break the RDD 52 guard-bit rule"
+        );
+
+        let (notes, forensics) = check_picture_j2k_mxf(
+            &mxf,
+            &crate::kdm::ContentKeys::none(),
+            PictureEssenceFamily::Imf,
+            true,
+        );
+        let forensics = forensics.expect("a readable AS-02 picture track yields forensics");
+
+        assert!(
+            forensics.deviations.is_empty(),
+            "{:?}",
+            forensics.deviations
+        );
+        let unexpected: Vec<_> = notes
+            .iter()
+            .filter(|n| n.code != Code::J2kCodestreamSummary)
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "IMF essence gets the summary and nothing else, got: {unexpected:?}"
+        );
+    }
+
+    #[test]
+    fn the_imf_summary_note_reports_no_dci_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, FIXTURE_PAYLOAD_BYTES); 5];
+        let mxf = write_as02_picture_mxf(
+            dir.path(),
+            "summary_as02.mxf",
+            IMF_WIDTH,
+            IMF_HEIGHT,
+            &frames,
+        );
+
+        let (notes, _) = check_picture_j2k_mxf(
+            &mxf,
+            &crate::kdm::ContentKeys::none(),
+            PictureEssenceFamily::Imf,
+            true,
+        );
+        let summary = notes
+            .iter()
+            .find(|n| n.code == Code::J2kCodestreamSummary)
+            .expect("the whole-asset scan reports a summary");
+        assert_eq!(summary.severity, crate::Severity::Info);
+        for expected in [
+            "1920x1080",
+            "Broadcast Profile (RSIZ=0x0102)",
+            "5 decomposition levels",
+            "1 tile(s)",
+            "up to 1 tile-parts",
+            "parameters identical across 5 frames",
+            "at frame 0 / 00:00:00:00",
+        ] {
+            assert!(
+                summary.message.contains(expected),
+                "summary must carry {expected:?}, got: {}",
+                summary.message
+            );
+        }
+        assert!(
+            !summary.message.contains("DCI cap"),
+            "IMF essence is held to no DCI cap, got: {}",
+            summary.message
         );
     }
 
@@ -1781,8 +2019,12 @@ pub(crate) mod frame_scan_tests {
         let edit_units = 4;
         let mxf = write_stereoscopic_mxf(dir.path(), edit_units);
 
-        let (notes, forensics) =
-            check_picture_j2k_mxf(&mxf, &crate::kdm::ContentKeys::none(), true);
+        let (notes, forensics) = check_picture_j2k_mxf(
+            &mxf,
+            &crate::kdm::ContentKeys::none(),
+            PictureEssenceFamily::Cinema,
+            true,
+        );
         let forensics = forensics.expect("stereoscopic picture essence yields forensics");
 
         assert!(forensics.stereoscopic);
@@ -1794,7 +2036,7 @@ pub(crate) mod frame_scan_tests {
         assert!(forensics.deviations.is_empty(), "both eyes match frame 0");
         assert_eq!(
             forensics.dci_frame_byte_cap,
-            postkit::j2k::dci_codestream_byte_cap(48),
+            Some(postkit::j2k::dci_codestream_byte_cap(48)),
             "each eye gets half an edit unit's byte cap"
         );
         assert!(

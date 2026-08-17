@@ -16,6 +16,15 @@ citing no source, stricter than the document defining it. Neither is normative,
 and either would need the essence coding UL, which dcpdoctor does not read. Same
 note in postkit's DESIGN_TODO.
 
+## Encrypted IMF essence is read without keys
+
+The IMF path builds no content keys: `verify_imp` ignores `VerifyOptions.kdm`
+and `recipient_key`, so both the bitrate measurement and the codestream scan
+call the essence readers with an empty key set. An encrypted AS-02 track file
+therefore yields no forensics and no bitrate, silently, where a DCP with a KDM
+yields both. Closing it means resolving IMF content keys the way the DCP path
+does and threading them into `validate_essence_descriptors`.
+
 ## Photon has to be fetched, not built
 
 `bootstrap_photon` is gone (see Done, 2026-08-12). dcpdoctor now runs Photon only

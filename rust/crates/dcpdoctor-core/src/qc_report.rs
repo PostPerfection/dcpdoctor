@@ -118,14 +118,23 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
 
     // Codestream forensics per picture essence, if requested
     if opts.include_codestream_forensics {
+        let family = if crate::imf::is_imf_package(&opts.imp_dir) {
+            crate::j2k::PictureEssenceFamily::Imf
+        } else {
+            crate::j2k::PictureEssenceFamily::Cinema
+        };
         let mut sections = String::new();
         for t in &tracks {
             if t.track_type != "essence" {
                 continue;
             }
             let path = opts.imp_dir.join(&t.filename);
-            let (_notes, forensics) =
-                crate::j2k::check_picture_j2k_mxf(&path, &crate::kdm::ContentKeys::none(), true);
+            let (_notes, forensics) = crate::j2k::check_picture_j2k_mxf(
+                &path,
+                &crate::kdm::ContentKeys::none(),
+                family,
+                true,
+            );
             // sound and unreadable essence yield nothing to report
             let Some(forensics) = forensics else {
                 continue;
@@ -213,7 +222,21 @@ fn codestream_forensics_table(forensics: &crate::j2k::CodestreamForensics) -> St
     let info = &reference.info;
     let (codeblock_width, codeblock_height) = info.codeblock_size();
     let present = |yes: bool| if yes { "present" } else { "absent" }.to_string();
-    let rows = [
+    let worst_frame = match forensics.dci_frame_byte_cap.zip(forensics.cap_percentage()) {
+        Some((cap, percentage)) => format!(
+            "{} bytes, {percentage:.0}% of the {cap} byte DCI cap, at frame {} / {}",
+            forensics.worst_frame_bytes,
+            forensics.worst_frame_index,
+            forensics.worst_frame_timecode()
+        ),
+        None => format!(
+            "{} bytes at frame {} / {}",
+            forensics.worst_frame_bytes,
+            forensics.worst_frame_index,
+            forensics.worst_frame_timecode()
+        ),
+    };
+    let mut rows: Vec<(&str, String)> = vec![
         ("Resolution", format!("{}x{}", info.width, info.height)),
         ("Profile", info.profile.clone()),
         (
@@ -270,23 +293,16 @@ fn codestream_forensics_table(forensics: &crate::j2k::CodestreamForensics) -> St
                 }
             ),
         ),
-        (
-            "Worst frame",
-            format!(
-                "{} bytes, {:.0}% of the {} byte DCI cap, at frame {} / {}",
-                forensics.worst_frame_bytes,
-                forensics.cap_percentage(),
-                forensics.dci_frame_byte_cap,
-                forensics.worst_frame_index,
-                forensics.worst_frame_timecode()
-            ),
-        ),
-        (
+        ("Worst frame", worst_frame),
+    ];
+    // IMF essence has no DCI cap, so the row would only report a zero
+    if forensics.dci_frame_byte_cap.is_some() {
+        rows.push((
             "Frames over the DCI cap",
             forensics.frames_over_dci_cap.to_string(),
-        ),
-        ("Parameters constant", forensics.parameters_constant_text()),
-    ];
+        ));
+    }
+    rows.push(("Parameters constant", forensics.parameters_constant_text()));
 
     let mut table = String::from("<table>\n");
     for (name, value) in rows {
@@ -364,6 +380,57 @@ mod tests {
         ] {
             assert!(html.contains(expected), "report must carry {expected:?}");
         }
+    }
+
+    /// Resolution of the IMF picture fixture, which is not a DCI one.
+    const IMF_WIDTH: u32 = 1920;
+    const IMF_HEIGHT: u32 = 1080;
+
+    /// The least that makes a directory read as an IMP: a CPL in the ST 2067-3
+    /// namespace next to the track files.
+    fn write_imf_composition_playlist(dir: &std::path::Path) {
+        std::fs::write(
+            dir.join("CPL.xml"),
+            r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:1a1a1a1a-0000-0000-0000-000000000000</Id>
+</CompositionPlaylist>"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_imf_forensics_section_leaves_out_the_dci_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        write_imf_composition_playlist(dir.path());
+        let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, PAYLOAD_BYTES); 3];
+        crate::j2k::frame_scan_tests::write_as02_picture_mxf(
+            dir.path(),
+            "picture.mxf",
+            IMF_WIDTH,
+            IMF_HEIGHT,
+            &frames,
+        );
+
+        let output = dir.path().join("report.html");
+        let result = generate_detailed_qc(&DetailedQcOptions {
+            imp_dir: dir.path().to_path_buf(),
+            output_file: output.clone(),
+            title: "Forensics".into(),
+            client: String::new(),
+            include_loudness: false,
+            include_codestream_forensics: true,
+        });
+        assert!(result.success, "report failed: {}", result.error);
+
+        let html = std::fs::read_to_string(&output).unwrap();
+        assert!(html.contains("<h2>Codestream forensics</h2>"));
+        assert!(html.contains("<td>1920x1080</td>"));
+        assert!(html.contains("<th>Parameters constant</th><td>yes</td>"));
+        assert!(
+            !html.contains("DCI cap"),
+            "IMF essence is held to no DCI cap: {html}"
+        );
     }
 
     #[test]

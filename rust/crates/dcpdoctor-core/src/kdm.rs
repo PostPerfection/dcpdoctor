@@ -1191,8 +1191,12 @@ mod decrypt_tests {
         let mxf = dir.path().join("pic.mxf");
         write_encrypted_mxf(&mxf, uuid::Uuid::new_v4(), [0x11; 16], 0);
 
-        let (notes, _forensics) =
-            crate::j2k::check_picture_j2k_mxf(&mxf, &ContentKeys::none(), true);
+        let (notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
+            &mxf,
+            &ContentKeys::none(),
+            crate::j2k::PictureEssenceFamily::Cinema,
+            true,
+        );
         assert!(
             notes.is_empty(),
             "encrypted essence must skip without a KDM, got: {notes:?}"
@@ -1212,7 +1216,12 @@ mod decrypt_tests {
         write_encrypted_mxf(&mxf, key_id, content_key, 0);
 
         let keys = ContentKeys::from_kdm(&kdm_path, &recipient_key).expect("unwrap kdm");
-        let (notes, _forensics) = crate::j2k::check_picture_j2k_mxf(&mxf, &keys, true);
+        let (notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
+            &mxf,
+            &keys,
+            crate::j2k::PictureEssenceFamily::Cinema,
+            true,
+        );
         assert!(
             notes.iter().any(|n| n.code == Code::J2kGuardBits),
             "planted guard-bit violation must fire on decrypted essence, got: {notes:?}"
@@ -1247,7 +1256,12 @@ mod decrypt_tests {
         write_encrypted_mxf(&mxf, key_id, [0xCD; 16], 1);
 
         let keys = ContentKeys::from_kdm(&kdm_path, &recipient_key).expect("unwrap kdm");
-        let (notes, _forensics) = crate::j2k::check_picture_j2k_mxf(&mxf, &keys, true);
+        let (notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
+            &mxf,
+            &keys,
+            crate::j2k::PictureEssenceFamily::Cinema,
+            true,
+        );
         assert!(
             notes.iter().any(|n| n.code == Code::MxfHashMismatch),
             "a mismatched content key must fail the MIC, got: {notes:?}"
