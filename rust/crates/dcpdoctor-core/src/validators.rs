@@ -239,8 +239,9 @@ pub fn check_assetmap_chunk_size(
 
 // ─── Encryption Detection ─────────────────────────────────────────────────────
 
-/// Check CPLs for encrypted content and whether a KDM is present.
-pub fn check_encryption(dcp_dir: &Path, cpl_paths: &[PathBuf]) -> Vec<Note> {
+/// Check CPLs for encrypted content and whether a KDM is present, either
+/// supplied to the run or lying in the package directory.
+pub fn check_encryption(dcp_dir: &Path, cpl_paths: &[PathBuf], kdm_supplied: bool) -> Vec<Note> {
     let mut notes = Vec::new();
 
     for cpl_path in cpl_paths {
@@ -262,8 +263,7 @@ pub fn check_encryption(dcp_dir: &Path, cpl_paths: &[PathBuf]) -> Vec<Note> {
                 line: 0,
             });
 
-            // Check for KDM in the DCP directory
-            let kdm_found = std::fs::read_dir(dcp_dir)
+            let kdm_in_package = std::fs::read_dir(dcp_dir)
                 .map(|entries| {
                     entries.flatten().any(|e| {
                         let name = e.file_name().to_string_lossy().to_lowercase();
@@ -272,11 +272,12 @@ pub fn check_encryption(dcp_dir: &Path, cpl_paths: &[PathBuf]) -> Vec<Note> {
                 })
                 .unwrap_or(false);
 
-            if !kdm_found {
+            if !kdm_supplied && !kdm_in_package {
                 notes.push(Note {
                     severity: Severity::Info,
                     code: Code::KdmRequired,
-                    message: "No KDM file found in DCP directory for encrypted content".into(),
+                    message: "No KDM supplied or found in the DCP directory for encrypted content"
+                        .into(),
                     file: Some(cpl_path.clone()),
                     line: 0,
                 });
@@ -4918,6 +4919,24 @@ mod tests {
             key(picture),
             key(sound)
         ))
+    }
+
+    /// A KDM handed to the run counts as much as one lying in the package.
+    #[test]
+    fn a_supplied_kdm_satisfies_the_kdm_required_check() {
+        let cpl = encryption_cpl(true, true);
+        let dir = cpl.path().parent().unwrap().to_path_buf();
+        let paths = vec![cpl.path().to_path_buf()];
+        let without = check_encryption(&dir, &paths, false);
+        assert!(
+            without.iter().any(|n| n.code == Code::KdmRequired),
+            "no KDM anywhere must be reported, got: {without:?}"
+        );
+        let with = check_encryption(&dir, &paths, true);
+        assert!(
+            !with.iter().any(|n| n.code == Code::KdmRequired),
+            "a supplied KDM must not be reported as missing, got: {with:?}"
+        );
     }
 
     #[test]

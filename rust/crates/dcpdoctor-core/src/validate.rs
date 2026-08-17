@@ -797,7 +797,7 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     // and the OV DCP when --ov is given.
     let ov_asset_ids: Option<HashSet<String>> = opts.ov.as_deref().map(dcp_asset_ids);
 
-    for note in crate::validators::check_encryption(dcp_dir, &cpl_paths) {
+    for note in crate::validators::check_encryption(dcp_dir, &cpl_paths, opts.kdm.is_some()) {
         result.add(note);
     }
     // Encrypted packages must have a signed CPL and PKL (ClairMeta check_dcp_signed).
