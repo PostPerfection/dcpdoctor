@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DCP Doctor - Check your DCP or IMF before it ships</title>
-    <meta name="description" content="Free, open-source tool to check a DCP or IMF package before delivery. Structure, hashes, signatures, loudness, subtitles, HDR, KDMs, theater and streamer profiles, and automated QC. Desktop app for Windows, macOS and Linux, plus an in-browser checker.">
+    <meta name="description" content="Free, open-source tool to check a DCP or IMF package before delivery. Structure, hashes, JPEG 2000 forensics, signatures, loudness, subtitles, HDR, KDMs, theater and streamer profiles, and automated QC. Desktop app for Windows, macOS and Linux, plus an in-browser checker.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -631,6 +631,7 @@
             DCP Doctor
         </a>
         <ul class="nav-links">
+            <li><a href="https://postperfection.github.io/">Suite</a></li>
             <li><a href="#download">Download</a></li>
             <li><a href="#online">Check online</a></li>
             <li><a href="#features">What it checks</a></li>
@@ -652,7 +653,7 @@
         </div>
         <h1>Catch problems in your <em>DCP or IMF</em><br>before it ships</h1>
         <p class="hero-sub">
-            DCP Doctor checks a cinema or streaming package for the mistakes that get a delivery rejected: broken structure, bad hashes, expired keys, subtitle timing, audio levels, HDR metadata and more. Run it on your desktop or right in the browser.
+            DCP Doctor checks a cinema or streaming package for the mistakes that get a delivery rejected: broken structure, bad hashes, expired keys, subtitle timing, JPEG 2000 forensics, audio levels, HDR metadata and more. Run it on your desktop or right in the browser.
         </p>
         <div class="hero-actions">
             <a href="#download" class="btn btn-accent">
@@ -767,17 +768,17 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128196;</div>
                 <h3>Structure and references</h3>
-                <p>Checks that ASSETMAP, PKL and CPL line up and that every asset they point to is actually present. Catches duplicate asset IDs across packages.</p>
+                <p>Checks that ASSETMAP, PKL and CPL line up and that every asset they point to is actually present. Catches duplicate asset IDs, a CPL whose title does not match its annotation, and a missing CompositionMetadataAsset.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#9989;</div>
                 <h3>Hashes and file sizes</h3>
-                <p>Verifies the SHA-1 hash and size of every file, so a corrupt or half-copied asset gets caught before it reaches a theater or a facility.</p>
+                <p>Verifies the SHA-1 hash and size of every file, including the hash each CPL reel asset carries, so a corrupt or half-copied asset gets caught before it reaches a theater or a facility.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128274;</div>
                 <h3>Signatures and certificates</h3>
-                <p>Validates the XML signatures and the certificate chain, flags expired certs and malformed package XML, and catches an encrypted package that was left unsigned.</p>
+                <p>Validates the XML signatures and the certificate chain, flags expired certs and malformed package XML, and catches an encrypted package that was left unsigned. Schema validation against the vendored SMPTE and Interop XSDs is on by default.</p>
             </div>
         </div>
 
@@ -786,12 +787,17 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128208;</div>
                 <h3>Resolution and format</h3>
-                <p>Confirms the 2K or 4K container, Flat / Scope / Full and aspect ratio, and flags non-standard sizes.</p>
+                <p>Confirms the 2K or 4K container, Flat / Scope / Full and aspect ratio, including the coded scope sizes (2048&times;858, 4096&times;1716). Flags a 4K track at an illegal frame rate.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127916;</div>
                 <h3>Bitrate limits</h3>
-                <p>Per-frame picture bitrate with min, max and average, checked against the DCI limits (250 Mbps at 2K, 500 at 4K).</p>
+                <p>Per-frame picture bitrate with min, max and average, checked against the DCI cap of 250 Mbps at every resolution. IMF has no such cap, so an IMP's peak is reported as an info note.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#128269;</div>
+                <h3>JPEG 2000 forensics</h3>
+                <p>One pass over every frame reports the track's codestream parameters (profile, tiles, TLM, POC, code-block size), the fattest frame against the DCI cap, and any parameter that changes partway through. The same scan runs on IMF AS-02 picture, minus the cinema-only rules. A section in the QC report, one table per picture track.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127752;</div>
@@ -806,7 +812,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#127909;</div>
                 <h3>Stereoscopic 3D</h3>
-                <p>Left- and right-eye frame counts matched, for 3D packages.</p>
+                <p>Left- and right-eye frame counts matched. Each eye is scanned against half an edit unit's bitrate cap.</p>
             </div>
         </div>
 
@@ -820,12 +826,12 @@
             <div class="feat-card">
                 <div class="feat-icon">&#127897;</div>
                 <h3>Loudness</h3>
-                <p>EBU R128 / ATSC A/85 loudness measurement, and normalization to a target such as -23 LUFS when you need it.</p>
+                <p>EBU R128 / ATSC A/85 loudness measurement, ISO 21727 Leq(m) against the content kind's limit (82 dB advertisement, 85 dB trailer), and normalization to a target such as -23 LUFS when you need it.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127925;</div>
                 <h3>Channels and labels</h3>
-                <p>Checks the channel layout (2.0, 5.1, 7.1, immersive) and MCA labels against the actual sound file.</p>
+                <p>Checks the channel layout (2.0, 5.1, 7.1, immersive), MCA labels in the sound MXF, and the CPL's MainSoundConfiguration against the actual channel count.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127760;</div>
@@ -843,18 +849,18 @@
         <div class="features-grid fade-in">
             <div class="feat-card">
                 <div class="feat-icon">&#128220;</div>
-                <h3>Timing</h3>
-                <p>Subtitle timing rules: in/out order, overlaps, minimum event duration, gap spacing, and a too-early first subtitle.</p>
+                <h3>Timing and structure</h3>
+                <p>Bv2.1 timed-text rules: in/out order, overlaps, minimum duration and gap, a too-early first subtitle, StartTime and EntryPoint, a cue that runs past its reel, a language that changes mid-composition, and a subtitle or caption missing from a reel.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128196;</div>
-                <h3>Readability</h3>
-                <p>Line count and length limits, plus closed-caption character-set checks and required elements like language and font.</p>
+                <h3>Readability and identity</h3>
+                <p>Line count and length limits, closed-caption character-set and layout, required Language and LoadFont, schema validation of the DCST document, the 640 kB / 10 MB font caps, and the ST 429-5 rule that ResourceID repeats the document Id.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#9855;</div>
                 <h3>Accessibility tracks</h3>
-                <p>Detects and checks audio description, hearing-impaired and closed-caption tracks.</p>
+                <p>Detects and checks audio description, hearing-impaired and closed-caption tracks, including MXF-wrapped SMPTE subtitles and encrypted timed text when a KDM is supplied.</p>
             </div>
         </div>
 
@@ -863,12 +869,12 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128274;</div>
                 <h3>Encryption status</h3>
-                <p>Spots encrypted assets and mixed-encryption packages, and tells you when a KDM will be required.</p>
+                <p>Spots encrypted assets. A composition that mixes encrypted and clear essence is an error. Encrypted picture, sound and timed text are checked when you pass a KDM, on a DCP and on an IMP alike. Without a key the report says so rather than passing quietly.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128273;</div>
                 <h3>KDM checks</h3>
-                <p>Validates KDMs: the validity window (expired or not-yet-valid) and that the key matches the right CPL in the package.</p>
+                <p>Validates KDMs against the ST 430-1 / 430-3 schemas: the validity window, that the key matches the right CPL, thumbprint length, and that the assume-trust marker is not mixed with a real device list.</p>
             </div>
         </div>
 
@@ -882,7 +888,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128203;</div>
                 <h3>QC reports</h3>
-                <p>Clean HTML or PDF reports with package, track and per-track loudness summaries, ready for a client name and title.</p>
+                <p>Clean HTML or PDF reports with package, track and per-track loudness summaries, plus a JPEG 2000 forensics table per picture track, ready for a client name and title.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128200;</div>
@@ -896,7 +902,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#127909;</div>
                 <h3>Theater server profiles</h3>
-                <p>Check a package against pre-built profiles for Dolby, Barco, Christie, GDC and IMAX servers before it goes on-screen.</p>
+                <p>Check a package against pre-built profiles for Dolby, Barco, Christie, GDC and IMAX servers. Separate playback warnings flag a 25/30/48/50/60 fps feature, 4K 3D, or a sound track that is not 8 or 16 channels, which many rooms will not play even when the package is legal.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127981;</div>
@@ -950,13 +956,14 @@
                 <tr><td>SMPTE Bv2.1 Compliance</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>Interop DCP Support</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>Hash Verification</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
-                <tr><td>J2K Bitrate Analysis</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
-                <tr><td>Audio Loudness (EBU R128)</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
+                <tr><td>J2K Bitrate Analysis (250 Mbps DCI cap)</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
+                <tr><td>JPEG 2000 forensics (every frame, DCP and IMF)</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
+                <tr><td>Audio Loudness (EBU R128 + Leq(m))</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>Dolby Atmos / IAB</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>Stereoscopic 3D</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
-                <tr><td>Up to 4K &amp; HBR</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
+                <tr><td>Up to 4K</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>23.98 to 120 fps</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
-                <tr><td>SMPTE 428-7 Subtitles</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
+                <tr><td>SMPTE 428-7 / Bv2.1 timed text</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>Subtitle Font Validation</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>KDM Validation</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>CLI / Scriptable</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
@@ -994,7 +1001,8 @@
                 <span class="pipe-tag">Command line</span>
                 <h3>Check a package</h3>
                 <p>Run a full check and get a pass/fail exit code you can act on.</p>
-<pre>dcpdoctor /path/to/DCP</pre>
+<pre>dcpdoctor /path/to/DCP
+dcpdoctor validate --deep-j2k --check-mxf /path/to/DCP</pre>
             </div>
             <div class="pipeline-card">
                 <span class="pipe-tag">Watch folder</span>
@@ -1048,7 +1056,7 @@ pnpm tauri build</code></pre>
             </a>
         </div>
         <p style="margin-top: 40px; font-size: 0.85rem; color: var(--text-muted);">
-            Built by <a href="https://github.com/PostPerfection" style="color: var(--accent); text-decoration: none;">DcpDoctor</a> &middot; Open to contributions from everyone
+            Part of the <a href="https://postperfection.github.io/" style="color: var(--accent); text-decoration: none;">PostPerfection</a> suite &middot; Open to contributions from everyone
         </p>
     </div>
 </section>
@@ -1064,7 +1072,7 @@ pnpm tauri build</code></pre>
                 </svg>
                 DCP Doctor
             </a>
-            <p>Check a DCP or IMF package before it ships. Structure, hashes, keys, loudness, subtitles, HDR, and automated QC. Free and open source.</p>
+            <p>Check a DCP or IMF package before it ships. Structure, hashes, keys, JPEG 2000 forensics, loudness, subtitles, HDR, and automated QC. Free and open source.</p>
         </div>
         <div class="footer-col">
             <h4>Resources</h4>
