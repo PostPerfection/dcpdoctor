@@ -5,6 +5,26 @@ README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N 
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
 policy plus the measurement gap listed below.
 
+## Document signatures are not verified
+
+The CPL, PKL and KDM signature checks are presence-only: `check_dcp_signed`
+requires a `<Signature>` element, cert_rules.rs holds the signer chain to
+ST 430-2, and the KDM path checks digests, but nothing verifies the
+SignatureValue against the document. A package whose XML changed after signing
+passes clean. Evidence: the 2026-08-22 dci-ctp differential, where all 50
+resealed DCP-o-matic corpus packages carry stale CPL and PKL signatures,
+ClairMeta rejects every one via `check_document_signature`, and dcpdoctor
+passes them. libdcp, ClairMeta and Photon all verify. A server verifies on
+ingest, so a QC pass that skips it clears packages a projector booth refuses.
+
+Verification needs XML C14N canonicalization plus digest and RSA checks over
+SignedInfo. The RSA and x509 side exists in signature.rs and cert_rules.rs, and
+libxml2 is already a build dependency (the deb installs libxml2-dev), so
+canonicalization has a native path rather than shelling out. Severity: ERROR
+whenever a Signature is present and does not verify, encrypted or not, since it
+indicates post-signing modification. Presence stays with the existing
+`dcp_not_signed` / `unencrypted_dcp_not_signed` split.
+
 ## P-HFR gets no bitrate limit of its own
 
 Peak bitrate is read frame by frame for every picture essence dcpdoctor can
