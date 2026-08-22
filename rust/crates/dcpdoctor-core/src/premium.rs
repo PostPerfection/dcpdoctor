@@ -697,6 +697,8 @@ pub struct NetflixDeliveryResult {
     pub compliant: bool,
     pub app_id: String,
     pub violations: Vec<String>,
+    /// reasons the CPL part of the check could not run
+    pub skipped: Vec<String>,
 }
 
 /// Check Netflix delivery specification for an IMF package.
@@ -713,11 +715,15 @@ pub fn check_netflix_delivery(imf_dir: &Path) -> NetflixDeliveryResult {
     // Check CPL for ApplicationIdentification and EditRate
     let entries = match std::fs::read_dir(imf_dir) {
         Ok(e) => e,
-        Err(_) => {
-            result.compliant = result.violations.is_empty();
+        Err(e) => {
+            result
+                .skipped
+                .push(format!("cannot read {}: {e}", imf_dir.display()));
             return result;
         }
     };
+
+    let mut cpl_examined = false;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -727,12 +733,18 @@ pub fn check_netflix_delivery(imf_dir: &Path) -> NetflixDeliveryResult {
 
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                result
+                    .skipped
+                    .push(format!("cannot read {}: {e}", path.display()));
+                continue;
+            }
         };
 
         if !content.contains("CompositionPlaylist") {
             continue;
         }
+        cpl_examined = true;
 
         // Check ApplicationIdentification
         let app_re = regex_lite::Regex::new(
@@ -777,7 +789,13 @@ pub fn check_netflix_delivery(imf_dir: &Path) -> NetflixDeliveryResult {
         break;
     }
 
-    result.compliant = result.violations.is_empty();
+    if !cpl_examined {
+        result
+            .skipped
+            .push(format!("no CPL found in {}", imf_dir.display()));
+    }
+
+    result.compliant = result.violations.is_empty() && result.skipped.is_empty();
     result
 }
 
@@ -785,6 +803,16 @@ pub fn check_netflix_delivery(imf_dir: &Path) -> NetflixDeliveryResult {
 pub fn netflix_to_notes(result: &NetflixDeliveryResult, source: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
     let file = Some(source.to_path_buf());
+
+    for reason in &result.skipped {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: Code::CheckSkipped,
+            message: format!("Netflix delivery spec not verified: {reason}"),
+            file: file.clone(),
+            line: 0,
+        });
+    }
 
     if result.compliant {
         notes.push(Note {
@@ -794,7 +822,7 @@ pub fn netflix_to_notes(result: &NetflixDeliveryResult, source: &Path) -> Vec<No
             file,
             line: 0,
         });
-    } else {
+    } else if !result.violations.is_empty() {
         notes.push(Note {
             severity: Severity::Warning,
             code: Code::MissingAssetmap,
@@ -892,7 +920,19 @@ pub fn check_accessibility(package_dir: &Path) -> Vec<Note> {
 
     let entries = match std::fs::read_dir(package_dir) {
         Ok(e) => e,
-        Err(_) => return notes,
+        Err(e) => {
+            notes.push(Note {
+                severity: Severity::Warning,
+                code: Code::CheckSkipped,
+                message: format!(
+                    "accessibility tracks not checked, cannot read {}: {e}",
+                    package_dir.display()
+                ),
+                file: Some(package_dir.to_path_buf()),
+                line: 0,
+            });
+            return notes;
+        }
     };
 
     let mut has_audio_desc = false;

@@ -78,6 +78,9 @@ pub struct MarkerScan {
     pub poc_after_main_header: usize,
     /// Main-header POC parameters that differ from the two fixed progressions.
     pub poc_field_mismatches: Vec<PocFieldMismatch>,
+    /// The walk stopped before the EOC marker, so the counts above cover only
+    /// the part of the codestream it reached.
+    pub truncated: bool,
 }
 
 fn read_u16(data: &[u8], at: usize) -> Option<u16> {
@@ -85,8 +88,8 @@ fn read_u16(data: &[u8], at: usize) -> Option<u16> {
 }
 
 /// Walk every marker segment of a codestream and report the TLM/POC facts the
-/// DCI profiles constrain. A truncated or desynchronised stream stops the walk
-/// and reports what it saw up to that point.
+/// DCI profiles constrain. A truncated or desynchronised stream stops the walk,
+/// reports what it saw up to that point, and sets `truncated`.
 pub fn scan_markers(data: &[u8]) -> MarkerScan {
     let mut scan = MarkerScan::default();
     if read_u16(data, 0) != Some(SOC) {
@@ -96,9 +99,14 @@ pub fn scan_markers(data: &[u8]) -> MarkerScan {
     let mut pos = 2; // SOC is a delimiting marker with no segment
     let mut main_header_finished = false;
 
-    while let Some(marker) = read_u16(data, pos) {
+    loop {
+        let Some(marker) = read_u16(data, pos) else {
+            scan.truncated = true; // ran out of bytes before the EOC
+            break;
+        };
         if marker & 0xFF00 != 0xFF00 {
-            break; // lost sync
+            scan.truncated = true; // lost sync
+            break;
         }
         pos += 2;
 
@@ -116,9 +124,11 @@ pub fn scan_markers(data: &[u8]) -> MarkerScan {
         }
 
         let Some(segment_length) = read_u16(data, pos).map(usize::from) else {
+            scan.truncated = true;
             break;
         };
         if segment_length < 2 {
+            scan.truncated = true;
             break;
         }
         let parameters = data.get(pos + 2..pos + segment_length);
@@ -330,6 +340,33 @@ mod tests {
             scan.poc_after_main_header, 0,
             "0xFF5F inside a packet body is data, not a POC marker"
         );
+    }
+
+    #[test]
+    fn a_walk_that_stops_before_the_eoc_is_reported_as_truncated() {
+        let whole = codestream(&[(TLM, vec![0, 0]), (SOT, sot_body())]);
+        assert!(
+            !scan_markers(&whole).truncated,
+            "a stream walked to its EOC is not truncated"
+        );
+
+        // cut inside the SOT segment: the markers past the cut are never walked
+        let cut = &whole[..whole.len() - 6];
+        assert!(
+            scan_markers(cut).truncated,
+            "a walk that runs out of bytes must say so"
+        );
+
+        // a segment length below 2 leaves nowhere to continue from
+        let mut short_segment = codestream(&[(TLM, vec![0, 0]), (SOT, sot_body())]);
+        short_segment[4] = 0;
+        short_segment[5] = 1;
+        assert!(scan_markers(&short_segment).truncated);
+
+        // a byte pair that is no marker at all
+        let mut desynchronised = codestream(&[(TLM, vec![0, 0]), (SOT, sot_body())]);
+        desynchronised[2] = 0x00;
+        assert!(scan_markers(&desynchronised).truncated);
     }
 
     #[test]

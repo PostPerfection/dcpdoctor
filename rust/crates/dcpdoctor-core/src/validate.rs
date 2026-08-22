@@ -248,6 +248,21 @@ impl TimedTextContext<'_> {
             return notes;
         }
 
+        // Bv2.1 §8.3.2 wants an EntryPoint of 0 on a timed-text asset, and text
+        // that is no integer is neither 0 nor absent
+        if asset.entry_point_unparseable {
+            notes.push(
+                Note::error(
+                    Code::XmlParseError,
+                    format!(
+                        "the {} reel's <EntryPoint> is not an integer, so the entry-point check did not run",
+                        kind.label()
+                    ),
+                )
+                .with_file(&path),
+            );
+        }
+
         let is_xml = path
             .extension()
             .and_then(|e| e.to_str())
@@ -270,8 +285,21 @@ impl TimedTextContext<'_> {
         }
 
         let (xml, glyph_notes) = if is_xml {
+            let xml = match std::fs::read_to_string(&path) {
+                Ok(xml) => Some(xml),
+                Err(e) => {
+                    notes.push(
+                        Note::error(
+                            Code::SubtitleParseError,
+                            format!("failed to read: {e}, so no subtitle rule ran on it"),
+                        )
+                        .with_file(&path),
+                    );
+                    None
+                }
+            };
             (
-                std::fs::read_to_string(&path).ok(),
+                xml,
                 crate::subtitle::check_glyph_coverage(&path, |decl| self.resolve_font(&path, decl)),
             )
         } else {
@@ -290,7 +318,16 @@ impl TimedTextContext<'_> {
                         (Some(wrapped.xml), glyphs)
                     }
                 }
-                None => (None, Vec::new()),
+                None => {
+                    notes.push(
+                        Note::error(
+                            Code::MxfUnreadable,
+                            "timed-text MXF could not be read, so none of its subtitle checks ran",
+                        )
+                        .with_file(&path),
+                    );
+                    (None, Vec::new())
+                }
             }
         };
 
@@ -396,6 +433,18 @@ impl TimedTextContext<'_> {
         }
 
         // ST 429-2 §9.4: the reel's Duration is what the essence actually carries
+        if asset.duration_unparseable {
+            notes.push(
+                Note::error(
+                    Code::XmlParseError,
+                    format!(
+                        "the {} reel's <Duration> or <IntrinsicDuration> is not an integer, so it was not compared with the essence",
+                        kind.label()
+                    ),
+                )
+                .with_file(path),
+            );
+        }
         if asset.duration > 0 && i64::from(wrapped.container_duration) != asset.duration {
             notes.push(
                 Note::error(
@@ -565,8 +614,33 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         for note in check_pkl_annotation_text(pkl_path, pkl, &dcp.cpls, dcp.standard) {
             result.add(note);
         }
+        if pkl.assets_without_id > 0 {
+            result.add(
+                Note::error(
+                    Code::MissingRequiredElement,
+                    format!(
+                        "PKL lists {} asset(s) with no readable <Id>, so nothing was checked against them",
+                        pkl.assets_without_id
+                    ),
+                )
+                .with_file(pkl_path),
+            );
+        }
         // Verify PKL asset sizes (cheap, so not gated on check_hashes)
         for pkl_asset in &pkl.assets {
+            if pkl_asset.size_unparseable {
+                result.add(
+                    Note::error(
+                        Code::XmlParseError,
+                        format!(
+                            "PKL <Size> for asset {} is not an integer, so the size check did not run",
+                            pkl_asset.id
+                        ),
+                    )
+                    .with_file(pkl_path),
+                );
+                continue;
+            }
             if let Some(&asset_path) = id_to_path.get(pkl_asset.id.as_str()) {
                 let full_path = dcp_dir.join(asset_path);
                 if pkl_asset.size > 0
@@ -699,6 +773,20 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         }
 
         for reel in &cpl.reels {
+            for (track, asset) in [("picture", &reel.picture), ("sound", &reel.sound)] {
+                if asset.duration_unparseable {
+                    result.add(
+                        Note::error(
+                            Code::XmlParseError,
+                            format!(
+                                "Reel {} {track} <Duration> or <IntrinsicDuration> is not an integer, so the duration checks did not run on it",
+                                reel.id
+                            ),
+                        )
+                        .with_file(cpl_path),
+                    );
+                }
+            }
             if reel.picture.duration <= 0 {
                 result.add(Note {
                     severity: Severity::Error,
@@ -826,10 +914,10 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         result.add(note);
     }
     for (cpl_path, cpl) in &dcp.cpls {
-        if !cpl.content_title.is_empty() {
-            for note in crate::isdcf::check_isdcf_naming(&cpl.content_title, cpl_path) {
-                result.add(note);
-            }
+        // an empty ContentTitleText is check_isdcf_naming's first finding, so it
+        // runs on one too
+        for note in crate::isdcf::check_isdcf_naming(&cpl.content_title, cpl_path) {
+            result.add(note);
         }
         for note in crate::validators::check_cpl_metadata(cpl_path, dcp.standard) {
             result.add(note);
@@ -933,6 +1021,11 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
 
     // 5. MXF validation (if picture details requested)
     if opts.check_picture_details {
+        // track files ffprobe described no stream of, and the first reason it
+        // gave. Everything under `mxf_info.picture` is gated on a descriptor that
+        // probe was the only source of.
+        let mut unprobed_files: Vec<String> = Vec::new();
+        let mut probe_error = String::new();
         for asset in &dcp.assetmap.assets {
             let full_path = dcp_dir.join(&asset.path);
             let ext = full_path
@@ -962,6 +1055,17 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                 continue;
             }
 
+            if mxf_info.picture.is_none()
+                && mxf_info.sound.is_none()
+                && !mxf_info.stream_probe_error.is_empty()
+                && !crate::mxf::known_non_picture_essence(&full_path)
+            {
+                unprobed_files.push(asset.path.clone());
+                if probe_error.is_empty() {
+                    probe_error = mxf_info.stream_probe_error.clone();
+                }
+            }
+
             // Codestream checks on picture essence: 0xFFFF legacy constraint
             // (SMPTE Cat. 862) and ISO 15444-1 cinema profile constraints.
             if mxf_info.picture.is_some() {
@@ -977,6 +1081,9 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
 
                 let bitrate = crate::bitrate::analyze_picture_bitrate(&full_path, &content_keys);
                 for note in crate::bitrate::check_bitrate_compliance(&bitrate, &full_path) {
+                    result.add(note);
+                }
+                if let Some(note) = crate::bitrate::skipped_measurement_note(&bitrate, &full_path) {
                     result.add(note);
                 }
 
@@ -1055,6 +1162,19 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     result.add(note);
                 }
             }
+        }
+
+        if !unprobed_files.is_empty() {
+            result.add(
+                Note::warning(
+                    Code::CheckSkipped,
+                    format!(
+                        "the picture essence checks (resolution, frame rate, bitrate, codestream, and the note for encrypted picture without a KDM) did not run on {}: {probe_error}",
+                        unprobed_files.join(", ")
+                    ),
+                )
+                .with_file(dcp_dir),
+            );
         }
     }
 
@@ -1496,6 +1616,90 @@ mod tests {
             ),
             "correctly named asset map with a matching Length must stay silent, got: {:?}",
             result.notes
+        );
+    }
+
+    #[test]
+    fn an_assetmap_length_that_is_no_integer_fires() {
+        let dir = assetmap_pipeline_package("ASSETMAP.xml", "<Length>four</Length>");
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::XmlParseError && n.message.contains("<Length>")),
+            "a Length that is no integer must fire rather than read as absent, got: {:?}",
+            result.notes
+        );
+    }
+
+    // ─── parse-level failure signals ──────────────────────────────────────
+
+    /// Elements the cases below break in the committed package, each unique in
+    /// the file it sits in.
+    const PKL_PICTURE_ID: &str = "<Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>";
+    const PKL_PICTURE_SIZE: &str = "<Size>86</Size>";
+    const CPL_DURATION: &str = "<Duration>100</Duration>";
+
+    #[test]
+    fn a_pkl_asset_with_no_id_is_reported_rather_than_dropped() {
+        let dir = mutated_package(PKL_FILE, &[(PKL_PICTURE_ID, String::new())]);
+        let notes = notes_of(dir.path());
+        assert!(
+            notes.iter().any(|n| n.code == Code::MissingRequiredElement
+                && n.message.contains("no readable <Id>")),
+            "an asset the PKL parse dropped must be reported, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_pkl_size_that_is_no_integer_fires() {
+        let dir = mutated_package(
+            PKL_FILE,
+            &[(PKL_PICTURE_SIZE, "<Size>eighty-six</Size>".to_string())],
+        );
+        let notes = notes_of(dir.path());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::XmlParseError && n.message.contains("<Size>")),
+            "a Size that is no integer must fire rather than skip like a 0, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_reel_duration_that_is_no_integer_fires() {
+        let dir = mutated_package(
+            CPL_FILE,
+            &[(CPL_DURATION, "<Duration>lots</Duration>".to_string())],
+        );
+        let notes = notes_of(dir.path());
+        for track in ["picture", "sound"] {
+            assert!(
+                notes.iter().any(|n| n.code == Code::XmlParseError
+                    && n.message.contains(track)
+                    && n.message.contains("<Duration>")),
+                "the {track} Duration must be reported as unreadable, got: {notes:?}"
+            );
+        }
+    }
+
+    // an empty title is the one input the first naming rule is about
+    #[test]
+    fn an_empty_content_title_reaches_the_isdcf_rules() {
+        let dir = mutated_package(
+            CPL_FILE,
+            &[(
+                CPL_TITLE_ELEMENT,
+                "<ContentTitleText></ContentTitleText>".to_string(),
+            )],
+        );
+        let notes = notes_of(dir.path());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::IsdcfNamingViolation && n.message.contains("empty")),
+            "an empty ContentTitleText must fire, got: {notes:?}"
         );
     }
 
@@ -2022,20 +2226,111 @@ mod tests {
             }
         }
 
-        fn notes(&self, dir: &Path, kind: TimedTextKind) -> Vec<Note> {
-            let context = TimedTextContext {
+        fn context<'a>(&'a self, dir: &'a Path) -> TimedTextContext<'a> {
+            TimedTextContext {
                 dcp_dir: dir,
                 id_to_path: &self.paths,
                 schema_dir: None,
                 keys: &self.keys,
                 standard: crate::Standard::Smpte,
-            };
-            let asset = crate::cpl::ReelAsset {
-                id: TIMED_TEXT_ASSET_ID.to_string(),
-                ..Default::default()
-            };
-            context.check_asset(&asset, kind)
+            }
         }
+
+        fn notes(&self, dir: &Path, kind: TimedTextKind) -> Vec<Note> {
+            self.notes_for(dir, kind, &registered_asset())
+        }
+
+        fn notes_for(
+            &self,
+            dir: &Path,
+            kind: TimedTextKind,
+            asset: &crate::cpl::ReelAsset,
+        ) -> Vec<Note> {
+            self.context(dir).check_asset(asset, kind)
+        }
+    }
+
+    /// The reel asset the one-asset package's map resolves.
+    fn registered_asset() -> crate::cpl::ReelAsset {
+        crate::cpl::ReelAsset {
+            id: TIMED_TEXT_ASSET_ID.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_timed_text_entry_point_that_is_no_integer_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = OneAssetPackage::new(CAPTION_FILE);
+        std::fs::write(dir.path().join(CAPTION_FILE), CONFORMANT_SUBTITLE).unwrap();
+
+        let asset = crate::cpl::ReelAsset {
+            entry_point_unparseable: true,
+            ..registered_asset()
+        };
+        let notes = package.notes_for(dir.path(), TimedTextKind::ClosedCaption, &asset);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::XmlParseError && n.message.contains("<EntryPoint>")),
+            "an EntryPoint that is no integer must fire, got: {notes:?}"
+        );
+        assert!(
+            !package
+                .notes(dir.path(), TimedTextKind::ClosedCaption)
+                .iter()
+                .any(|n| n.code == Code::XmlParseError),
+            "a readable EntryPoint draws nothing"
+        );
+    }
+
+    #[test]
+    fn a_timed_text_duration_that_is_no_integer_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::subtitle::tests::write_mxf(dir.path(), FIXTURE_DOCUMENT, None);
+
+        let asset = crate::cpl::ReelAsset {
+            duration: 0,
+            duration_unparseable: true,
+            ..Default::default()
+        };
+        let notes = wrapped_notes(&path, dir.path(), &asset);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::XmlParseError && n.message.contains("<Duration>")),
+            "a Duration that is no integer must fire rather than skip the comparison, got: {notes:?}"
+        );
+    }
+
+    // the caller notes for essence that could not be read at all
+    #[test]
+    fn a_loose_xml_asset_that_will_not_read_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = OneAssetPackage::new(CAPTION_FILE);
+        // a directory in the asset's place: it exists, and reading it fails
+        std::fs::create_dir(dir.path().join(CAPTION_FILE)).unwrap();
+
+        let notes = package.notes(dir.path(), TimedTextKind::ClosedCaption);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleParseError && n.message.contains("failed to read")),
+            "an unreadable XML asset must say no rule ran on it, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_asset_that_will_not_open_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = OneAssetPackage::new(OVERSIZE_ASSET_FILE);
+        std::fs::write(dir.path().join(OVERSIZE_ASSET_FILE), b"not an MXF").unwrap();
+
+        let notes = package.notes(dir.path(), TimedTextKind::Subtitle);
+        assert!(
+            notes.iter().any(|n| n.code == Code::MxfUnreadable),
+            "an unopenable timed-text MXF must say no rule ran on it, got: {notes:?}"
+        );
     }
 
     // a track file over the Bv2.1 ceiling is rejected before anyone tries to
@@ -2536,6 +2831,47 @@ mod tests {
             result.notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "a ref in neither package is a real break even with --ov, got: {:?}",
             result.notes
+        );
+    }
+
+    // every check under check_picture_details is gated on a descriptor ffprobe is
+    // the only source of
+    #[test]
+    fn a_track_file_no_stream_was_probed_from_says_the_picture_checks_did_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        write_dcp(
+            dir.path(),
+            "0f0f0f0f-0000-0000-0000-000000000000",
+            &[PIC_ID],
+            PIC_ID,
+            SND_ID,
+            false,
+        );
+        // a SMPTE partition-pack header and nothing ffprobe can make a stream of
+        let mut essence = vec![0x06, 0x0e, 0x2b, 0x34];
+        essence.resize(64, 0);
+        std::fs::write(dir.path().join(format!("{PIC_ID}.mxf")), &essence).unwrap();
+
+        let opts = VerifyOptions {
+            check_picture_details: true,
+            ..VerifyOptions::default()
+        };
+        let result = verify_dcp(dir.path(), &opts);
+        let skipped = result
+            .notes
+            .iter()
+            .find(|n| n.code == Code::CheckSkipped && n.message.contains("picture essence checks"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the skipped picture checks must be reported: {:?}",
+                    result.notes
+                )
+            });
+        assert_eq!(skipped.severity, Severity::Warning);
+        assert!(
+            skipped.message.contains(PIC_ID),
+            "the note must name the track file, got: {}",
+            skipped.message
         );
     }
 

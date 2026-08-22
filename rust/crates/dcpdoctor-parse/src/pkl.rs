@@ -33,6 +33,10 @@ pub struct PklAsset {
     /// local name matches.
     pub hash_algorithm_namespace: String,
     pub size: i64,
+    /// The `Size` element held text that is no integer, so `size` is 0 without
+    /// the PKL having declared 0.
+    #[serde(default)]
+    pub size_unparseable: bool,
 }
 
 /// Parsed Packing List (PKL).
@@ -46,6 +50,10 @@ pub struct Pkl {
     pub issuer: String,
     pub issue_date: String,
     pub assets: Vec<PklAsset>,
+    /// Assets dropped because they carry no usable `Id`, so nothing can be
+    /// checked against them.
+    #[serde(default)]
+    pub assets_without_id: usize,
 }
 
 /// Parse a PKL XML string.
@@ -93,7 +101,9 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
                 depth = depth.saturating_sub(1);
                 let name = local_name_end(&e);
                 if name == "Asset" && in_asset {
-                    if !current_asset.id.is_empty() {
+                    if current_asset.id.is_empty() {
+                        pkl.assets_without_id += 1;
+                    } else {
                         pkl.assets.push(std::mem::take(&mut current_asset));
                     }
                     in_asset = false;
@@ -112,7 +122,10 @@ pub fn parse_pkl(xml: &str) -> Option<Pkl> {
                         "AnnotationText" => current_asset.annotation = text,
                         "OriginalFileName" => current_asset.original_filename = text,
                         "Hash" => current_asset.hash = text,
-                        "Size" => current_asset.size = text.parse().unwrap_or(0),
+                        "Size" => match text.parse() {
+                            Ok(size) => current_asset.size = size,
+                            Err(_) => current_asset.size_unparseable = true,
+                        },
                         _ => {}
                     }
                 } else {
@@ -226,6 +239,27 @@ mod tests {
     fn hash_algorithm_is_empty_when_the_element_is_absent() {
         let pkl = parse_pkl(PKL).unwrap();
         assert!(pkl.assets[0].hash_algorithm.is_empty());
+    }
+
+    #[test]
+    fn an_asset_with_no_id_is_counted_rather_than_dropped_silently() {
+        let xml = PKL.replace("<Id>urn:uuid:b9867f6a-2aee-4869-bd9d-affb34a8c1d1</Id>", "");
+        let pkl = parse_pkl(&xml).unwrap();
+        assert!(pkl.assets.is_empty());
+        assert_eq!(
+            pkl.assets_without_id, 1,
+            "an asset with no Id gets no size or hash check, so the drop has to be visible"
+        );
+    }
+
+    #[test]
+    fn a_size_that_is_no_integer_is_not_read_back_as_zero() {
+        let xml = PKL.replace("<Size>816</Size>", "<Size>eight hundred</Size>");
+        let pkl = parse_pkl(&xml).unwrap();
+        assert!(pkl.assets[0].size_unparseable);
+
+        let pkl = parse_pkl(PKL).unwrap();
+        assert!(!pkl.assets[0].size_unparseable);
     }
 
     #[test]

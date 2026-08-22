@@ -154,6 +154,17 @@ pub fn validate_j2k(path: &str, header: &J2kHeader, mxf_data: &[u8]) -> Vec<Note
     // main-header fields above (SMPTE 428-1, matching libdcp's verify_j2k).
     let codestream = &mxf_data[header.codestream_offset.min(mxf_data.len())..];
     let scan = dcpdoctor_parse::j2k::scan_markers(codestream);
+    if scan.truncated {
+        notes.push(Note {
+            severity: Severity::Error,
+            code: "check_skipped".to_string(),
+            message:
+                "the J2K marker walk stopped before the end of the codestream, so the TLM and POC \
+                 placement checks did not cover all of it"
+                    .to_string(),
+            file: Some(path.to_string()),
+        });
+    }
     if !scan.tlm_present {
         notes.push(Note {
             severity: Severity::Error,

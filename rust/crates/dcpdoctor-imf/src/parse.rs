@@ -224,7 +224,13 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                             ed.linked_track_file_id =
                                 text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
                         }
-                        "ContainerDuration" => ed.container_duration = text.parse().unwrap_or(0),
+                        "ContainerDuration" => {
+                            ed.container_duration = parse_integer(
+                                &text,
+                                "ContainerDuration",
+                                &mut cpl.integer_parse_failures,
+                            )
+                        }
                         "StoredWidth" => ed.stored_width = text.parse().unwrap_or(0),
                         "StoredHeight" => ed.stored_height = text.parse().unwrap_or(0),
                         "FrameLayout" => ed.frame_layout = text.parse().unwrap_or(0),
@@ -249,7 +255,10 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                     match current_tag.as_str() {
                         "Label" => m.label = text,
                         "Scope" => m.scope = text,
-                        "Offset" => m.offset = text.parse().unwrap_or(0),
+                        "Offset" => {
+                            m.offset =
+                                parse_integer(&text, "Offset", &mut cpl.integer_parse_failures)
+                        }
                         _ => {}
                     }
                     continue;
@@ -324,17 +333,26 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                     }
                     "IntrinsicDuration" => {
                         if let Some(ref mut res) = current_resource {
-                            res.intrinsic_duration = text.parse().unwrap_or(0);
+                            res.intrinsic_duration = parse_integer(
+                                &text,
+                                "IntrinsicDuration",
+                                &mut cpl.integer_parse_failures,
+                            );
                         }
                     }
                     "EntryPoint" => {
                         if let Some(ref mut res) = current_resource {
-                            res.entry_point = text.parse().unwrap_or(0);
+                            res.entry_point =
+                                parse_integer(&text, "EntryPoint", &mut cpl.integer_parse_failures);
                         }
                     }
                     "SourceDuration" => {
                         if let Some(ref mut res) = current_resource {
-                            res.source_duration = text.parse().unwrap_or(0);
+                            res.source_duration = parse_integer(
+                                &text,
+                                "SourceDuration",
+                                &mut cpl.integer_parse_failures,
+                            );
                         }
                     }
                     _ => {}
@@ -355,6 +373,25 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
     }
 
     Ok(cpl)
+}
+
+/// Parse an integer element's text, recording the element name when the text is
+/// no integer. A 0 that no element declared would pass the duration, offset and
+/// alignment checks, so the name has to reach the validate path.
+fn parse_integer<T: std::str::FromStr + Default>(
+    text: &str,
+    element: &str,
+    failures: &mut Vec<String>,
+) -> T {
+    match text.parse() {
+        Ok(value) => value,
+        Err(_) => {
+            if !failures.iter().any(|failure| failure == element) {
+                failures.push(element.to_string());
+            }
+            T::default()
+        }
+    }
 }
 
 /// Detect IMF application from namespaces and XML content.
@@ -390,8 +427,10 @@ pub fn parse_edit_rate(s: &str) -> (u32, u32) {
     }
 }
 
-/// Parse asset IDs from an ASSETMAP XML string.
-pub fn parse_assetmap_ids(xml: &str) -> std::collections::HashSet<String> {
+/// Parse asset IDs from an ASSETMAP XML string. An XML error returns Err rather
+/// than the ids read so far, which would look like an ASSETMAP that lists fewer
+/// assets than it does.
+pub fn parse_assetmap_ids(xml: &str) -> Result<std::collections::HashSet<String>, String> {
     let mut ids = std::collections::HashSet::new();
     let mut reader = Reader::from_str(xml);
     let mut in_id = false;
@@ -413,11 +452,11 @@ pub fn parse_assetmap_ids(xml: &str) -> std::collections::HashSet<String> {
             }
             Ok(Event::End(_)) => in_id = false,
             Ok(Event::Eof) => break,
-            Err(_) => break,
+            Err(e) => return Err(format!("XML parse error: {e}")),
             _ => {}
         }
     }
-    ids
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -481,6 +520,63 @@ mod tests {
         assert_eq!(cpl.virtual_tracks[0].track_type, TrackType::MainImage);
         assert_eq!(cpl.virtual_tracks[0].resources.len(), 1);
         assert_eq!(cpl.total_duration, 240);
+    }
+
+    const ASSETMAP_ASSETS: &str = r#"<Asset><Id>urn:uuid:11111111-2222-3333-4444-555555555555</Id></Asset>
+    <Asset><Id>urn:uuid:66666666-7777-8888-9999-aaaaaaaaaaaa</Id></Asset>"#;
+
+    #[test]
+    fn a_broken_assetmap_errors_instead_of_returning_the_ids_read_so_far() {
+        let good = format!(
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <AssetList>
+    {ASSETMAP_ASSETS}
+  </AssetList>
+</AssetMap>"#
+        );
+        assert_eq!(parse_assetmap_ids(&good).unwrap().len(), 2);
+
+        // the second Asset closes under a different name, and a partial id set
+        // would make every track reference to it look like a broken one
+        let broken = good.replace("</Asset>\n  </AssetList>", "</Assset>\n  </AssetList>");
+        assert!(
+            parse_assetmap_ids(&broken).is_err(),
+            "a partial id set must not read back as a complete ASSETMAP"
+        );
+    }
+
+    #[test]
+    fn a_duration_that_is_no_integer_is_named_rather_than_read_as_zero() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:12345678-1234-1234-1234-123456789abc</Id>
+  <EditRate>24 1</EditRate>
+  <SegmentList><Segment>
+    <MainImageSequence>
+      <Id>urn:uuid:aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa</Id>
+      <ResourceList><Resource>
+        <Id>urn:uuid:bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb</Id>
+        <TrackFileId>urn:uuid:cccccccc-3333-3333-3333-cccccccccccc</TrackFileId>
+        <EditRate>24 1</EditRate>
+        <IntrinsicDuration>two hundred forty</IntrinsicDuration>
+        <EntryPoint>0</EntryPoint>
+        <SourceDuration>240</SourceDuration>
+      </Resource></ResourceList>
+    </MainImageSequence>
+  </Segment></SegmentList>
+</CompositionPlaylist>"#;
+
+        let cpl = parse_imf_cpl(xml).unwrap();
+        assert_eq!(
+            cpl.integer_parse_failures,
+            vec!["IntrinsicDuration".to_string()],
+            "a duration read as 0 would pass the bounds and alignment checks"
+        );
+        assert!(parse_imf_cpl(&xml.replace("two hundred forty", "240"))
+            .unwrap()
+            .integer_parse_failures
+            .is_empty());
     }
 
     #[test]

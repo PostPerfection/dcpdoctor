@@ -661,8 +661,9 @@ impl GlyphScan {
 
 /// Check that every code point used in a subtitle document has a glyph in its
 /// referenced font (dom#3080, dom#838). `resolve_font` maps a LoadFont
-/// declaration to an on-disk font file; fonts that don't resolve are skipped
-/// silently (the structural check already warns on a missing LoadFont).
+/// declaration to an on-disk font file; a font that does not resolve draws
+/// [`Code::SubtitleFontMissing`] rather than skipping in silence. An unreadable
+/// document returns nothing: the caller reports the read failure it hit too.
 pub fn check_glyph_coverage(
     file: &Path,
     resolve_font: impl Fn(&FontDecl) -> Option<PathBuf>,
@@ -704,7 +705,7 @@ pub struct WrappedTimedText {
     pub asset_id: [u8; 16],
     /// Frames of essence the container declares.
     pub container_duration: u32,
-    /// Decryption or skip notes produced while reading.
+    /// Decryption, skip and unreadable-resource notes produced while reading.
     pub notes: Vec<Note>,
 }
 
@@ -777,6 +778,18 @@ pub fn read_wrapped_timed_text(
 
     let mut font_data: HashMap<[u8; 16], Vec<u8>> = HashMap::new();
     let mut font_bytes = 0usize;
+    let mut read_notes = Vec::new();
+    let mut unreadable_resource = |detail: String| {
+        read_notes.push(
+            Note::warning(
+                Code::MxfUnreadable,
+                format!(
+                    "{detail}, so it is missing from the glyph coverage check and the font byte total"
+                ),
+            )
+            .with_file(mxf_path),
+        );
+    };
     let count = if fonts == FontData::Include {
         reader.ancillary_resource_count().ok()?
     } else {
@@ -784,6 +797,7 @@ pub fn read_wrapped_timed_text(
     };
     for i in 0..count {
         let Ok(info) = reader.ancillary_resource_info(i) else {
+            unreadable_resource(format!("ancillary resource {i} has no readable descriptor"));
             continue;
         };
         let is_font = info.mime_type == asdcplib::timed_text::MimeType::OpenType;
@@ -796,10 +810,22 @@ pub fn read_wrapped_timed_text(
                 let (dec, hmac) = split_ctx(ctx.as_mut());
                 match reader.read_ancillary_resource(&info.uuid, &mut fbuf, dec, hmac) {
                     Ok(n) => fbuf[..n].to_vec(),
-                    Err(_) => continue, // unreadable resource: skip
+                    Err(e) => {
+                        unreadable_resource(format!(
+                            "ancillary resource {} could not be read: {e}",
+                            format_resource_uuid(&info.uuid)
+                        ));
+                        continue;
+                    }
                 }
             }
-            Err(_) => continue,
+            Err(e) => {
+                unreadable_resource(format!(
+                    "ancillary resource {} could not be read: {e}",
+                    format_resource_uuid(&info.uuid)
+                ));
+                continue;
+            }
         };
         if !is_font {
             continue; // Png bitmap subs / Binary are not fonts
@@ -811,8 +837,14 @@ pub fn read_wrapped_timed_text(
         xml,
         fonts: font_data,
         font_bytes,
+        notes: read_notes,
         ..identity
     })
+}
+
+/// An ancillary resource id the way findings write it.
+fn format_resource_uuid(bytes: &[u8; 16]) -> String {
+    uuid::Uuid::from_bytes(*bytes).to_string()
 }
 
 /// Split optional decrypt contexts into the (dec, hmac) pair the readers take.
@@ -870,8 +902,8 @@ fn parse_urn_uuid(urn: &str) -> Option<[u8; 16]> {
 
 /// Parse a subtitle document and warn on any used code point missing from its
 /// resolved font. `resolve_font` hands back the font's raw bytes (from disk for
-/// plain XML, from the MXF for wrapped subs); fonts that don't resolve are
-/// skipped silently.
+/// plain XML, from the MXF for wrapped subs); a used font that does not resolve
+/// or does not parse is reported, since its code points went unchecked.
 fn glyph_notes(
     xml: &str,
     file: &Path,
@@ -904,14 +936,39 @@ fn glyph_notes(
         font_bytes.insert(id.clone(), resolve_font(decl));
     }
 
+    let mut notes = Vec::new();
+
+    // a declared font the package does not supply, or supplies as something
+    // skrifa cannot read, leaves every code point in it unchecked
+    let mut declared: Vec<&String> = scan.fonts.keys().collect();
+    declared.sort();
+    for id in declared {
+        if !scan.usage.keys().any(|(font_id, _)| font_id == id) {
+            continue; // nothing is set in this font, so nothing went unchecked
+        }
+        let problem = match &font_bytes[id] {
+            None => "LoadFont resolves to no font in the package",
+            Some(bytes) if FontRef::new(bytes).is_err() => {
+                "the resolved font is not a parseable OpenType file"
+            }
+            Some(_) => continue,
+        };
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: Code::SubtitleFontMissing,
+            message: format!("glyph coverage did not run for font '{id}': {problem}"),
+            file: Some(file.to_path_buf()),
+            line: 0,
+        });
+    }
+
     // stable output: sort by (font id, spot, code point)
     let mut used: Vec<(&(String, char), &Usage)> = scan.usage.iter().collect();
     used.sort_by(|a, b| (&a.0.0, &a.1.spot, a.0.1 as u32).cmp(&(&b.0.0, &b.1.spot, b.0.1 as u32)));
 
-    let mut notes = Vec::new();
     for ((font_id, ch), usage) in used {
         let Some(Some(bytes)) = font_bytes.get(font_id) else {
-            continue; // unresolvable font: skip silently
+            continue; // no resolvable font, already reported above
         };
         let Ok(face) = FontRef::new(bytes) else {
             continue;
@@ -1340,10 +1397,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn unresolvable_font_is_skipped() {
+    fn unresolvable_font_is_reported() {
         let f = sub_with_text("Hé");
         let notes = check_glyph_coverage(f.path(), |_decl| None);
-        assert!(notes.is_empty(), "expected silent skip, got: {notes:?}");
+        assert!(
+            notes.iter().any(|n| n.code == Code::SubtitleFontMissing
+                && n.message.contains("resolves to no font")),
+            "a font the package does not supply must be reported, got: {notes:?}"
+        );
     }
 
     // ─── MXF-wrapped (SMPTE ST 429-5) glyph coverage ─────────────────────────
@@ -1579,13 +1640,136 @@ pub(crate) mod tests {
         );
     }
 
+    // the urn points at a font that isn't embedded, so no code point in it was
+    // ever checked
     #[test]
-    fn mxf_without_font_resource_is_skipped() {
+    fn mxf_without_font_resource_is_reported() {
         let dir = tempfile::tempdir().unwrap();
-        // urn points at a font that isn't embedded: no OpenType resource to check
         let doc = mxf_doc("Hé", &uuid_urn(&[0xEF; 16]));
         let path = write_mxf(dir.path(), &doc, None);
         let notes = wrapped_glyph_notes(&path);
-        assert!(notes.is_empty(), "expected silent skip, got: {notes:?}");
+        assert!(
+            notes.iter().any(|n| n.code == Code::SubtitleFontMissing
+                && n.message.contains("resolves to no font")
+                && n.file.as_deref() == Some(&*path)),
+            "an unresolvable LoadFont must be reported, got: {notes:?}"
+        );
+    }
+
+    // an embedded resource skrifa cannot read means the same thing: no glyph in
+    // that font was checked.
+    #[test]
+    fn mxf_with_an_unparseable_font_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid = [0xBE; 16];
+        let doc = mxf_doc("Hé", &uuid_urn(&uuid));
+        let path = write_mxf(dir.path(), &doc, Some((b"not an OpenType file", uuid)));
+        let notes = wrapped_glyph_notes(&path);
+        assert!(
+            notes.iter().any(|n| n.code == Code::SubtitleFontMissing
+                && n.message.contains("not a parseable OpenType file")),
+            "an unparseable font must be reported, got: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.code == Code::SubtitleGlyphMissing),
+            "coverage cannot be claimed either way, got: {notes:?}"
+        );
+    }
+
+    /// A one-reel SMPTE CPL whose MainSubtitle points at `mxf`, plus the
+    /// id -> file map the reel-level rules resolve assets through.
+    fn package_with_subtitle(dir: &Path, mxf: PathBuf) -> (PathBuf, HashMap<String, PathBuf>) {
+        const SUBTITLE_ID: &str = "11111111-2222-3333-4444-555555555555";
+        let cpl = dir.join("cpl.xml");
+        std::fs::write(
+            &cpl,
+            format!(
+                r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainSubtitle><Id>urn:uuid:{SUBTITLE_ID}</Id><EditRate>24 1</EditRate><Duration>96</Duration></MainSubtitle>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+        (cpl, HashMap::from([(SUBTITLE_ID.to_string(), mxf)]))
+    }
+
+    #[test]
+    fn an_unreadable_timed_text_mxf_is_reported_not_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mxf = dir.path().join("sub.mxf");
+        std::fs::write(&mxf, b"this is not an MXF at all").unwrap();
+        assert!(
+            read_wrapped_timed_text(&mxf, &crate::kdm::ContentKeys::none(), FontData::Include)
+                .is_none(),
+            "a file that is not an MXF must not read as a wrapped asset"
+        );
+
+        let (cpl, map) = package_with_subtitle(dir.path(), mxf.clone());
+        let notes = crate::validators::check_timed_text_content(
+            &cpl,
+            Standard::Smpte,
+            &map,
+            &crate::kdm::ContentKeys::none(),
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::MxfUnreadable && n.file.as_deref() == Some(&*mxf)),
+            "an unreadable subtitle MXF must be reported, got: {notes:?}"
+        );
+    }
+
+    // a resource the header declares and the essence does not carry: the font
+    // vanishes from glyph coverage and from the Bv2.1 font byte total
+    #[test]
+    fn an_unreadable_ancillary_resource_is_reported() {
+        use asdcplib::timed_text::*;
+        use asdcplib::{EDIT_RATE_24, WriterInfo};
+
+        let dir = tempfile::tempdir().unwrap();
+        let uuid = [0xAA; 16];
+        let doc = mxf_doc("Hé", &uuid_urn(&uuid));
+        let path = dir.path().join("sub.mxf");
+        let mut writer = MxfWriter::new();
+        writer
+            .open_write_with_resources(
+                &path.to_string_lossy(),
+                &WriterInfo {
+                    asset_uuid: FIXTURE_ASSET_UUID,
+                    ..Default::default()
+                },
+                &TimedTextDescriptor {
+                    edit_rate: EDIT_RATE_24,
+                    container_duration: FIXTURE_CONTAINER_DURATION,
+                    asset_id: document_id(&doc).unwrap(),
+                },
+                &[AncillaryResourceInfo {
+                    uuid,
+                    mime_type: MimeType::OpenType,
+                }],
+                32_768,
+            )
+            .unwrap();
+        writer.write_timed_text_resource(&doc, None, None).unwrap();
+        writer.finalize().unwrap();
+
+        let asset =
+            read_wrapped_timed_text(&path, &crate::kdm::ContentKeys::none(), FontData::Include)
+                .expect("the document is readable");
+        assert!(
+            asset.notes.iter().any(|n| n.code == Code::MxfUnreadable
+                && n.message.contains("ancillary resource")
+                && n.file.as_deref() == Some(&*path)),
+            "a resource that will not read must be reported, got: {:?}",
+            asset.notes
+        );
+        assert_eq!(asset.font_bytes, 0, "no font byte total to trust here");
     }
 }

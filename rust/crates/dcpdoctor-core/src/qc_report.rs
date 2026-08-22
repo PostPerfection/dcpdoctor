@@ -125,22 +125,25 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
         };
         let mut sections = String::new();
         for t in &tracks {
-            if t.track_type != "essence" {
+            if t.track_type != "essence"
+                || crate::mxf::is_pcm_sound_essence(&opts.imp_dir.join(&t.filename))
+            {
                 continue;
             }
             let path = opts.imp_dir.join(&t.filename);
-            let (_notes, forensics) = crate::j2k::check_picture_j2k_mxf(
+            let (notes, forensics) = crate::j2k::check_picture_j2k_mxf(
                 &path,
                 &crate::kdm::ContentKeys::none(),
                 family,
                 true,
             );
-            // sound and unreadable essence yield nothing to report
-            let Some(forensics) = forensics else {
-                continue;
-            };
             let _ = writeln!(sections, "<h3>{}</h3>", t.filename);
-            sections.push_str(&codestream_forensics_table(&forensics));
+            match forensics {
+                Some(forensics) => sections.push_str(&codestream_forensics_table(&forensics)),
+                // encrypted or unreadable picture essence: the notes are all the
+                // report can say about it, and saying nothing would read as a pass
+                None => sections.push_str(&note_list(&notes)),
+            }
         }
         if !sections.is_empty() {
             html.push_str("<h2>Codestream forensics</h2>\n");
@@ -152,23 +155,33 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
     if opts.include_loudness {
         let mut rows = String::new();
         for t in &tracks {
-            if t.track_type != "essence" {
+            let path = opts.imp_dir.join(&t.filename);
+            if t.track_type != "essence" || !crate::mxf::is_pcm_sound_essence(&path) {
                 continue;
             }
-            let path = opts.imp_dir.join(&t.filename);
-            if let Ok(m) = crate::audio::measure_loudness(&path) {
-                // Leq(m) (ISO 21727) reported alongside the EBU R128 result
-                let leq = crate::loudness::measure_leq_m(&path);
-                let leq_cell = if leq.success {
-                    format!("{:.1} dB", leq.leq_m_db)
-                } else {
-                    "n/a".to_string()
-                };
-                let _ = writeln!(
-                    rows,
-                    "<tr><td>{}</td><td>{:.1} LUFS</td><td>{:.1} dBTP</td><td>{:.1} LU</td><td>{leq_cell}</td></tr>",
-                    t.filename, m.integrated_lufs, m.true_peak_dbtp, m.loudness_range_lu
-                );
+            match crate::audio::measure_loudness(&path) {
+                Ok(m) => {
+                    // Leq(m) (ISO 21727) reported alongside the EBU R128 result
+                    let leq = crate::loudness::measure_leq_m(&path);
+                    let leq_cell = if leq.success {
+                        format!("{:.1} dB", leq.leq_m_db)
+                    } else {
+                        "n/a".to_string()
+                    };
+                    let _ = writeln!(
+                        rows,
+                        "<tr><td>{}</td><td>{:.1} LUFS</td><td>{:.1} dBTP</td><td>{:.1} LU</td><td>{leq_cell}</td></tr>",
+                        t.filename, m.integrated_lufs, m.true_peak_dbtp, m.loudness_range_lu
+                    );
+                }
+                // a sound track with no measurement is not a quiet pass
+                Err(e) => {
+                    let _ = writeln!(
+                        rows,
+                        "<tr><td>{}</td><td colspan=\"4\">measurement failed: {e}</td></tr>",
+                        t.filename
+                    );
+                }
             }
         }
         if !rows.is_empty() {
@@ -214,6 +227,20 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
     result.pages = 1;
     result.success = true;
     result
+}
+
+/// What one picture track's scan reported when it produced no forensics, so an
+/// encrypted or unreadable track appears in the report instead of vanishing.
+fn note_list(notes: &[crate::Note]) -> String {
+    if notes.is_empty() {
+        return "<p>No codestream could be read from this track.</p>\n".to_string();
+    }
+    let mut list = String::from("<ul>\n");
+    for note in notes {
+        let _ = writeln!(list, "<li>{}: {}</li>", note.severity, note.message);
+    }
+    list.push_str("</ul>\n");
+    list
 }
 
 /// One picture track's codestream forensics as a parameter/value table.
@@ -430,6 +457,30 @@ mod tests {
         assert!(
             !html.contains("DCI cap"),
             "IMF essence is held to no DCI cap: {html}"
+        );
+    }
+
+    #[test]
+    fn a_picture_track_that_will_not_read_still_gets_a_section() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("picture.mxf"), b"not an MXF").unwrap();
+
+        let output = dir.path().join("report.html");
+        let result = generate_detailed_qc(&DetailedQcOptions {
+            imp_dir: dir.path().to_path_buf(),
+            output_file: output.clone(),
+            title: "Forensics".into(),
+            client: String::new(),
+            include_loudness: false,
+            include_codestream_forensics: true,
+        });
+        assert!(result.success, "report failed: {}", result.error);
+
+        let html = std::fs::read_to_string(&output).unwrap();
+        assert!(html.contains("<h3>picture.mxf</h3>"));
+        assert!(
+            html.contains("codestream checks did not run"),
+            "the section must say why there is no table: {html}"
         );
     }
 

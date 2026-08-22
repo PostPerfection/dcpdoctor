@@ -129,10 +129,21 @@ pub fn validate_imp(
 
     // Asset ids available in the OV package (its ASSETMAP is authoritative for
     // physically-present track files).
-    let ov_ids: HashSet<String> = ov_dir
-        .and_then(|dir| std::fs::read_to_string(dir.join("ASSETMAP.xml")).ok())
-        .map(|xml| dcpdoctor_imf::parse_assetmap_ids(&xml))
-        .unwrap_or_default();
+    let mut ov_ids: HashSet<String> = HashSet::new();
+    if let Some(ov_assetmap) = ov_dir.map(|dir| dir.join("ASSETMAP.xml"))
+        && let Ok(xml) = std::fs::read_to_string(&ov_assetmap)
+    {
+        match dcpdoctor_imf::parse_assetmap_ids(&xml) {
+            Ok(ids) => ov_ids = ids,
+            Err(e) => notes.push(
+                Note::error(
+                    Code::XmlParseError,
+                    format!("Cannot read the asset ids of the OV ASSETMAP: {e}"),
+                )
+                .with_file(&ov_assetmap),
+            ),
+        }
+    }
     let ov_provided = ov_dir.is_some();
 
     let cpl_files = find_cpls(imp_dir);
@@ -175,6 +186,19 @@ pub fn validate_imp(
                 continue;
             }
         };
+
+        if !cpl.integer_parse_failures.is_empty() {
+            notes.push(
+                Note::error(
+                    Code::CheckSkipped,
+                    format!(
+                        "CPL element(s) {} do not hold an integer, so the duration, offset and alignment checks that read them ran against 0",
+                        cpl.integer_parse_failures.join(", ")
+                    ),
+                )
+                .with_file(cpl_path),
+            );
+        }
 
         // Run all pure validators from the shared crate
         let imf_notes = dcpdoctor_imf::validate_imf_cpl_pure(&cpl);
@@ -235,7 +259,22 @@ fn validate_track_file_refs(
         Err(_) => return,
     };
 
-    let local_ids = dcpdoctor_imf::parse_assetmap_ids(&assetmap_xml);
+    let local_ids = match dcpdoctor_imf::parse_assetmap_ids(&assetmap_xml) {
+        Ok(ids) => ids,
+        Err(e) => {
+            notes.push(
+                Note::error(
+                    Code::XmlParseError,
+                    format!(
+                        "Cannot read the asset ids of {}, so the track file references in this CPL were not checked: {e}",
+                        assetmap_path.display()
+                    ),
+                )
+                .with_file(cpl_path),
+            );
+            return;
+        }
+    };
 
     let mut needs_ov = 0usize;
     for ref_id in &referenced_ids {
@@ -1263,6 +1302,70 @@ mod tests {
         assert!(
             notes.iter().any(|n| n.code == Code::CrossRefBroken),
             "a ref in neither package is a real break even with --ov, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_assetmap_says_the_track_file_references_were_not_checked() {
+        let imp = tempfile::tempdir().unwrap();
+        write_imp(
+            imp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[VIDEO_ID, AUDIO_ID],
+            &[VIDEO_ID, AUDIO_ID],
+        );
+        // the last Asset closes under a different name: a lenient walk would
+        // return the ids before it and call the rest broken references
+        let assetmap_path = imp.path().join("ASSETMAP.xml");
+        let broken =
+            std::fs::read_to_string(&assetmap_path)
+                .unwrap()
+                .replacen("</Asset>", "</Assset>", 1);
+        std::fs::write(&assetmap_path, broken).unwrap();
+
+        let notes = validate_imp(imp.path(), None, false, false, &no_keys());
+        let skipped = notes
+            .iter()
+            .find(|n| n.code == Code::XmlParseError)
+            .unwrap_or_else(|| panic!("an unreadable ASSETMAP must be reported: {notes:?}"));
+        assert!(
+            skipped.message.contains("ASSETMAP.xml") && skipped.message.contains("not checked"),
+            "{}",
+            skipped.message
+        );
+        assert!(
+            !notes.iter().any(
+                |n| n.code == Code::CrossRefBroken || n.code == Code::SupplementalOvNotProvided
+            ),
+            "a partial id set must not turn into reference findings, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_cpl_duration_that_is_no_integer_says_the_checks_reading_it_ran_against_zero() {
+        let imp = tempfile::tempdir().unwrap();
+        write_imp(
+            imp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[VIDEO_ID, AUDIO_ID],
+            &[VIDEO_ID, AUDIO_ID],
+        );
+        let cpl_path = imp.path().join("CPL.xml");
+        let garbled = std::fs::read_to_string(&cpl_path).unwrap().replace(
+            "<IntrinsicDuration>24</IntrinsicDuration>",
+            "<IntrinsicDuration>twenty-four</IntrinsicDuration>",
+        );
+        std::fs::write(&cpl_path, garbled).unwrap();
+
+        let notes = validate_imp(imp.path(), None, false, false, &no_keys());
+        let skipped = notes
+            .iter()
+            .find(|n| n.code == Code::CheckSkipped)
+            .unwrap_or_else(|| panic!("a coerced duration must be reported: {notes:?}"));
+        assert!(
+            skipped.message.contains("IntrinsicDuration"),
+            "{}",
+            skipped.message
         );
     }
 

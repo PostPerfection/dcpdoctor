@@ -11,12 +11,22 @@ pub struct ReelAsset {
     pub edit_rate: String,
     pub duration: i64,
     /// `None` when the element is absent, which ST 429-2 treats differently from
-    /// an explicit 0: timed text must carry one and it must be 0.
+    /// an explicit 0: timed text must carry one and it must be 0. Also `None`
+    /// when the element held text that is no integer, which
+    /// `entry_point_unparseable` tells apart from absence.
     pub entry_point: Option<i64>,
     /// Base64 SHA-1 of the referenced file, from the asset's `Hash` element.
     /// Empty when the element is absent: ST 429-7 makes it optional in the CPL
     /// schema, so absence is a finding rather than a parse failure.
     pub hash: String,
+    /// A `Duration` or `IntrinsicDuration` element held text that is no integer,
+    /// so `duration` is 0 without the CPL having declared 0.
+    #[serde(default)]
+    pub duration_unparseable: bool,
+    /// An `EntryPoint` element held text that is no integer, so `entry_point` is
+    /// not the value the CPL declared.
+    #[serde(default)]
+    pub entry_point_unparseable: bool,
 }
 
 /// A single reel in the CPL.
@@ -161,8 +171,14 @@ fn fill_reel_asset(asset: &mut ReelAsset, tag: &str, text: String) {
     match tag {
         "Id" => asset.id = strip_urn_uuid(&text),
         "EditRate" => asset.edit_rate = text,
-        "Duration" | "IntrinsicDuration" => asset.duration = text.parse().unwrap_or(0),
-        "EntryPoint" => asset.entry_point = Some(text.parse().unwrap_or(0)),
+        "Duration" | "IntrinsicDuration" => match text.parse() {
+            Ok(duration) => asset.duration = duration,
+            Err(_) => asset.duration_unparseable = true,
+        },
+        "EntryPoint" => match text.parse() {
+            Ok(entry_point) => asset.entry_point = Some(entry_point),
+            Err(_) => asset.entry_point_unparseable = true,
+        },
         "Hash" => asset.hash = text,
         _ => {}
     }
@@ -268,6 +284,29 @@ mod tests {
             cpl.reels[0].subtitle.id, "11111111-2222-3333-4444-555555555555",
             "the subtitle track must not be clobbered by the caption tracks"
         );
+    }
+
+    #[test]
+    fn a_duration_or_entry_point_that_is_no_integer_is_marked_rather_than_zeroed() {
+        let xml = CPL.replace(
+            "<Duration>48</Duration>\n        </MainSound>",
+            "<Duration>forty-eight</Duration><EntryPoint>zero</EntryPoint>\n        </MainSound>",
+        );
+        let cpl = parse_cpl(&xml).unwrap();
+        let sound = &cpl.reels[0].sound;
+        assert!(
+            sound.duration_unparseable,
+            "an unreadable Duration must not pass for a declared 0"
+        );
+        assert!(
+            sound.entry_point_unparseable,
+            "an unreadable EntryPoint must not pass the timed-text rule that it be 0"
+        );
+        assert_eq!(sound.entry_point, None);
+
+        let clean = parse_cpl(CPL).unwrap();
+        assert!(!clean.reels[0].picture.duration_unparseable);
+        assert!(!clean.reels[0].picture.entry_point_unparseable);
     }
 
     #[test]

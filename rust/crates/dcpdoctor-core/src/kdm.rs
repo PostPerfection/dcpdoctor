@@ -202,9 +202,14 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
 
     // ST 430-1 Annex B makes several elements required that a hand-rolled writer
     // can omit and every other check here would still pass, so the XSD runs
-    // first. Skips itself when the schema dir or xmllint is absent.
-    if let Some(schema_dir) = crate::schema::locate_schema_dir() {
-        notes.extend(crate::schema::check_schema(kdm_path, &schema_dir));
+    // first. When it cannot run at all it says so, since none of the required
+    // element rules live anywhere else.
+    let schema_dir = crate::schema::locate_schema_dir();
+    if let Some(reason) = crate::schema::schema_pass_unavailable(schema_dir.as_deref()) {
+        notes.push(Note::warning(Code::SchemaValidationSkipped, reason).with_file(kdm_path));
+    }
+    if let Some(schema_dir) = schema_dir.as_deref() {
+        notes.extend(crate::schema::check_schema(kdm_path, schema_dir));
     }
 
     let xml = match read_kdm(kdm_path) {
@@ -227,7 +232,15 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
     notes.extend(check_digests(&xml, kdm_path));
 
     // Check validity period
-    if !info.not_valid_before.is_empty() && !info.not_valid_after.is_empty() {
+    if info.not_valid_before.is_empty() || info.not_valid_after.is_empty() {
+        notes.push(
+            Note::warning(
+                Code::KdmRequired,
+                "KDM validity window missing, expiry not checked",
+            )
+            .with_file(kdm_path),
+        );
+    } else {
         match (
             parse_iso_datetime(&info.not_valid_before),
             parse_iso_datetime(&info.not_valid_after),
@@ -822,6 +835,58 @@ mod tests {
             "got: {notes:?}"
         );
         assert!(!notes.iter().any(|n| n.code == Code::KdmNotYetValid));
+    }
+
+    #[test]
+    fn a_missing_validity_window_is_reported() {
+        for (before, after) in [
+            ("", ""),
+            ("2000-01-01T00:00:00+00:00", ""),
+            ("", "2100-01-01T00:00:00+00:00"),
+        ] {
+            let f = write_kdm(before, after);
+            let notes = validate_kdm(f.path(), None);
+            assert!(
+                notes.iter().any(|n| n.code == Code::KdmRequired
+                    && n.message.contains("validity window missing")),
+                "window ({before:?}, {after:?}) must be reported, got: {notes:?}"
+            );
+        }
+
+        let complete = write_kdm("2000-01-01T00:00:00+00:00", "2100-01-01T00:00:00+00:00");
+        let notes = validate_kdm(complete.path(), None);
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.message.contains("validity window missing")),
+            "a KDM carrying both dates must not be reported, got: {notes:?}"
+        );
+    }
+
+    // ST 430-1 requires a KDM to be signed, so an unsigned one is a finding
+    // rather than a document with nothing to verify.
+    #[test]
+    fn an_unsigned_kdm_is_reported() {
+        let f = write_kdm("2000-01-01T00:00:00+00:00", "2100-01-01T00:00:00+00:00");
+        let notes = validate_kdm(f.path(), None);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SignatureInvalid
+                    && n.message.contains("carries no signature")),
+            "an unsigned KDM must be reported, got: {notes:?}"
+        );
+
+        // a real DCP-o-matic KDM is signed, so the rule is not vacuous
+        let signed = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/kdm/kdm-dci-any.xml");
+        let notes = validate_kdm(&signed, None);
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.message.contains("carries no signature")),
+            "the fixture KDM is signed, got: {notes:?}"
+        );
     }
 
     // ─── KDM schema validation (ST 430-1 / ST 430-3) ───────────────────────

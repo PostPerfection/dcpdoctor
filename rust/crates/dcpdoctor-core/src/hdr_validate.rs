@@ -100,16 +100,23 @@ fn colorimetry_str(c: Colorimetry) -> &'static str {
     }
 }
 
-fn run_ffprobe(args: &[&str]) -> String {
-    Command::new("ffprobe")
+/// Run ffprobe, or return why it could not run. An empty probe output decodes
+/// as SDR/BT.709, so a failure must never come back as a string.
+fn run_ffprobe(args: &[&str]) -> Result<String, String> {
+    let output = Command::new("ffprobe")
         .args(args)
         .output()
-        .map(|o| {
-            let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
-            s.push_str(&String::from_utf8_lossy(&o.stderr));
-            s
-        })
-        .unwrap_or_default()
+        .map_err(|e| format!("cannot run ffprobe: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail = stderr.trim().lines().last().unwrap_or("unknown error");
+        return Err(format!("ffprobe exited with an error: {tail}"));
+    }
+
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok(text)
 }
 
 /// Validate HDR metadata of a video file.
@@ -124,7 +131,7 @@ pub fn validate_hdr_metadata(opts: &HdrValidateOptions) -> HdrValidateResult {
     let path_str = opts.video_path.to_string_lossy().to_string();
 
     // Probe stream-level metadata
-    let stream_output = run_ffprobe(&[
+    let stream_output = match run_ffprobe(&[
         "-v",
         "error",
         "-select_streams",
@@ -134,10 +141,16 @@ pub fn validate_hdr_metadata(opts: &HdrValidateOptions) -> HdrValidateResult {
         "-of",
         "json",
         &path_str,
-    ]);
+    ]) {
+        Ok(o) => o,
+        Err(e) => {
+            result.error = format!("HDR metadata not read: {e}");
+            return result;
+        }
+    };
 
     // Probe frame-level side data (CLL, mastering display)
-    let frame_output = run_ffprobe(&[
+    let frame_output = match run_ffprobe(&[
         "-v",
         "error",
         "-select_streams",
@@ -150,7 +163,13 @@ pub fn validate_hdr_metadata(opts: &HdrValidateOptions) -> HdrValidateResult {
         "-of",
         "json",
         &path_str,
-    ]);
+    ]) {
+        Ok(o) => o,
+        Err(e) => {
+            result.error = format!("HDR side data not read: {e}");
+            return result;
+        }
+    };
 
     // Detect transfer function
     let detected_tf =
@@ -334,6 +353,10 @@ pub fn validate_cpl_hdr(cpl_path: &Path, video_path: &Path) -> HdrValidateResult
         expected_max_luminance: 0,
     };
     let video_result = validate_hdr_metadata(&opts);
+    if !video_result.success {
+        result.error = video_result.error;
+        return result;
+    }
 
     result.detected = video_result.detected;
     result.issues = video_result.issues;
@@ -371,4 +394,32 @@ pub fn validate_cpl_hdr(cpl_path: &Path, video_path: &Path) -> HdrValidateResult
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_ffprobe_cannot_read_does_not_come_back_as_sdr() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_video = dir.path().join("picture.mxf");
+        std::fs::write(&not_video, b"this is not an MXF").unwrap();
+
+        let result = validate_hdr_metadata(&HdrValidateOptions {
+            video_path: not_video,
+            expected_transfer: TransferFunction::Pq,
+            expected_colorimetry: Colorimetry::Bt2020,
+            expected_bit_depth: 0,
+            expected_max_cll: 0,
+            expected_max_fall: 0,
+            expected_max_luminance: 0,
+        });
+
+        assert!(
+            !result.success,
+            "an unreadable file must not report a measurement"
+        );
+        assert!(!result.error.is_empty(), "the reason must be reported");
+    }
 }

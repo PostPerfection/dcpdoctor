@@ -213,6 +213,19 @@ pub fn check_assetmap_chunk_size(
     let mut notes = Vec::new();
 
     for asset in &assetmap.assets {
+        if asset.length_unparseable {
+            notes.push(Note {
+                severity: Severity::Error,
+                code: Code::XmlParseError,
+                message: format!(
+                    "ASSETMAP <Length> for {} is not an integer, so the chunk size check did not run",
+                    asset.path
+                ),
+                file: Some(assetmap_path.to_path_buf()),
+                line: 0,
+            });
+            continue;
+        }
         let Some(declared) = asset.length else {
             continue;
         };
@@ -2071,8 +2084,11 @@ enum TimedTextSource {
     /// encrypted essence with no usable content key, so the rules skip. `had_kdm`
     /// separates "no KDM was supplied" from "the KDM does not cover this asset".
     Encrypted { had_kdm: bool },
-    /// no such asset, or a file that is not readable timed text
+    /// no such asset in the package
     Unavailable,
+    /// the asset is there but would not read: an MXF that will not open or yield
+    /// a document, or a loose XML file that will not read
+    Unreadable(PathBuf),
 }
 
 /// The timed-text document a reel asset block points at: the plain-XML asset, or
@@ -2094,7 +2110,7 @@ fn timed_text_source(
     if is_xml {
         return match std::fs::read_to_string(&path) {
             Ok(xml) => TimedTextSource::Document(xml),
-            Err(_) => TimedTextSource::Unavailable,
+            Err(_) => TimedTextSource::Unreadable(path),
         };
     }
     match crate::subtitle::read_wrapped_timed_text(&path, keys, crate::subtitle::FontData::Omit) {
@@ -2102,7 +2118,7 @@ fn timed_text_source(
         Some(_) => TimedTextSource::Encrypted {
             had_kdm: keys.has_kdm(),
         },
-        None => TimedTextSource::Unavailable,
+        None => TimedTextSource::Unreadable(path),
     }
 }
 
@@ -2297,6 +2313,16 @@ fn content_notes(
             return;
         }
         TimedTextSource::Unavailable => return,
+        TimedTextSource::Unreadable(path) => {
+            notes.push(
+                Note::error(
+                    Code::MxfUnreadable,
+                    "the timed-text asset could not be read, so the caption content rules did not run",
+                )
+                .with_file(&path),
+            );
+            return;
+        }
     };
     let fps = extract_rate(block, "EditRate")
         .or_else(|| reel_picture_edit_rate(reel))
@@ -4643,6 +4669,30 @@ mod tests {
             reel_notes(cpl.path(), &map).is_empty(),
             "expected clean, got: {:?}",
             reel_notes(cpl.path(), &map)
+        );
+    }
+
+    #[test]
+    fn a_loose_subtitle_that_will_not_read_says_the_content_rules_did_not_run() {
+        let doc = reel_doc("en", "00:00:01:000", "00:00:03:000");
+        let (cpl, _dir, map) = reel_case(
+            &[ReelSpec {
+                subtitle: Some(&doc),
+                captions: 0,
+            }],
+            Some(0),
+        );
+        // a directory in the document's place: it resolves, and reading it fails
+        let path = map.values().next().unwrap().clone();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        let notes = check_timed_text_content(cpl.path(), Standard::Smpte, &map, &no_keys());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::MxfUnreadable && n.file.as_deref() == Some(&*path)),
+            "an unreadable subtitle document must say so, got: {notes:?}"
         );
     }
 

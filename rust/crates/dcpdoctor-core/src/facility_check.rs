@@ -17,8 +17,6 @@ pub struct CheckItem {
 /// Options for facility check.
 pub struct FacilityCheckOptions {
     pub dcp_dir: PathBuf,
-    pub expected_standard: crate::Standard,
-    pub strict: bool,
     pub check_naming: bool,
     pub check_hashes: bool,
 }
@@ -146,30 +144,85 @@ pub fn run_facility_check(opts: &FacilityCheckOptions) -> FacilityCheckResult {
         "warning",
     ));
 
+    // --- Hash verification ---
+    if opts.check_hashes {
+        let checksum = crate::checksum_verify::verify_package_checksums(
+            &crate::checksum_verify::ChecksumVerifyOptions {
+                package_dir: opts.dcp_dir.clone(),
+                ..Default::default()
+            },
+        );
+        let detail = if !checksum.success {
+            format!("Hashes not verified: {}", checksum.error)
+        } else if checksum.all_valid {
+            String::new()
+        } else {
+            format!(
+                "{} hash mismatch(es), {} size mismatch(es), {} missing file(s) of {} asset(s)",
+                checksum.hash_mismatches,
+                checksum.size_mismatches,
+                checksum.missing_files,
+                checksum.total_assets
+            )
+        };
+        result.items.push(make_item(
+            "integrity",
+            "PKL hash verification",
+            checksum.success && checksum.all_valid,
+            &detail,
+            "error",
+        ));
+    } else {
+        result.items.push(make_item(
+            "integrity",
+            "PKL hash verification",
+            false,
+            "Not checked (--no-hashes)",
+            "info",
+        ));
+    }
+
     // --- ISDCF naming ---
     if opts.check_naming {
         for cpl_path in &cpls {
-            if let Ok(content) = std::fs::read_to_string(cpl_path) {
-                let title_re =
-                    regex_lite::Regex::new(r"<ContentTitleText>([^<]+)</ContentTitleText>")
-                        .unwrap();
-                if let Some(cap) = title_re.captures(&content) {
-                    let title = &cap[1];
-                    let naming_notes = crate::isdcf::check_isdcf_naming(title, cpl_path);
-                    let naming_ok = naming_notes.is_empty();
+            let content = match std::fs::read_to_string(cpl_path) {
+                Ok(c) => c,
+                Err(e) => {
                     result.items.push(make_item(
                         "naming",
                         "ISDCF naming compliance",
-                        naming_ok,
-                        if naming_ok {
-                            ""
-                        } else {
-                            "ISDCF naming issues found"
-                        },
+                        false,
+                        &format!("Not checked, cannot read {}: {e}", cpl_path.display()),
                         "warning",
                     ));
+                    continue;
                 }
-            }
+            };
+            let title_re =
+                regex_lite::Regex::new(r"<ContentTitleText>([^<]+)</ContentTitleText>").unwrap();
+            let Some(cap) = title_re.captures(&content) else {
+                result.items.push(make_item(
+                    "naming",
+                    "ISDCF naming compliance",
+                    false,
+                    &format!("Not checked, no ContentTitleText in {}", cpl_path.display()),
+                    "warning",
+                ));
+                continue;
+            };
+            let naming_notes = crate::isdcf::check_isdcf_naming(&cap[1], cpl_path);
+            let naming_ok = naming_notes.is_empty();
+            result.items.push(make_item(
+                "naming",
+                "ISDCF naming compliance",
+                naming_ok,
+                if naming_ok {
+                    ""
+                } else {
+                    "ISDCF naming issues found"
+                },
+                "warning",
+            ));
         }
     }
 

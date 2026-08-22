@@ -14,6 +14,10 @@ pub struct Asset {
     /// packages that write no Length at all, so None means "not declared"
     /// rather than zero.
     pub length: Option<u64>,
+    /// The `Length` element held text that is no integer, which is not the same
+    /// as declaring no Length.
+    #[serde(default)]
+    pub length_unparseable: bool,
 }
 
 /// Parsed ASSETMAP.
@@ -72,7 +76,10 @@ pub fn parse_assetmap(xml: &str) -> Option<AssetMap> {
                     match current_tag.as_str() {
                         "Id" if !in_chunk => current_asset.id = strip_urn_uuid(&text),
                         "Path" if in_chunk => current_asset.path = text,
-                        "Length" if in_chunk => current_asset.length = text.parse().ok(),
+                        "Length" if in_chunk => match text.parse() {
+                            Ok(length) => current_asset.length = Some(length),
+                            Err(_) => current_asset.length_unparseable = true,
+                        },
                         "PackingList" if text == "true" || text == "1" => {
                             current_asset.is_pkl = true
                         }
@@ -146,7 +153,23 @@ mod tests {
         );
         let am = parse_assetmap(&xml).unwrap();
         assert_eq!(am.assets[0].length, Some(1234));
+        assert!(!am.assets[0].length_unparseable);
         assert_eq!(am.assets[1].length, None);
+        assert!(!am.assets[1].length_unparseable);
+    }
+
+    #[test]
+    fn a_length_that_is_no_integer_is_not_read_back_as_undeclared() {
+        let xml = SMPTE_AM.replace(
+            "<Path>pkl.xml</Path>",
+            "<Path>pkl.xml</Path><Length>1_234</Length>",
+        );
+        let am = parse_assetmap(&xml).unwrap();
+        assert_eq!(am.assets[0].length, None);
+        assert!(
+            am.assets[0].length_unparseable,
+            "an unreadable Length must not pass for a package that declared none"
+        );
     }
 
     #[test]

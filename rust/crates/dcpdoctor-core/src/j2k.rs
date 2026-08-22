@@ -44,6 +44,12 @@ pub struct J2kCodestreamInfo {
     pub progression_order: String,
     /// Frame size in bytes
     pub frame_bytes: u64,
+    /// The codestream markers could not be read, so every field that only a
+    /// marker carries (decomposition levels, code-block exponents, layers,
+    /// progression order, RSIZ) is a placeholder rather than the asset's value.
+    /// The checks on those fields are gated on a nonzero value, so they skip.
+    #[serde(default)]
+    pub marker_fields_unavailable: bool,
 }
 
 impl J2kCodestreamInfo {
@@ -92,6 +98,7 @@ fn info_from_header(hdr: &postkit::j2k::J2kHeader, frame_bytes: u64) -> J2kCodes
         layers: hdr.num_layers,
         progression_order: progression_order_name(hdr.progression_order),
         frame_bytes,
+        marker_fields_unavailable: false,
     }
 }
 
@@ -207,6 +214,7 @@ fn analyze_j2k_from_mxf_ffprobe(path: &Path) -> Result<J2kCodestreamInfo, String
             "Cinema 2K (from MXF)".into()
         },
         irreversible_transform: true, // DCI requires 9-7
+        marker_fields_unavailable: true,
         ..Default::default()
     })
 }
@@ -214,6 +222,13 @@ fn analyze_j2k_from_mxf_ffprobe(path: &Path) -> Result<J2kCodestreamInfo, String
 /// Validate J2K codestream against DCI requirements.
 pub fn validate_j2k_dci(info: &J2kCodestreamInfo) -> Vec<Note> {
     let mut notes = Vec::new();
+
+    if info.marker_fields_unavailable {
+        notes.push(Note::info(
+            Code::CheckSkipped,
+            "codestream fields unavailable, marker-level checks skipped",
+        ));
+    }
 
     // DCI requires 9-7 irreversible wavelet
     if !info.irreversible_transform && info.decomposition_levels > 0 {
@@ -464,6 +479,13 @@ const POC_MARKERS_IN_MAIN_HEADER_4K: usize = 1;
 /// INVALID_JPEG2000_POC_MARKER_LOCATION and INCORRECT_JPEG2000_POC_MARKER.
 fn marker_placement_notes(scan: &MarkerScan, is_4k: bool, label: &str) -> Vec<Note> {
     let mut notes = Vec::new();
+
+    if scan.truncated {
+        notes.push(Note::error(
+            Code::CheckSkipped,
+            "the marker walk stopped before the end of the codestream, so the TLM and POC placement checks did not cover all of it",
+        ));
+    }
 
     if !scan.tlm_present {
         notes.push(Note::error(
@@ -1054,10 +1076,11 @@ impl PictureEssenceReader {
 ///
 /// `scan_every_frame` false reads only frame 0, which catches an encoder that was
 /// wrong for the whole asset; reading the rest is what catches a stream that goes
-/// non-conformant partway through, and costs a pass over the essence. Non-picture
-/// or unreadable MXFs yield no notes. Encrypted essence is decrypted with `keys`;
-/// without a covering key it skips (with a note when a KDM was supplied but lacks
-/// the KeyId).
+/// non-conformant partway through, and costs a pass over the essence. An MXF the
+/// picture readers will not open or describe reports that rather than passing, so
+/// call this only for a track the caller knows carries picture. Encrypted essence
+/// is decrypted with `keys`; without a covering key it skips (with a note when a
+/// KDM was supplied but lacks the KeyId).
 pub fn check_picture_j2k_mxf(
     path: &Path,
     keys: &crate::kdm::ContentKeys,
@@ -1069,13 +1092,44 @@ pub fn check_picture_j2k_mxf(
         return (notes, None);
     };
     let Some(mut reader) = PictureEssenceReader::open(s, family) else {
+        notes.push(
+            Note::warning(
+                Code::MxfUnreadable,
+                "codestream checks did not run: asdcplib would not open the file as picture essence",
+            )
+            .with_file(path),
+        );
         return (notes, None);
     };
-    let Ok(desc) = reader.picture_descriptor() else {
-        return (notes, None);
+    let desc = match reader.picture_descriptor() {
+        Ok(desc) => desc,
+        Err(e) => {
+            notes.push(
+                Note::warning(
+                    Code::MxfUnreadable,
+                    format!(
+                        "codestream checks did not run: the picture descriptor would not read: {e}"
+                    ),
+                )
+                .with_file(path),
+            );
+            return (notes, None);
+        }
     };
-    let Ok(info) = reader.writer_info() else {
-        return (notes, None);
+    let info = match reader.writer_info() {
+        Ok(info) => info,
+        Err(e) => {
+            notes.push(
+                Note::warning(
+                    Code::MxfUnreadable,
+                    format!(
+                        "codestream checks did not run: the MXF writer info would not read: {e}"
+                    ),
+                )
+                .with_file(path),
+            );
+            return (notes, None);
+        }
     };
     let essence = keys.resolve(&info);
     if essence.is_missing() {
@@ -1126,23 +1180,40 @@ pub fn check_picture_j2k_mxf(
                 Ok(n) => n,
                 Err(e) => {
                     // with a key set, a read failure on frame 0 is a decrypt/MIC
-                    // integrity failure; report it. Later frames just end the scan.
-                    if scanned == 0 && info.encrypted_essence {
-                        notes.push(
-                            Note::error(
-                                Code::MxfHashMismatch,
-                                format!("frame 0 integrity check (HMAC/MIC) failed: {e}"),
-                            )
-                            .with_file(path),
-                        );
-                    }
+                    // integrity failure. Cleartext essence that will not read is
+                    // simply broken, and a later frame cuts the scan short.
+                    let note = match (scanned, info.encrypted_essence) {
+                        (0, true) => Note::error(
+                            Code::MxfHashMismatch,
+                            format!("frame 0 integrity check (HMAC/MIC) failed: {e}"),
+                        ),
+                        (0, false) => Note::error(
+                            Code::MxfUnreadable,
+                            format!("codestream checks did not run: frame 0 would not read: {e}"),
+                        ),
+                        _ => Note::warning(
+                            Code::MxfUnreadable,
+                            format!("scan stopped at frame {i} of {frames}: {e}"),
+                        ),
+                    };
+                    notes.push(note.with_file(path));
                     break 'edit_units;
                 }
             };
             let frame = &buf[..n];
-            // essence that isn't a readable codestream (encrypted without a KDM, or
-            // not picture) can't be checked; bail on the first frame.
+            // essence that isn't a readable codestream can't be checked. Encrypted
+            // essence with no covering key is already noted upstream, so only
+            // cleartext essence has anything left to report here.
             if scanned == 0 && !starts_with_soc(frame) {
+                if !info.encrypted_essence {
+                    notes.push(
+                        Note::error(
+                            Code::MxfInvalidStructure,
+                            "frame 0 is not a JPEG 2000 codestream, so no codestream check ran",
+                        )
+                        .with_file(path),
+                    );
+                }
                 return (notes, None);
             }
             scanned += 1;
@@ -1489,6 +1560,7 @@ mod cinema_tests {
                 expected: 4,
                 found: 0,
             }],
+            truncated: false,
         };
         let notes = marker_placement_notes(&scan, true, "Cinema 4K");
         assert!(
@@ -1808,6 +1880,69 @@ pub(crate) mod frame_scan_tests {
             guard_bits[0].message
         );
         assert_eq!(guard_bits[0].file.as_deref(), Some(&*mxf));
+    }
+
+    /// A 2K picture MXF whose one frame is not a codestream, the way essence that
+    /// was wrapped from the wrong source arrives.
+    fn write_non_codestream_mxf(dir: &Path) -> PathBuf {
+        let path = dir.join("not_j2k.mxf");
+        let mut writer = MxfWriter::new();
+        writer
+            .open_write(
+                path.to_str().unwrap(),
+                &fixture_writer_info(),
+                &fixture_descriptor(1),
+                16_384,
+            )
+            .unwrap();
+        writer.write_frame(&vec![0u8; 1024], None, None).unwrap();
+        writer.finalize().unwrap();
+        path
+    }
+
+    #[test]
+    fn essence_the_picture_readers_will_not_open_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("junk.mxf");
+        std::fs::write(&path, b"this is not an MXF file").unwrap();
+
+        let (notes, forensics) = check_picture_j2k_mxf(
+            &path,
+            &crate::kdm::ContentKeys::none(),
+            PictureEssenceFamily::Cinema,
+            false,
+        );
+        assert!(forensics.is_none());
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::MxfUnreadable);
+        assert!(
+            notes[0].message.contains("codestream checks did not run"),
+            "got: {}",
+            notes[0].message
+        );
+        assert_eq!(notes[0].file.as_deref(), Some(&*path));
+    }
+
+    #[test]
+    fn cleartext_frame_zero_that_is_no_codestream_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let mxf = write_non_codestream_mxf(dir.path());
+
+        let (notes, forensics) = check_picture_j2k_mxf(
+            &mxf,
+            &crate::kdm::ContentKeys::none(),
+            PictureEssenceFamily::Cinema,
+            false,
+        );
+        assert!(forensics.is_none());
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::MxfInvalidStructure);
+        assert_eq!(notes[0].severity, crate::Severity::Error);
+        assert!(
+            notes[0].message.contains("frame 0 is not a JPEG 2000"),
+            "got: {}",
+            notes[0].message
+        );
     }
 
     #[test]
@@ -2167,6 +2302,38 @@ mod as02_tests {
         assert_eq!(
             info.decomposition_levels, 0,
             "decomposition levels are not visible to ffprobe"
+        );
+        assert!(
+            info.marker_fields_unavailable,
+            "the placeholder fields must be flagged as such"
+        );
+    }
+
+    // the checks on the marker-derived fields are gated on a nonzero value, so
+    // placeholder fields make them skip themselves
+    #[test]
+    fn placeholder_marker_fields_draw_a_skip_note() {
+        let placeholders = J2kCodestreamInfo {
+            marker_fields_unavailable: true,
+            ..Default::default()
+        };
+        let notes = validate_j2k_dci(&placeholders);
+        let skipped = notes
+            .iter()
+            .find(|n| n.code == Code::CheckSkipped)
+            .expect("placeholder fields must say the marker checks did not run");
+        assert_eq!(skipped.severity, crate::Severity::Info);
+        assert!(
+            skipped.message.contains("marker-level checks skipped"),
+            "got: {}",
+            skipped.message
+        );
+
+        assert!(
+            !validate_j2k_dci(&J2kCodestreamInfo::default())
+                .iter()
+                .any(|n| n.code == Code::CheckSkipped),
+            "fields read off a real codestream draw no skip note"
         );
     }
 

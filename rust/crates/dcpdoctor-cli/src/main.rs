@@ -391,9 +391,6 @@ enum Commands {
     FacilityCheck {
         /// DCP directory
         dcp_dir: PathBuf,
-        /// Strict SMPTE compliance
-        #[arg(long)]
-        strict: bool,
         /// Skip hash verification
         #[arg(long)]
         no_hashes: bool,
@@ -516,8 +513,10 @@ fn main() {
             let result = dcpdoctor_core::diff::diff_dcps(&dcp_a, &dcp_b, hashes);
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&result).unwrap());
-            } else if result.identical {
+            } else if result.identical && hashes {
                 println!("DCPs are identical");
+            } else if result.identical {
+                println!("DCPs match structurally, asset bytes were not compared (pass --hashes)");
             } else {
                 println!("Found {} differences:", result.differences.len());
                 for diff in &result.differences {
@@ -791,8 +790,12 @@ fn main() {
                 for entry in &result.entries {
                     if !entry.file_exists {
                         println!("  [missing] {} ({})", entry.filename, entry.asset_id);
+                    } else if entry.expected_hash.is_empty() {
+                        println!("  [hash] {} (PKL records no hash)", entry.filename);
                     } else if !entry.hash_match {
                         println!("  [hash] {}", entry.filename);
+                    } else if entry.size_missing {
+                        println!("  [size] {} (PKL records no size)", entry.filename);
                     } else if !entry.size_match {
                         println!(
                             "  [size] {} (expected {}, got {})",
@@ -867,6 +870,8 @@ fn main() {
                             println!("Loudness range:      {:.1} LU", result.loudness_range_lu);
                             if leq.success {
                                 println!("Leq(m) (ISO 21727):  {:.1} dB", leq.leq_m_db);
+                            } else {
+                                println!("Leq(m) (ISO 21727):  unavailable ({})", leq.error);
                             }
                         }
                     }
@@ -1016,6 +1021,11 @@ fn main() {
             if let Some(ref audio_path) = audio {
                 match dcpdoctor_core::audio::analyze_audio(audio_path) {
                     Ok(analysis) => {
+                        if !analysis.per_channel {
+                            findings.push(
+                                "Per-channel audio levels unavailable, the levels below are one aggregate over all channels".to_string(),
+                            );
+                        }
                         for ch in &analysis.channels {
                             if ch.peak_dbfs >= clipping_threshold {
                                 findings.push(format!(
@@ -1217,6 +1227,16 @@ fn main() {
                 }
             };
 
+            if schema_dir.is_none() {
+                notes.push(dcpdoctor_core::Note {
+                    severity: dcpdoctor_core::Severity::Warning,
+                    code: dcpdoctor_core::Code::SchemaValidationSkipped,
+                    message: "XSD validation did not run: no --schema-dir given, so only XML well-formedness was checked".to_string(),
+                    file: Some(dcp_dir.clone()),
+                    line: 0,
+                });
+            }
+
             for xml_file in xml_files {
                 let schema_result = match schema_dir.as_deref() {
                     Some(schema_dir) => {
@@ -1224,6 +1244,15 @@ fn main() {
                     }
                     None => dcpdoctor_core::schema::validate_wellformed_file(&xml_file),
                 };
+                if let Some(reason) = schema_result.skipped {
+                    notes.push(dcpdoctor_core::Note {
+                        severity: dcpdoctor_core::Severity::Warning,
+                        code: dcpdoctor_core::Code::SchemaValidationSkipped,
+                        message: reason,
+                        file: Some(xml_file.clone()),
+                        line: 0,
+                    });
+                }
                 for error in schema_result.errors {
                     notes.push(dcpdoctor_core::Note {
                         severity: dcpdoctor_core::Severity::Error,
@@ -1247,7 +1276,7 @@ fn main() {
             } else if notes.is_empty() {
                 println!("Schema validation passed");
             } else {
-                println!("{} schema issue(s):", notes.len());
+                println!("{} schema finding(s):", notes.len());
                 for note in &notes {
                     println!("{note}");
                 }
@@ -1296,6 +1325,9 @@ fn main() {
             let result = dcpdoctor_core::av_sync::detect_av_sync(&opts);
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else if !result.success {
+                eprintln!("A/V sync measurement failed: {}", result.error);
+                std::process::exit(1);
             } else {
                 println!("A/V Sync Analysis:");
                 println!(
@@ -1457,14 +1489,11 @@ fn main() {
         }
         Some(Commands::FacilityCheck {
             dcp_dir,
-            strict,
             no_hashes,
             no_naming,
         }) => {
             let opts = dcpdoctor_core::facility_check::FacilityCheckOptions {
-                expected_standard: dcpdoctor_core::dcp::detect_standard(&dcp_dir),
                 dcp_dir,
-                strict,
                 check_naming: !no_naming,
                 check_hashes: !no_hashes,
             };
@@ -1730,18 +1759,30 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
         }
 
         // Timeline SVG generation
-        if let Some(ref timeline_path) = flags.timeline
-            && let Ok(dcp) = dcpdoctor_core::dcp::open_dcp(dir)
-        {
-            for (_cpl_path, cpl) in &dcp.cpls {
-                if let Ok(mut file) = std::fs::File::create(timeline_path) {
-                    if let Err(e) = dcpdoctor_core::timeline::write_timeline_svg(cpl, &mut file) {
-                        eprintln!("Failed to write timeline SVG: {e}");
-                    } else {
-                        eprintln!("Timeline SVG written to {}", timeline_path.display());
-                    }
-                    break;
-                }
+        if let Some(ref timeline_path) = flags.timeline {
+            match dcpdoctor_core::dcp::open_dcp(dir) {
+                Ok(dcp) => match dcp.cpls.first() {
+                    Some((_cpl_path, cpl)) => match std::fs::File::create(timeline_path) {
+                        Ok(mut file) => {
+                            if let Err(e) =
+                                dcpdoctor_core::timeline::write_timeline_svg(cpl, &mut file)
+                            {
+                                eprintln!("Failed to write timeline SVG: {e}");
+                            } else {
+                                eprintln!("Timeline SVG written to {}", timeline_path.display());
+                            }
+                        }
+                        Err(e) => eprintln!(
+                            "Failed to create timeline SVG {}: {e}",
+                            timeline_path.display()
+                        ),
+                    },
+                    None => eprintln!("No CPL in {}, no timeline SVG written", dir.display()),
+                },
+                Err(_) => eprintln!(
+                    "Could not open the DCP in {}, no timeline SVG written",
+                    dir.display()
+                ),
             }
         }
 
@@ -1813,7 +1854,16 @@ fn run_deep_j2k(dcp_dir: &std::path::Path) -> Vec<dcpdoctor_core::Note> {
 
     let entries = match std::fs::read_dir(dcp_dir) {
         Ok(e) => e,
-        Err(_) => return notes,
+        Err(e) => {
+            notes.push(dcpdoctor_core::Note::warning(
+                dcpdoctor_core::Code::CheckSkipped,
+                format!(
+                    "deep J2K checks did not run, cannot read {}: {e}",
+                    dcp_dir.display()
+                ),
+            ));
+            return notes;
+        }
     };
 
     for entry in entries.flatten() {
@@ -1827,8 +1877,17 @@ fn run_deep_j2k(dcp_dir: &std::path::Path) -> Vec<dcpdoctor_core::Note> {
                         notes.push(note);
                     }
                 }
-                Err(_) => {
-                    // Not a picture MXF or ffprobe unavailable; skip
+                // a sound MXF has no video stream, so it is not a picture check
+                // that failed. anything else is a picture MXF neither reader read
+                Err(e) if e.contains("No video/J2K stream") => {}
+                Err(e) => {
+                    notes.push(
+                        dcpdoctor_core::Note::warning(
+                            dcpdoctor_core::Code::CheckSkipped,
+                            format!("deep J2K checks did not run for this MXF: {e}"),
+                        )
+                        .with_file(&path),
+                    );
                 }
             }
         }
@@ -1917,6 +1976,27 @@ fn run_premium_checks(dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdo
     }
 
     if flags.hdr || flags.atmos || flags.dolby_vision || flags.prores {
+        // every one of these detectors reads its answer out of ffprobe, and
+        // without it they all report "nothing detected"
+        if !dcpdoctor_core::studio::ffprobe_available() {
+            let requested = [
+                (flags.hdr, "HDR metadata"),
+                (flags.atmos, "Dolby Atmos IAB"),
+                (flags.dolby_vision, "Dolby Vision"),
+                (flags.prores, "ProRes essence"),
+            ];
+            for (_, name) in requested.iter().filter(|(on, _)| *on) {
+                notes.push(
+                    dcpdoctor_core::Note::warning(
+                        dcpdoctor_core::Code::CheckSkipped,
+                        format!("{name} check did not run: ffprobe not found on PATH"),
+                    )
+                    .with_file(dir),
+                );
+            }
+            return notes;
+        }
+
         for mxf in mxf_files(dir) {
             if flags.hdr {
                 let h = premium::detect_hdr_metadata(&mxf);

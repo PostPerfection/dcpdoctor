@@ -10,7 +10,19 @@ pub fn check_hfr_compliance(cpl_path: &Path) -> Vec<Note> {
 
     let content = match std::fs::read_to_string(cpl_path) {
         Ok(c) => c,
-        Err(_) => return notes,
+        Err(e) => {
+            notes.push(
+                Note::warning(
+                    Code::CheckSkipped,
+                    format!(
+                        "HFR checks did not run, cannot read {}: {e}",
+                        cpl_path.display()
+                    ),
+                )
+                .with_file(cpl_path),
+            );
+            return notes;
+        }
     };
 
     if !content.contains("CompositionPlaylist") {

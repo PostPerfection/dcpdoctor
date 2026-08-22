@@ -19,6 +19,11 @@ const FRAME_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 /// Peak bitrate above this fraction of the limit is reported as a warning.
 const NEAR_LIMIT_FRACTION: f64 = 0.95;
 
+/// The `error` a track whose content key the run does not hold reports. The
+/// callers that know about the KDM report that case themselves, so the skipped
+/// measurement note leaves it alone.
+pub const NO_CONTENT_KEY_ERROR: &str = "Encrypted essence with no content key";
+
 /// Frame-level bitrate statistics for a picture MXF (postkit's reader output).
 pub type FrameBitrateStats = postkit::j2k::MxfBitrateStats;
 
@@ -68,7 +73,7 @@ fn measure_frames(
 
     let essence = keys.resolve(&info);
     if essence.is_missing() {
-        stats.error = "Encrypted essence with no content key".into();
+        stats.error = NO_CONTENT_KEY_ERROR.into();
         return stats;
     }
     let mut contexts = match essence.contexts() {
@@ -168,6 +173,25 @@ pub fn check_bitrate_compliance(stats: &FrameBitrateStats, mxf_path: &Path) -> V
     }
 
     notes
+}
+
+/// The note for a measurement that did not happen, so a dropped peak-bitrate
+/// check is never read as a clean one. `None` once the measurement succeeded, and
+/// for the missing content key, which the KDM-aware caller reports itself.
+pub fn skipped_measurement_note(stats: &FrameBitrateStats, mxf_path: &Path) -> Option<Note> {
+    if stats.valid || stats.error == NO_CONTENT_KEY_ERROR {
+        return None;
+    }
+    Some(
+        Note::warning(
+            Code::CheckSkipped,
+            format!(
+                "the peak bitrate check did not run: the essence could not be measured: {}",
+                stats.error
+            ),
+        )
+        .with_file(mxf_path),
+    )
 }
 
 /// Report the measured peak for IMF picture essence as INFO. The DCI limit is a
@@ -442,6 +466,34 @@ mod tests {
         );
         assert!(report_measured_bitrate(&without_key, &path).is_empty());
         assert!(check_bitrate_compliance(&without_key, &path).is_empty());
+        assert!(
+            skipped_measurement_note(&without_key, &path).is_none(),
+            "the KDM-aware caller reports the missing key itself"
+        );
+    }
+
+    #[test]
+    fn an_unmeasurable_track_says_the_peak_check_did_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("junk.mxf");
+        std::fs::write(&path, b"not an MXF").unwrap();
+
+        let stats = analyze_picture_bitrate(&path, &ContentKeys::none());
+        assert!(!stats.valid);
+        let note = skipped_measurement_note(&stats, &path).expect("a skipped measurement says so");
+        assert_eq!(note.code, Code::CheckSkipped);
+        assert_eq!(note.severity, crate::Severity::Warning);
+        assert!(
+            note.message.contains(&stats.error),
+            "the note must carry the reason, got: {}",
+            note.message
+        );
+
+        let readable = dir.path().join("picture.mxf");
+        write_mono_mxf(&readable, 2048, 1080, 1024);
+        let measured = measure(&readable);
+        assert!(measured.valid, "measurement failed: {}", measured.error);
+        assert!(skipped_measurement_note(&measured, &readable).is_none());
     }
 
     // 1_000_000 bytes per frame at 24 fps is 192 Mb/s, under the limit at any

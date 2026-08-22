@@ -17,10 +17,10 @@ use x509_parser::prelude::*;
 use x509_parser::public_key::PublicKey;
 
 /// Apply the per-cert and chain rules to the embedded certificate chain.
-/// Parse failures are already reported by signature::verify_cert_chain, so we
-/// silently skip anything that does not parse here.
+/// Decode and parse failures are already reported by signature::verify_cert_chain,
+/// so we silently skip anything that does not parse here.
 pub fn check_certificates(xml_content: &str, file: &Path) -> Vec<Note> {
-    let ders = extract_certs(xml_content);
+    let (ders, _undecodable) = extract_certs(xml_content);
     if ders.is_empty() {
         return Vec::new();
     }
@@ -110,7 +110,9 @@ pub fn check_certificates(xml_content: &str, file: &Path) -> Vec<Note> {
             )),
         }
 
-        // rule 6: dnQualifier == Base64(SHA-1(public-key BIT STRING payload))
+        // rule 6: dnQualifier == Base64(SHA-1(public-key BIT STRING payload)).
+        // 430-2 requires the attribute, so a subject without one is not merely
+        // unchecked, it is non-conformant.
         if let Some(dnq) = attr(cert.subject(), &OID_X509_DN_QUALIFIER) {
             let thumb = public_key_thumbprint(cert);
             if dnq != thumb {
@@ -122,6 +124,12 @@ pub fn check_certificates(xml_content: &str, file: &Path) -> Vec<Note> {
                     file,
                 ));
             }
+        } else {
+            notes.push(err(
+                Code::CertificateThumbprintInvalid,
+                format!("Certificate '{name}' has no dnQualifier"),
+                file,
+            ));
         }
     }
 
@@ -258,6 +266,34 @@ mod tests {
                 .iter()
                 .any(|n| n.code == Code::CertificateKeySizeInvalid),
             "1024-bit key must be flagged, got: {notes:?}"
+        );
+    }
+
+    // 430-2 requires the dnQualifier
+    #[test]
+    fn a_certificate_with_no_dn_qualifier_is_flagged() {
+        let xml = format!(
+            r#"<CompositionPlaylist xmlns="x"><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{BAD_1024}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature></CompositionPlaylist>"#
+        );
+        let notes = check_certificates(&xml, Path::new("cpl.xml"));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::CertificateThumbprintInvalid
+                    && n.message.contains("has no dnQualifier")),
+            "a cert with no dnQualifier must be flagged, got: {notes:?}"
+        );
+
+        // the real ECL leaf carries one that matches, so the rule is not vacuous
+        let xml = format!(
+            r#"<CompositionPlaylist xmlns="x"><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{ECL_LEAF}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature></CompositionPlaylist>"#
+        );
+        let notes = check_certificates(&xml, Path::new("cpl.xml"));
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.code == Code::CertificateThumbprintInvalid),
+            "a conformant leaf must stay silent, got: {notes:?}"
         );
     }
 

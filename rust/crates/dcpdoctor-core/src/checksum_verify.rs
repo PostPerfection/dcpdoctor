@@ -1,5 +1,6 @@
 //! Full package checksum verification — verify all hashes in PKL against files.
 
+use crate::assetmap::ParseXmlFile;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -35,6 +36,8 @@ pub struct ChecksumEntry {
     pub expected_size: i64,
     pub actual_size: i64,
     pub size_match: bool,
+    /// the PKL asset carries no parseable Size, so nothing was compared
+    pub size_missing: bool,
 }
 
 /// Result of verifying all checksums in a package.
@@ -75,7 +78,13 @@ pub fn verify_package_checksums(opts: &ChecksumVerifyOptions) -> ChecksumVerifyR
 
     // Process each PKL
     for pkl_path in &pkl_files {
-        let assets = parse_pkl_assets(pkl_path);
+        let assets = match parse_pkl_assets(pkl_path) {
+            Ok(a) => a,
+            Err(e) => {
+                result.error = e;
+                return result;
+            }
+        };
 
         for asset in &assets {
             let mut entry = ChecksumEntry {
@@ -85,9 +94,10 @@ pub fn verify_package_checksums(opts: &ChecksumVerifyOptions) -> ChecksumVerifyR
                 expected_hash: asset.hash.clone(),
                 computed_hash: String::new(),
                 hash_match: true,
-                expected_size: asset.size,
+                expected_size: asset.size.unwrap_or(0),
                 actual_size: 0,
                 size_match: true,
+                size_missing: false,
             };
 
             // Resolve file path
@@ -118,29 +128,43 @@ pub fn verify_package_checksums(opts: &ChecksumVerifyOptions) -> ChecksumVerifyR
             }
 
             // Size check
-            if opts.verify_sizes && entry.expected_size > 0 {
-                entry.actual_size = std::fs::metadata(&file_path)
-                    .map(|m| m.len() as i64)
-                    .unwrap_or(0);
-                entry.size_match = entry.actual_size == entry.expected_size;
+            if opts.verify_sizes {
+                match asset.size {
+                    Some(expected) => {
+                        entry.actual_size = std::fs::metadata(&file_path)
+                            .map(|m| m.len() as i64)
+                            .unwrap_or(0);
+                        entry.size_match = entry.actual_size == expected;
+                    }
+                    None => {
+                        // no Size to compare against, so the entry is unverified
+                        entry.size_missing = true;
+                        entry.size_match = false;
+                    }
+                }
                 if !entry.size_match {
                     result.size_mismatches += 1;
                 }
             }
 
             // Hash check
-            if opts.verify_hashes && !entry.expected_hash.is_empty() {
-                match postkit::hash::hash_file(&file_path, postkit::hash::HashAlgorithm::Sha1) {
-                    Ok(hash_result) => {
-                        entry.computed_hash = hash_result.base64.clone();
-                        entry.hash_match = entry.computed_hash == entry.expected_hash;
-                        if !entry.hash_match {
+            if opts.verify_hashes {
+                if entry.expected_hash.is_empty() {
+                    entry.hash_match = false;
+                    result.hash_mismatches += 1;
+                } else {
+                    match postkit::hash::hash_file(&file_path, postkit::hash::HashAlgorithm::Sha1) {
+                        Ok(hash_result) => {
+                            entry.computed_hash = hash_result.base64.clone();
+                            entry.hash_match = entry.computed_hash == entry.expected_hash;
+                            if !entry.hash_match {
+                                result.hash_mismatches += 1;
+                            }
+                        }
+                        Err(_) => {
+                            entry.hash_match = false;
                             result.hash_mismatches += 1;
                         }
-                    }
-                    Err(_) => {
-                        entry.hash_match = false;
-                        result.hash_mismatches += 1;
                     }
                 }
             }
@@ -161,6 +185,11 @@ pub fn verify_package_checksums(opts: &ChecksumVerifyOptions) -> ChecksumVerifyR
         }
     }
 
+    if result.total_assets == 0 {
+        result.error = format!("No PKL assets to verify in {}", opts.package_dir.display());
+        return result;
+    }
+
     result.all_valid =
         result.hash_mismatches == 0 && result.size_mismatches == 0 && result.missing_files == 0;
     result.success = true;
@@ -172,7 +201,8 @@ pub fn verify_package_checksums(opts: &ChecksumVerifyOptions) -> ChecksumVerifyR
 struct PklAsset {
     id: String,
     hash: String,
-    size: i64,
+    /// None when the PKL asset has no Size element or it does not parse
+    size: Option<i64>,
     original_filename: String,
 }
 
@@ -188,14 +218,11 @@ fn find_pkl_files(dir: &Path) -> Vec<PathBuf> {
             continue;
         }
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name.contains("PKL") || name.contains("pkl") {
-            pkls.push(path);
-            continue;
-        }
-        if path.extension().is_some_and(|e| e == "xml")
-            && let Ok(content) = std::fs::read_to_string(&path)
-            && content[..content.len().min(512)].contains("PackingList")
-        {
+        let named_like_pkl = name.contains("PKL") || name.contains("pkl");
+        let is_xml = path.extension().is_some_and(|e| e == "xml");
+        // an ASSETMAP carries a <PackingList> flag element of its own, so only a
+        // root-element check separates a real PKL from it
+        if (named_like_pkl || is_xml) && crate::pkl::Pkl::parse(&path).is_some() {
             pkls.push(path);
         }
     }
@@ -225,10 +252,9 @@ fn parse_assetmap(dir: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
-fn parse_pkl_assets(pkl_path: &Path) -> Vec<PklAsset> {
-    let Ok(content) = std::fs::read_to_string(pkl_path) else {
-        return Vec::new();
-    };
+fn parse_pkl_assets(pkl_path: &Path) -> Result<Vec<PklAsset>, String> {
+    let content = std::fs::read_to_string(pkl_path)
+        .map_err(|e| format!("Cannot read PKL {}: {e}", pkl_path.display()))?;
 
     let asset_re = regex_lite::Regex::new(r"<Asset>[\s\S]*?</Asset>").unwrap();
     let id_re = regex_lite::Regex::new(r"<Id>urn:uuid:([^<]+)</Id>").unwrap();
@@ -237,7 +263,7 @@ fn parse_pkl_assets(pkl_path: &Path) -> Vec<PklAsset> {
     let filename_re =
         regex_lite::Regex::new(r"<OriginalFileName>([^<]+)</OriginalFileName>").unwrap();
 
-    asset_re
+    let assets: Vec<PklAsset> = asset_re
         .find_iter(&content)
         .map(|m| {
             let block = m.as_str();
@@ -252,15 +278,23 @@ fn parse_pkl_assets(pkl_path: &Path) -> Vec<PklAsset> {
                     .unwrap_or_default(),
                 size: size_re
                     .captures(block)
-                    .and_then(|c| c[1].parse().ok())
-                    .unwrap_or(0),
+                    .and_then(|c| c[1].trim().parse().ok()),
                 original_filename: filename_re
                     .captures(block)
                     .map(|c| c[1].to_string())
                     .unwrap_or_default(),
             }
         })
-        .collect()
+        .collect();
+
+    if assets.is_empty() {
+        return Err(format!(
+            "No <Asset> entries parsed from PKL {}",
+            pkl_path.display()
+        ));
+    }
+
+    Ok(assets)
 }
 
 fn resolve_asset_path(
@@ -293,6 +327,87 @@ fn resolve_asset_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Write a package holding one 5-byte asset plus the PKL body given.
+    fn package_with_pkl_assets(asset_xml: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.mxf"), b"hello").unwrap();
+        std::fs::write(
+            dir.path().join("PKL_test.xml"),
+            format!(
+                r#"<?xml version="1.0"?>
+<PackingList xmlns="http://www.smpte-ra.org/schemas/429-8/2007/PKL">
+  <AssetList>{asset_xml}</AssetList>
+</PackingList>"#
+            ),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_pkl_with_no_asset_entries_is_a_failure_not_an_empty_pass() {
+        let dir = package_with_pkl_assets("");
+        let result = verify_package_checksums(&ChecksumVerifyOptions {
+            package_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        });
+        assert!(!result.success, "a PKL nothing parsed out of cannot pass");
+        assert!(!result.error.is_empty(), "the reason must be reported");
+        assert_eq!(result.total_assets, 0);
+    }
+
+    #[test]
+    fn an_asset_without_a_hash_fails_rather_than_counting_as_verified() {
+        let dir = package_with_pkl_assets(
+            r#"
+    <Asset>
+      <Id>urn:uuid:11111111-2222-3333-4444-555555555555</Id>
+      <Hash></Hash>
+      <Size>5</Size>
+      <OriginalFileName>test.mxf</OriginalFileName>
+    </Asset>"#,
+        );
+        let result = verify_package_checksums(&ChecksumVerifyOptions {
+            package_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        });
+        assert!(result.success);
+        assert_eq!(result.verified_ok, 0, "entries: {:?}", result.entries);
+        assert_eq!(result.hash_mismatches, 1);
+        assert!(!result.all_valid);
+    }
+
+    #[test]
+    fn an_asset_without_a_size_is_reported_rather_than_skipped() {
+        let dir = package_with_pkl_assets("");
+        let real_hash = postkit::hash::hash_file(
+            &dir.path().join("test.mxf"),
+            postkit::hash::HashAlgorithm::Sha1,
+        )
+        .unwrap()
+        .base64;
+        let dir = package_with_pkl_assets(&format!(
+            r#"
+    <Asset>
+      <Id>urn:uuid:11111111-2222-3333-4444-555555555555</Id>
+      <Hash>{real_hash}</Hash>
+      <OriginalFileName>test.mxf</OriginalFileName>
+    </Asset>"#
+        ));
+        let result = verify_package_checksums(&ChecksumVerifyOptions {
+            package_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        });
+        assert!(result.success);
+        assert!(
+            result.entries[0].size_missing,
+            "entries: {:?}",
+            result.entries
+        );
+        assert_eq!(result.verified_ok, 0);
+        assert!(!result.all_valid);
+    }
 
     #[test]
     fn size_mismatch_is_detected_without_hashing() {

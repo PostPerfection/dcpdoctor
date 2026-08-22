@@ -192,9 +192,11 @@ pub fn schema_pass_unavailable(schema_dir: Option<&Path>) -> Option<String> {
 
 /// Schema-validate a single CPL/PKL/ASSETMAP/subtitle against the XSDs in
 /// `schema_dir`, emitting [`Code::XmlSchemaViolation`] for each violation.
-/// Returns empty when the file is not schema-checkable, its schema is absent, or
-/// xmllint is not installed (schema validation is best-effort and never a hard
-/// dependency; [`schema_pass_unavailable`] is how a run reports that).
+/// Returns empty when the file is not schema-checkable or xmllint is not
+/// installed (schema validation is best-effort and never a hard dependency;
+/// [`schema_pass_unavailable`] is how a run reports that). A document whose own
+/// XSD is missing from `schema_dir` gets a [`Code::SchemaValidationSkipped`]
+/// warning instead, since the rest of the directory looks like coverage.
 pub fn check_schema(xml_file: &Path, schema_dir: &Path) -> Vec<Note> {
     let Ok(content) = std::fs::read_to_string(xml_file) else {
         return Vec::new();
@@ -207,11 +209,22 @@ pub fn check_schema(xml_file: &Path, schema_dir: &Path) -> Vec<Note> {
 pub fn check_schema_xml(xml: &str, source: &Path, schema_dir: &Path) -> Vec<Note> {
     use std::io::Write;
 
-    let Ok(mut file) = tempfile::NamedTempFile::new() else {
-        return Vec::new();
+    let staging_failed = |e: std::io::Error| {
+        vec![
+            Note::warning(
+                Code::SchemaValidationSkipped,
+                format!("could not stage document for {XMLLINT}: {e}"),
+            )
+            .with_file(source),
+        ]
     };
-    if file.write_all(xml.as_bytes()).is_err() || file.flush().is_err() {
-        return Vec::new();
+
+    let mut file = match tempfile::NamedTempFile::new() {
+        Ok(f) => f,
+        Err(e) => return staging_failed(e),
+    };
+    if let Err(e) = file.write_all(xml.as_bytes()).and_then(|()| file.flush()) {
+        return staging_failed(e);
     }
     schema_notes(xml, source, file.path(), schema_dir)
 }
@@ -224,7 +237,16 @@ fn schema_notes(content: &str, source: &Path, linted: &Path, schema_dir: &Path) 
         return Vec::new();
     };
     if !schema_dir.join(schema_file).exists() {
-        return Vec::new();
+        return vec![
+            Note::warning(
+                Code::SchemaValidationSkipped,
+                format!(
+                    "XSD validation did not run: {schema_file} is not in {}",
+                    schema_dir.display()
+                ),
+            )
+            .with_file(source),
+        ];
     }
 
     let result = validate_schema(linted, schema_dir);
@@ -256,12 +278,18 @@ pub struct SchemaError {
 pub struct SchemaValidationResult {
     pub valid: bool,
     pub errors: Vec<SchemaError>,
+    /// Why no XSD was applied and only well-formedness was checked. `valid` on
+    /// its own would read as an XSD pass that never happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
 }
 
 /// Validate XML against SMPTE XSD schemas using xmllint.
 ///
-/// Delegates to the system `xmllint` tool for full XSD validation.
-/// Falls back to basic well-formedness checking if xmllint is unavailable.
+/// Delegates to the system `xmllint` tool for full XSD validation. Falls back to
+/// basic well-formedness checking when the document maps to no XSD, its XSD is
+/// absent, or xmllint is not installed, and reports which of those happened in
+/// `skipped`.
 pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationResult {
     // Determine which XSD to use based on the XML content
     let content = match std::fs::read_to_string(xml_file) {
@@ -274,6 +302,7 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
                     column: 0,
                     message: format!("Failed to read XML file: {e}"),
                 }],
+                skipped: None,
             };
         }
     };
@@ -281,7 +310,11 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
     // Detect schema type from root element + standard
     let Some(schema_file) = schema_file_for(&content) else {
         // Can't determine schema — do well-formedness check only
-        return validate_wellformed(&content);
+        let root = root_element(&content).map_or_else(|| "no element".into(), |(name, _)| name);
+        return wellformed_only(
+            &content,
+            format!("XSD validation did not run: no XSD is mapped for root element <{root}>"),
+        );
     };
 
     let schema_path = schema_dir.join(schema_file);
@@ -291,7 +324,13 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
             "Schema file {} not found, falling back to well-formedness check",
             schema_path.display()
         );
-        return validate_wellformed(&content);
+        return wellformed_only(
+            &content,
+            format!(
+                "XSD validation did not run: {schema_file} is not in {}",
+                schema_dir.display()
+            ),
+        );
     }
 
     // Use xmllint for full XSD validation. The schemas import each other via
@@ -313,6 +352,7 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
                 SchemaValidationResult {
                     valid: true,
                     errors: Vec::new(),
+                    skipped: None,
                 }
             } else {
                 let stderr = String::from_utf8_lossy(&o.stderr);
@@ -344,14 +384,26 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
                 SchemaValidationResult {
                     valid: false,
                     errors,
+                    skipped: None,
                 }
             }
         }
         Err(_) => {
             // xmllint not available — fall back to well-formedness
             tracing::warn!("xmllint not found, falling back to well-formedness check");
-            validate_wellformed(&content)
+            wellformed_only(
+                &content,
+                format!("XSD validation did not run: {XMLLINT} is not installed"),
+            )
         }
+    }
+}
+
+/// A well-formedness-only result carrying the reason no XSD was applied.
+fn wellformed_only(content: &str, reason: String) -> SchemaValidationResult {
+    SchemaValidationResult {
+        skipped: Some(reason),
+        ..validate_wellformed(content)
     }
 }
 
@@ -455,6 +507,7 @@ fn validate_wellformed(content: &str) -> SchemaValidationResult {
     SchemaValidationResult {
         valid: errors.is_empty(),
         errors,
+        skipped: None,
     }
 }
 
@@ -470,6 +523,7 @@ pub fn validate_wellformed_file(xml_file: &Path) -> SchemaValidationResult {
                     column: 0,
                     message: format!("Failed to read XML file: {e}"),
                 }],
+                skipped: None,
             };
         }
     };
@@ -755,6 +809,52 @@ mod tests {
             reason.contains(SCHEMA_DIR_ENV),
             "the reason must name the override that fixes it, got: {reason}"
         );
+    }
+
+    /// An ASSETMAP and a schema directory holding some other XSD, which is what a
+    /// partially populated schema dir looks like.
+    fn assetmap_and_partial_schema_dir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("SMPTE-429-8-2006-PKL.xsd"), "<xs:schema/>").unwrap();
+        let assetmap = dir.path().join("ASSETMAP.xml");
+        std::fs::write(
+            &assetmap,
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM"><Id>x</Id></AssetMap>"#,
+        )
+        .unwrap();
+        (dir, assetmap)
+    }
+
+    #[test]
+    fn a_document_whose_own_xsd_is_absent_is_reported() {
+        let (dir, assetmap) = assetmap_and_partial_schema_dir();
+        let notes = check_schema(&assetmap, dir.path());
+        assert!(
+            notes.iter().any(|n| n.code == Code::SchemaValidationSkipped
+                && n.message.contains("SMPTE-429-9-2007-AM.xsd")
+                && n.file.as_deref() == Some(&*assetmap)),
+            "a missing XSD must name itself, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn validate_schema_reports_that_no_xsd_was_applied() {
+        let (dir, assetmap) = assetmap_and_partial_schema_dir();
+        let result = validate_schema(&assetmap, dir.path());
+        assert!(result.valid, "the document is well-formed");
+        let reason = result
+            .skipped
+            .expect("no XSD ran, so the result has to say so");
+        assert!(reason.contains("SMPTE-429-9-2007-AM.xsd"), "got: {reason}");
+
+        // a document no XSD covers at all says that instead
+        let volindex = dir.path().join("VOLINDEX.xml");
+        std::fs::write(&volindex, "<VolumeIndex><Index>1</Index></VolumeIndex>").unwrap();
+        let reason = validate_schema(&volindex, dir.path())
+            .skipped
+            .expect("an unmapped root element has no XSD to run");
+        assert!(reason.contains("VolumeIndex"), "got: {reason}");
     }
 
     #[test]

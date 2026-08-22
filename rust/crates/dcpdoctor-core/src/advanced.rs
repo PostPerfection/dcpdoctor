@@ -55,8 +55,21 @@ pub fn check_bv21_compliance(dcp_dir: &Path, standard: Standard) -> Vec<Note> {
             if !path.is_file() || path.extension().is_none_or(|ext| ext != "xml") {
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&path) else {
-                continue;
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    notes.push(
+                        Note::warning(
+                            Code::CheckSkipped,
+                            format!(
+                                "BV2.1 CPL element checks did not run, cannot read {}: {e}",
+                                path.display()
+                            ),
+                        )
+                        .with_file(&path),
+                    );
+                    continue;
+                }
             };
             if !content.contains("CompositionPlaylist") {
                 continue;

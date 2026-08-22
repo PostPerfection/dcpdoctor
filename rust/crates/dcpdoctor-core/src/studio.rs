@@ -384,17 +384,28 @@ pub struct StereoInfo {
     pub left_frame_count: u64,
     pub right_frame_count: u64,
     pub frame_count_match: bool,
+    /// at least one MXF was probed, so "not stereoscopic" is a measurement
+    pub probed: bool,
+    /// why the probe could not run
+    pub probe_error: Option<String>,
 }
 
 /// Detect stereoscopic 3D content in a DCP directory.
 pub fn detect_stereoscopic(dcp_dir: &Path) -> StereoInfo {
-    let mut info = StereoInfo::default();
+    let mut info = StereoInfo {
+        valid: true,
+        ..Default::default()
+    };
 
-    // Check for stereo MXF using ffprobe
+    if !ffprobe_available() {
+        info.probe_error = Some("ffprobe not found on PATH".into());
+        return info;
+    }
+
     let entries = match std::fs::read_dir(dcp_dir) {
         Ok(e) => e,
-        Err(_) => {
-            info.valid = true;
+        Err(e) => {
+            info.probe_error = Some(format!("cannot read {}: {e}", dcp_dir.display()));
             return info;
         }
     };
@@ -406,13 +417,26 @@ pub fn detect_stereoscopic(dcp_dir: &Path) -> StereoInfo {
         }
 
         // Stereo MXF typically has twice the frame count or "stereoscopic" in metadata
-        let cmd = format!(
-            "ffprobe -v quiet -select_streams v:0 -show_entries \
-             stream=nb_frames,codec_tag_string -show_entries format_tags=stereo_mode \
-             -of csv=p=0 \"{}\" 2>/dev/null",
-            path.display()
-        );
-        let output = run_cmd(&cmd);
+        let output = match ffprobe_output(&[
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=nb_frames,codec_tag_string",
+            "-show_entries",
+            "format_tags=stereo_mode",
+            "-of",
+            "csv=p=0",
+            &path.to_string_lossy(),
+        ]) {
+            Ok(o) => o,
+            Err(e) => {
+                info.probe_error = Some(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
+        info.probed = true;
         if output.contains("stereo") || output.contains("Stereo") {
             info.is_stereoscopic = true;
             info.left_eye_detected = true;
@@ -422,13 +446,31 @@ pub fn detect_stereoscopic(dcp_dir: &Path) -> StereoInfo {
         }
     }
 
-    info.valid = true;
     info
 }
 
 /// Check stereoscopic compliance.
 pub fn check_stereo_compliance(info: &StereoInfo, dcp_dir: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
+
+    match &info.probe_error {
+        Some(reason) => notes.push(
+            Note::warning(
+                Code::CheckSkipped,
+                format!("stereoscopic 3D detection did not run: {reason}"),
+            )
+            .with_file(dcp_dir),
+        ),
+        None if !info.probed => notes.push(
+            Note::warning(
+                Code::CheckSkipped,
+                "stereoscopic 3D detection found no MXF to probe",
+            )
+            .with_file(dcp_dir),
+        ),
+        None => {}
+    }
+
     if !info.valid || !info.is_stereoscopic {
         return notes;
     }
@@ -565,92 +607,6 @@ pub fn check_continuity_compliance(info: &ReelContinuity, dcp_dir: &Path) -> Vec
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 6. Supplemental Package (VF) Validation
-// ════════════════════════════════════════════════════════════════════════════════
-
-/// Supplemental DCP analysis result.
-#[derive(Debug, Clone, Default)]
-pub struct SupplementalInfo {
-    pub valid: bool,
-    pub is_supplemental: bool,
-    pub referenced_assets: u32,
-    pub missing_references: u32,
-    pub ov_path_found: bool,
-    pub ov_path: Option<PathBuf>,
-}
-
-/// Validate a supplemental (VF) package against an OV directory.
-pub fn validate_supplemental(dcp_dir: &Path, ov_dir: Option<&Path>) -> SupplementalInfo {
-    let mut info = SupplementalInfo::default();
-
-    // Look for CPL with external asset references
-    let cpl_path = match find_cpl(dcp_dir) {
-        Some(p) => p,
-        None => {
-            info.valid = true;
-            return info;
-        }
-    };
-
-    let content = match std::fs::read_to_string(&cpl_path) {
-        Ok(c) => c,
-        Err(_) => {
-            info.valid = true;
-            return info;
-        }
-    };
-
-    // Count Id elements in CPL
-    let id_re = regex_lite::Regex::new(r"<Id>").unwrap();
-    info.referenced_assets = id_re.find_iter(&content).count() as u32;
-
-    info.valid = true;
-    if let Some(ov) = ov_dir
-        && ov.exists()
-    {
-        info.ov_path_found = true;
-        info.ov_path = Some(ov.to_path_buf());
-    }
-
-    info
-}
-
-/// Check supplemental compliance.
-pub fn check_supplemental_compliance(info: &SupplementalInfo, dcp_dir: &Path) -> Vec<Note> {
-    let mut notes = Vec::new();
-    if !info.valid {
-        return notes;
-    }
-
-    let file = Some(dcp_dir.to_path_buf());
-
-    if info.is_supplemental && info.missing_references > 0 {
-        notes.push(Note {
-            severity: Severity::Error,
-            code: Code::AssetNotFound,
-            message: format!(
-                "Supplemental package has {} missing asset references to Original Version",
-                info.missing_references
-            ),
-            file: file.clone(),
-            line: 0,
-        });
-    }
-
-    if info.is_supplemental && !info.ov_path_found {
-        notes.push(Note {
-            severity: Severity::Warning,
-            code: Code::AssetNotFound,
-            message: "Supplemental (VF) package — Original Version not located".into(),
-            file,
-            line: 0,
-        });
-    }
-
-    notes
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
 // 7. Encryption Consistency
 // ════════════════════════════════════════════════════════════════════════════════
 
@@ -664,11 +620,23 @@ pub struct EncryptionInfo {
     pub unencrypted_count: u32,
     pub mixed_encryption: bool,
     pub kdm_required: bool,
+    /// ffprobe was on PATH, so the counts below are measurements
+    pub probe_available: bool,
+    /// MXFs whose encryption state could not be read
+    pub unknown_count: u32,
 }
 
 /// Check encryption consistency across MXFs in a DCP.
 pub fn check_encryption(dcp_dir: &Path) -> EncryptionInfo {
-    let mut info = EncryptionInfo::default();
+    let mut info = EncryptionInfo {
+        valid: true,
+        ..Default::default()
+    };
+
+    if !ffprobe_available() {
+        return info;
+    }
+    info.probe_available = true;
 
     let entries = match std::fs::read_dir(dcp_dir) {
         Ok(e) => e,
@@ -681,12 +649,21 @@ pub fn check_encryption(dcp_dir: &Path) -> EncryptionInfo {
             continue;
         }
 
-        // Use ffprobe to detect encryption (encrypted MXF returns specific error patterns)
-        let cmd = format!(
-            "ffprobe -v error -show_entries stream=codec_name -of csv=p=0 \"{}\" 2>&1",
-            path.display()
-        );
-        let output = run_cmd(&cmd);
+        // an encrypted MXF shows up as a codec_name ffprobe cannot decode or as
+        // an error naming the encryption, so both streams are searched
+        let output = ffprobe_output(&[
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            &path.to_string_lossy(),
+        ]);
+        let Ok(output) = output else {
+            info.unknown_count += 1;
+            continue;
+        };
 
         if output.contains("encrypted") || output.contains("drm") || output.contains("Encrypted") {
             info.encrypted_count += 1;
@@ -694,12 +671,13 @@ pub fn check_encryption(dcp_dir: &Path) -> EncryptionInfo {
         } else if !output.trim().is_empty() {
             info.unencrypted_count += 1;
             info.has_unencrypted_assets = true;
+        } else {
+            info.unknown_count += 1;
         }
     }
 
     info.mixed_encryption = info.has_encrypted_assets && info.has_unencrypted_assets;
     info.kdm_required = info.has_encrypted_assets;
-    info.valid = true;
     info
 }
 
@@ -708,6 +686,30 @@ pub fn check_encryption_compliance(info: &EncryptionInfo, dcp_dir: &Path) -> Vec
     let mut notes = Vec::new();
     if !info.valid {
         return notes;
+    }
+
+    if !info.probe_available {
+        notes.push(
+            Note::warning(
+                Code::CheckSkipped,
+                "encryption consistency not checked: ffprobe not found on PATH",
+            )
+            .with_file(dcp_dir),
+        );
+        return notes;
+    }
+
+    if info.unknown_count > 0 {
+        notes.push(
+            Note::warning(
+                Code::CheckSkipped,
+                format!(
+                    "encryption state unreadable for {} MXF file(s), they are counted as neither encrypted nor unencrypted",
+                    info.unknown_count
+                ),
+            )
+            .with_file(dcp_dir),
+        );
     }
 
     if info.mixed_encryption {
@@ -1228,6 +1230,16 @@ pub fn check_resolution_compliance(info: &ResolutionInfo, mxf_path: &Path) -> Ve
 pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
     let mut notes = Vec::new();
 
+    if !ffprobe_available() {
+        notes.push(
+            Note::warning(
+                Code::CheckSkipped,
+                "ffprobe not found on PATH, so the studio checks that read essence did not run, only the CPL-declaration checks below ran",
+            )
+            .with_file(dcp_dir),
+        );
+    }
+
     // Content type
     let content_type = detect_content_type(dcp_dir);
     notes.extend(check_content_type_compliance(&content_type, dcp_dir));
@@ -1268,7 +1280,20 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
             if color.valid {
                 notes.extend(check_color_compliance(&color, &path));
                 let res = detect_resolution(&path);
-                notes.extend(check_resolution_compliance(&res, &path));
+                if res.valid {
+                    notes.extend(check_resolution_compliance(&res, &path));
+                } else {
+                    notes.push(
+                        Note::warning(
+                            Code::CheckSkipped,
+                            format!(
+                                "resolution check did not run: {}",
+                                res.error.as_deref().unwrap_or("unknown reason")
+                            ),
+                        )
+                        .with_file(&path),
+                    );
+                }
                 continue;
             }
 
@@ -1277,10 +1302,38 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
             if ch_config.valid {
                 notes.extend(check_channel_compliance(&ch_config, &path));
                 let loudness = measure_loudness(&path, 1000);
-                notes.extend(check_loudness_compliance(&loudness, &path));
+                if loudness.valid {
+                    notes.extend(check_loudness_compliance(&loudness, &path));
+                } else {
+                    notes.push(
+                        Note::warning(
+                            Code::CheckSkipped,
+                            format!(
+                                "loudness check did not run: {}",
+                                loudness
+                                    .error
+                                    .as_deref()
+                                    .unwrap_or("no measurement returned")
+                            ),
+                        )
+                        .with_file(&path),
+                    );
+                }
                 // immersive-audio (DTS:X) detection has no core equivalent
                 let dtsx = crate::mxf_advanced::detect_dtsx(&path);
                 notes.extend(crate::mxf_advanced::check_dtsx_compliance(&dtsx, &path));
+            } else {
+                notes.push(
+                    Note::warning(
+                        Code::CheckSkipped,
+                        format!(
+                            "essence checks did not run, neither probe read this MXF. picture: {}. audio: {}",
+                            color.error.as_deref().unwrap_or("unknown reason"),
+                            ch_config.error.as_deref().unwrap_or("unknown reason")
+                        ),
+                    )
+                    .with_file(&path),
+                );
             }
         }
     }
@@ -1298,6 +1351,27 @@ fn run_cmd(cmd: &str) -> String {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
+}
+
+/// Is ffprobe on PATH? Every essence-level check here and in the premium
+/// delivery checks needs it, and without it they can only report a skip.
+pub fn ffprobe_available() -> bool {
+    std::process::Command::new("ffprobe")
+        .arg("-version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run ffprobe and return stdout plus stderr, or the reason it could not run.
+fn ffprobe_output(args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("ffprobe")
+        .args(args)
+        .output()
+        .map_err(|e| format!("cannot run ffprobe: {e}"))?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok(text)
 }
 
 fn find_cpl(dcp_dir: &Path) -> Option<PathBuf> {

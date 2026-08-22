@@ -57,10 +57,13 @@ pub fn has_signature(content: &str) -> bool {
 }
 
 /// Verify the by-Id enveloped signature on a KDM, over the `xml` already read
-/// from `kdm_path`. Empty when the KDM carries no signature.
+/// from `kdm_path`. ST 430-1 requires every KDM to be signed, so an unsigned one
+/// is a finding rather than nothing to check.
 pub fn verify_kdm_signature(xml: &str, kdm_path: &Path) -> Vec<Note> {
     if !has_signature(xml) {
-        return Vec::new();
+        return vec![
+            Note::error(Code::SignatureInvalid, "KDM carries no signature").with_file(kdm_path),
+        ];
     }
     match postkit::xmldsig::verify_enveloped(xml, KDM_REFERENCE_ID_ATTRIBUTE, None) {
         Ok(()) => Vec::new(),
@@ -111,19 +114,23 @@ pub fn verify_signature(xml_file: &Path, strict: bool) -> Vec<Note> {
     notes
 }
 
-/// Extract base64 X509Certificate blobs from ds:KeyInfo.
-pub(crate) fn extract_certs(content: &str) -> Vec<Vec<u8>> {
+/// Extract base64 X509Certificate blobs from ds:KeyInfo, with the count of
+/// elements whose base64 would not decode. Without that count a chain with a
+/// corrupt certificate in it passes every chain rule.
+pub(crate) fn extract_certs(content: &str) -> (Vec<Vec<u8>>, usize) {
     let re =
         regex_lite::Regex::new(r"(?s)<(?:ds:)?X509Certificate>(.*?)</(?:ds:)?X509Certificate>")
             .unwrap();
     let mut out = Vec::new();
+    let mut undecodable = 0;
     for cap in re.captures_iter(content) {
         let cleaned: String = cap[1].chars().filter(|c| !c.is_whitespace()).collect();
-        if let Ok(der) = base64::engine::general_purpose::STANDARD.decode(&cleaned) {
-            out.push(der);
+        match base64::engine::general_purpose::STANDARD.decode(&cleaned) {
+            Ok(der) => out.push(der),
+            Err(_) => undecodable += 1,
         }
     }
-    out
+    (out, undecodable)
 }
 
 fn common_name<'a>(name: &'a X509Name<'a>) -> String {
@@ -136,13 +143,22 @@ fn common_name<'a>(name: &'a X509Name<'a>) -> String {
 
 /// Validate the embedded DCI certificate chain: expiry and issuer linkage.
 fn verify_cert_chain(content: &str, xml_file: &Path, strict: bool) -> Vec<Note> {
-    let ders = extract_certs(content);
+    let (ders, undecodable) = extract_certs(content);
+    let mut notes = Vec::new();
+    for _ in 0..undecodable {
+        notes.push(
+            Note::error(
+                Code::CertificateChainBroken,
+                "embedded certificate is not valid base64",
+            )
+            .with_file(xml_file),
+        );
+    }
     if ders.is_empty() {
-        return Vec::new();
+        return notes;
     }
 
     let mut certs = Vec::new();
-    let mut notes = Vec::new();
     for der in &ders {
         match X509Certificate::from_der(der) {
             Ok((_, cert)) => certs.push(cert),
@@ -282,6 +298,33 @@ mod tests {
         assert!(
             notes.iter().any(|n| n.code == Code::CertificateChainBroken),
             "an unparseable embedded cert must break the chain, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn undecodable_embedded_certificate_breaks_the_chain() {
+        let xml = r#"<CompositionPlaylist xmlns="x"><Id>u</Id><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>not base64 !!!</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature></CompositionPlaylist>"#;
+        let (_d, p) = write("cpl.xml", xml);
+        let notes = verify_signature(&p, false);
+        assert!(
+            notes.iter().any(|n| n.code == Code::CertificateChainBroken
+                && n.message.contains("not valid base64")),
+            "an undecodable embedded cert must break the chain, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_unsigned_kdm_is_reported() {
+        let notes = verify_kdm_signature(
+            "<DCinemaSecurityMessage><AuthenticatedPublic/></DCinemaSecurityMessage>",
+            Path::new("kdm.xml"),
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SignatureInvalid
+                    && n.message.contains("carries no signature")),
+            "ST 430-1 requires a KDM to be signed, got: {notes:?}"
         );
     }
 

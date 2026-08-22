@@ -1,5 +1,4 @@
-/// Audio analysis — level analysis, clipping detection, silence detection.
-use crate::{Code, Note};
+/// Audio analysis: level analysis, clipping detection, silence detection.
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -9,6 +8,9 @@ pub struct AudioAnalysis {
     pub channels: Vec<ChannelInfo>,
     pub sample_rate: u32,
     pub duration_seconds: f64,
+    /// false when astats gave nothing and the levels below are one aggregate
+    /// figure over all channels rather than per channel
+    pub per_channel: bool,
 }
 
 /// Analysis for a single audio channel.
@@ -134,6 +136,7 @@ pub fn analyze_audio(audio_path: &Path) -> Result<AudioAnalysis, String> {
     let mut sorted: Vec<ChannelInfo> = channels.into_values().collect();
     sorted.sort_by_key(|c| c.channel);
     analysis.channels = sorted;
+    analysis.per_channel = true;
 
     Ok(analysis)
 }
@@ -154,6 +157,7 @@ fn analyze_audio_volumedetect(audio_path: &Path) -> Result<AudioAnalysis, String
     let stderr = String::from_utf8_lossy(&output.stderr);
     let mut analysis = AudioAnalysis::default();
     let mut info = ChannelInfo::default();
+    let mut parsed_level = false;
 
     for line in stderr.lines() {
         let trimmed = line.trim();
@@ -162,12 +166,14 @@ fn analyze_audio_volumedetect(audio_path: &Path) -> Result<AudioAnalysis, String
         {
             info.peak_dbfs = val;
             info.clipping = val >= -0.5;
+            parsed_level = true;
         }
         if trimmed.contains("mean_volume:")
             && let Some(val) = extract_db_value(trimmed)
         {
             info.rms_dbfs = val;
             info.silent = val < -80.0;
+            parsed_level = true;
         }
         if line.contains("Duration:")
             && let Some(dur) = parse_ffmpeg_duration(line)
@@ -184,6 +190,15 @@ fn analyze_audio_volumedetect(audio_path: &Path) -> Result<AudioAnalysis, String
                 analysis.sample_rate = sr;
             }
         }
+    }
+
+    // an all-zero ChannelInfo would read as a 0.0 dBFS peak, so nothing parsed
+    // has to be an error
+    if !parsed_level {
+        return Err(format!(
+            "ffmpeg produced neither astats nor volumedetect levels for {}",
+            audio_path.display()
+        ));
     }
 
     analysis.channels = vec![info];
@@ -232,50 +247,21 @@ pub fn measure_loudness(audio_path: &Path) -> Result<LoudnessResult, String> {
     })
 }
 
-/// Generate audio validation notes for a DCP sound file.
-pub fn validate_audio(audio_path: &Path) -> Vec<Note> {
-    let mut notes = Vec::new();
-
-    match analyze_audio(audio_path) {
-        Ok(analysis) => {
-            for ch in &analysis.channels {
-                if ch.clipping {
-                    notes.push(
-                        Note::warning(
-                            Code::SoundClipping,
-                            format!(
-                                "Channel {} clipping detected (peak {:.1} dBFS)",
-                                ch.channel + 1,
-                                ch.peak_dbfs
-                            ),
-                        )
-                        .with_file(audio_path),
-                    );
-                }
-                if ch.silent {
-                    notes.push(
-                        Note::warning(
-                            Code::SoundSilent,
-                            format!(
-                                "Channel {} appears silent (RMS {:.1} dBFS)",
-                                ch.channel + 1,
-                                ch.rms_dbfs
-                            ),
-                        )
-                        .with_file(audio_path),
-                    );
-                }
-            }
+fn extract_db_value(s: &str) -> Option<f64> {
+    // astats and volumedetect print -inf for a silent channel, and a value that
+    // does not parse would be read back as a 0.0 dBFS peak
+    if let Some(colon) = s.rfind(':') {
+        let after = s[colon + 1..].trim();
+        if let Some(rest) = after.strip_prefix('-')
+            && rest.starts_with("inf")
+        {
+            return Some(f64::NEG_INFINITY);
         }
-        Err(e) => {
-            tracing::debug!("Audio analysis failed for {}: {e}", audio_path.display());
+        if after.starts_with("inf") {
+            return Some(f64::INFINITY);
         }
     }
 
-    notes
-}
-
-fn extract_db_value(s: &str) -> Option<f64> {
     // Find a floating point number (possibly negative) followed by dB or just in the value position
     let mut found_num = false;
     let mut num_str = String::new();
@@ -343,4 +329,34 @@ fn parse_loudness_value(output: &str, key: &str) -> Option<f64> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_silent_channel_reads_as_minus_infinity_not_zero_dbfs() {
+        assert_eq!(
+            extract_db_value("[Parsed_astats_0 @ 0x0] Peak level dB: -inf"),
+            Some(f64::NEG_INFINITY)
+        );
+        assert_eq!(
+            extract_db_value("[Parsed_astats_0 @ 0x0] Peak level dB: -18.061535"),
+            Some(-18.061535)
+        );
+    }
+
+    #[test]
+    fn a_file_ffmpeg_cannot_read_is_an_error_not_a_zero_peak() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_audio = dir.path().join("sound.wav");
+        std::fs::write(&not_audio, b"this is not a wav").unwrap();
+
+        let result = analyze_audio(&not_audio);
+        assert!(
+            result.is_err(),
+            "no levels parsed must not come back as a 0.0 dBFS peak: {result:?}"
+        );
+    }
 }

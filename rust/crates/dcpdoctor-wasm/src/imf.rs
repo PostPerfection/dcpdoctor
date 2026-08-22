@@ -26,6 +26,8 @@ pub fn validate_imf_cpl(cpl_xml: &str, assetmap_xml: Option<&str>, cpl_path: &st
         }
     };
 
+    notes.extend(integer_parse_failure_note(&cpl, cpl_path));
+
     // Run all pure validators from the shared crate
     let imf_notes = dcpdoctor_imf::validate_imf_cpl_pure(&cpl);
     for n in &imf_notes {
@@ -34,14 +36,48 @@ pub fn validate_imf_cpl(cpl_xml: &str, assetmap_xml: Option<&str>, cpl_path: &st
 
     // Track file cross-references (needs AssetMap data)
     if let Some(am_xml) = assetmap_xml {
-        let asset_ids = parse_assetmap_ids(am_xml);
-        let ref_notes = dcpdoctor_imf::validate_track_refs(&cpl, &asset_ids);
-        for n in &ref_notes {
-            notes.push(convert_note(n, cpl_path));
+        match parse_assetmap_ids(am_xml) {
+            Ok(asset_ids) => {
+                let ref_notes = dcpdoctor_imf::validate_track_refs(&cpl, &asset_ids);
+                for n in &ref_notes {
+                    notes.push(convert_note(n, cpl_path));
+                }
+            }
+            Err(e) => notes.push(assetmap_unreadable_note(&e, cpl_path)),
         }
     }
 
     notes
+}
+
+/// The note for an ASSETMAP whose asset ids cannot be read, which leaves the
+/// track file references unchecked.
+fn assetmap_unreadable_note(error: &str, cpl_path: &str) -> Note {
+    Note {
+        severity: Severity::Error,
+        code: "xml_parse_error".to_string(),
+        message: format!(
+            "Cannot read the asset ids of the ASSETMAP, so the track file references in this CPL were not checked: {error}"
+        ),
+        file: Some(cpl_path.to_string()),
+    }
+}
+
+/// The note for CPL elements whose text is no integer: the duration and offset
+/// checks read 0 for them.
+fn integer_parse_failure_note(cpl: &dcpdoctor_imf::ImfCpl, cpl_path: &str) -> Option<Note> {
+    if cpl.integer_parse_failures.is_empty() {
+        return None;
+    }
+    Some(Note {
+        severity: Severity::Error,
+        code: "check_skipped".to_string(),
+        message: format!(
+            "CPL element(s) {} do not hold an integer, so the duration, offset and alignment checks that read them ran against 0",
+            cpl.integer_parse_failures.join(", ")
+        ),
+        file: Some(cpl_path.to_string()),
+    })
 }
 
 /// OV-aware IMF supplemental validation for the browser.
@@ -72,12 +108,20 @@ pub fn validate_imf_supplemental(
         }
     };
 
+    notes.extend(integer_parse_failure_note(&cpl, cpl_path));
+
     let imf_notes = dcpdoctor_imf::validate_imf_cpl_pure(&cpl);
     for n in &imf_notes {
         notes.push(convert_note(n, cpl_path));
     }
 
-    let local_ids = parse_assetmap_ids(assetmap_xml);
+    let local_ids = match parse_assetmap_ids(assetmap_xml) {
+        Ok(ids) => ids,
+        Err(e) => {
+            notes.push(assetmap_unreadable_note(&e, cpl_path));
+            return notes;
+        }
+    };
     let ref_notes = dcpdoctor_imf::validate_track_refs_ov(&cpl, &local_ids, ov_asset_ids, true);
     for n in &ref_notes {
         notes.push(convert_note(n, cpl_path));
@@ -150,6 +194,40 @@ mod tests {
         assert!(
             notes.iter().any(|n| n.code == "cross_ref_broken"),
             "ref in neither package is a real break, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_assetmap_is_reported_instead_of_breaking_every_ref() {
+        let broken = EMPTY_ASSETMAP.replace("</AssetList>", "</AssetLisst>");
+        let notes = validate_imf_cpl(SUPP_CPL, Some(&broken), "cpl.xml");
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == "xml_parse_error" && n.message.contains("not checked")),
+            "an ASSETMAP that cannot be read must be reported, got: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.code == "cross_ref_broken"),
+            "ids that were never read are no evidence of a broken ref, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_duration_that_is_no_integer_is_reported_as_a_skipped_check() {
+        let cpl = SUPP_CPL.replace(
+            "<IntrinsicDuration>240</IntrinsicDuration>",
+            "<IntrinsicDuration>two forty</IntrinsicDuration>",
+        );
+        let notes = validate_imf_cpl(&cpl, None, "cpl.xml");
+        let skipped = notes
+            .iter()
+            .find(|n| n.code == "check_skipped")
+            .unwrap_or_else(|| panic!("a coerced duration must be reported: {notes:?}"));
+        assert!(
+            skipped.message.contains("IntrinsicDuration"),
+            "{}",
+            skipped.message
         );
     }
 }

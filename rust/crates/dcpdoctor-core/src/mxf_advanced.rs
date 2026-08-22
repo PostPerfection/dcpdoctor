@@ -32,6 +32,9 @@ pub struct DtsxInfo {
     pub immersive: bool,
     pub channel_count: u32,
     pub version: String,
+    /// Why the channel count could not be read, empty when it was. Without it a
+    /// probe that never ran looks the same as a track carrying no DTS:X.
+    pub error: String,
 }
 
 /// Validate MXF file partition structure (header, body, footer).
@@ -142,17 +145,24 @@ pub fn detect_dtsx(mxf_path: &Path) -> DtsxInfo {
         ])
         .output();
 
-    if let Ok(o) = output {
-        let s = String::from_utf8_lossy(&o.stdout);
-        let parts: Vec<&str> = s.trim().split(',').collect();
-        if parts.len() >= 2 {
-            let channels: u32 = parts[1].parse().unwrap_or(0);
-            if channels > 8 {
-                info.channel_count = channels;
-                info.detected = true;
-                info.immersive = true;
+    match output {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            let parts: Vec<&str> = s.trim().split(',').collect();
+            match parts.get(1).map(|channels| channels.parse::<u32>()) {
+                Some(Ok(channels)) => {
+                    if channels > 8 {
+                        info.channel_count = channels;
+                        info.detected = true;
+                        info.immersive = true;
+                    }
+                }
+                Some(Err(e)) => info.error = format!("ffprobe reported no channel count: {e}"),
+                None => info.error = "ffprobe reported no audio stream".into(),
             }
         }
+        Ok(o) => info.error = format!("ffprobe exited with {}", o.status),
+        Err(e) => info.error = format!("ffprobe would not run: {e}"),
     }
 
     info
@@ -161,6 +171,16 @@ pub fn detect_dtsx(mxf_path: &Path) -> DtsxInfo {
 /// Generate compliance notes for DTS:X content.
 pub fn check_dtsx_compliance(info: &DtsxInfo, mxf_path: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
+    if !info.error.is_empty() {
+        notes.push(
+            Note::info(
+                Code::CheckSkipped,
+                format!("the DTS:X check did not run: {}", info.error),
+            )
+            .with_file(mxf_path),
+        );
+        return notes;
+    }
     if !info.detected {
         return notes;
     }
@@ -189,4 +209,41 @@ pub fn check_dtsx_compliance(info: &DtsxInfo, mxf_path: &Path) -> Vec<Note> {
     }
 
     notes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_probe_says_the_dtsx_check_did_not_run() {
+        let info = DtsxInfo {
+            error: "ffprobe would not run: No such file or directory".into(),
+            ..Default::default()
+        };
+        let notes = check_dtsx_compliance(&info, Path::new("sound.mxf"));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::CheckSkipped);
+        assert_eq!(notes[0].severity, Severity::Info);
+        assert!(notes[0].message.contains("ffprobe would not run"));
+    }
+
+    #[test]
+    fn a_track_without_dtsx_stays_silent() {
+        assert!(check_dtsx_compliance(&DtsxInfo::default(), Path::new("sound.mxf")).is_empty());
+    }
+
+    #[test]
+    fn a_probe_that_read_no_channel_count_is_an_error_not_an_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture.mxf");
+        std::fs::write(&path, b"not an MXF").unwrap();
+
+        let info = detect_dtsx(&path);
+        assert!(!info.detected);
+        assert!(
+            !info.error.is_empty(),
+            "a file ffprobe reports no audio stream for must carry a reason"
+        );
+    }
 }

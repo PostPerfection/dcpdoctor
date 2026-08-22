@@ -79,8 +79,20 @@ pub fn check_sound_essence_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> V
     if reader.open_read(s).is_err() {
         return notes; // not a PCM MXF
     }
-    let Ok(info) = reader.writer_info() else {
-        return notes;
+    let info = match reader.writer_info() {
+        Ok(info) => info,
+        Err(e) => {
+            notes.push(
+                Note::error(
+                    Code::MxfUnreadable,
+                    format!(
+                        "sound essence checks did not run: the MXF writer info would not read: {e}"
+                    ),
+                )
+                .with_file(path),
+            );
+            return notes;
+        }
     };
     if !info.encrypted_essence {
         return notes; // cleartext sound handled by the ffprobe path
@@ -90,8 +102,20 @@ pub fn check_sound_essence_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> V
         notes.extend(essence.skip_note(path));
         return notes;
     }
-    let Ok(desc) = reader.audio_descriptor() else {
-        return notes;
+    let desc = match reader.audio_descriptor() {
+        Ok(desc) => desc,
+        Err(e) => {
+            notes.push(
+                Note::error(
+                    Code::MxfUnreadable,
+                    format!(
+                        "the descriptor and frame 0 integrity checks did not run: the audio descriptor would not read: {e}"
+                    ),
+                )
+                .with_file(path),
+            );
+            return notes;
+        }
     };
     let snd = SoundDescriptor {
         sample_rate: (desc.audio_sampling_rate.quotient()).round() as u32,
@@ -148,12 +172,37 @@ pub fn check_picture_frame_rate_mxf(path: &Path) -> Vec<Note> {
     if reader.open_read(path_str).is_err() {
         return notes; // not monoscopic JP2K picture essence
     }
-    let Ok(desc) = reader.picture_descriptor() else {
-        return notes;
+    let desc = match reader.picture_descriptor() {
+        Ok(desc) => desc,
+        Err(e) => {
+            notes.push(
+                Note::error(
+                    Code::MxfUnreadable,
+                    format!(
+                        "the Table 1 frame-rate check did not run: the picture descriptor would not read: {e}"
+                    ),
+                )
+                .with_file(path),
+            );
+            return notes;
+        }
     };
 
     let (numerator, denominator) = (desc.edit_rate.numerator, desc.edit_rate.denominator);
-    if desc.stored_width <= TWO_K_MAX_STORED_WIDTH || numerator <= 0 || denominator <= 0 {
+    if desc.stored_width <= TWO_K_MAX_STORED_WIDTH {
+        return notes; // Table 1 allows every composition rate at 2K
+    }
+    if numerator <= 0 || denominator <= 0 {
+        notes.push(
+            Note::error(
+                Code::PictureInvalidFrameRate,
+                format!(
+                    "4K picture essence ({}x{}) declares an edit rate of {numerator}/{denominator}, which is no frame rate",
+                    desc.stored_width, desc.stored_height
+                ),
+            )
+            .with_file(path),
+        );
         return notes;
     }
     if denominator == 1 && FOUR_K_FRAME_RATES.contains(&numerator) {
@@ -182,6 +231,11 @@ pub struct MxfInfo {
     pub picture: Option<PictureDescriptor>,
     pub sound: Option<SoundDescriptor>,
     pub file_size_bytes: u64,
+    /// Why ffprobe listed no streams for this file, empty when it listed some.
+    /// The descriptors are what the picture checks are gated on, so a probe that
+    /// produced nothing has to be told apart from essence that carries nothing.
+    #[serde(default)]
+    pub stream_probe_error: String,
 }
 
 /// Read MXF file metadata.
@@ -223,11 +277,21 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
         .arg(path)
         .output();
 
+    let mut stream_probe_error = String::new();
     let (picture, sound) = match output {
         Ok(o) if o.status.success() => {
-            let json: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
+            let json: serde_json::Value = match serde_json::from_slice(&o.stdout) {
+                Ok(json) => json,
+                Err(e) => {
+                    stream_probe_error = format!("ffprobe output is not JSON: {e}");
+                    serde_json::Value::default()
+                }
+            };
 
             let streams = json["streams"].as_array();
+            if streams.is_none_or(|streams| streams.is_empty()) && stream_probe_error.is_empty() {
+                stream_probe_error = "ffprobe listed no streams".to_string();
+            }
 
             let mut pic = None;
             let mut snd = None;
@@ -281,7 +345,14 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
 
             (pic, snd)
         }
-        _ => (None, None),
+        Ok(o) => {
+            stream_probe_error = format!("ffprobe exited with {}", o.status);
+            (None, None)
+        }
+        Err(e) => {
+            stream_probe_error = format!("ffprobe would not run: {e}");
+            (None, None)
+        }
     };
 
     let file_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -305,6 +376,7 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
         picture,
         sound,
         file_size_bytes,
+        stream_probe_error,
     }
 }
 
@@ -313,6 +385,46 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
 /// open, an IMF audio track file is AS-02 and this reader is OP-Atom, and encrypted
 /// essence is `check_sound_essence_mxf`'s job, so answering here too would report
 /// the same defect twice. Each of those falls back to ffprobe.
+/// true when asdcplib opens the file as PCM sound essence, AS-DCP or AS-02. Tells
+/// a sound track file from a picture one without ffprobe, so a report can leave a
+/// sound track out of the picture sections and a picture track out of the sound
+/// ones instead of relying on each check failing quietly.
+pub fn is_pcm_sound_essence(path: &Path) -> bool {
+    use asdcplib::EssenceType;
+    let Some(path) = path.to_str() else {
+        return false;
+    };
+    matches!(
+        asdcplib::essence_type(path),
+        Ok(EssenceType::Pcm24b48k
+            | EssenceType::Pcm24b96k
+            | EssenceType::As02Pcm24b48k
+            | EssenceType::As02Pcm24b96k)
+    )
+}
+
+/// True when asdcplib identifies the essence as a type the picture checks never
+/// apply to, so ffprobe failing on it does not mean a check was skipped.
+pub fn known_non_picture_essence(path: &Path) -> bool {
+    use asdcplib::EssenceType;
+    let Some(path) = path.to_str() else {
+        return false;
+    };
+    matches!(
+        asdcplib::essence_type(path),
+        Ok(EssenceType::Pcm24b48k
+            | EssenceType::Pcm24b96k
+            | EssenceType::As02Pcm24b48k
+            | EssenceType::As02Pcm24b96k
+            | EssenceType::TimedText
+            | EssenceType::As02TimedText
+            | EssenceType::DcDataUnknown
+            | EssenceType::DcDataDolbyAtmos
+            | EssenceType::As02Isxd
+            | EssenceType::As02Iab)
+    )
+}
+
 fn wave_sound_descriptor(path: &Path) -> Option<SoundDescriptor> {
     let mut reader = asdcplib::pcm::MxfReader::new();
     reader.open_read(path.to_str()?).ok()?;
@@ -455,5 +567,45 @@ mod tests {
         write_picture_mxf(&path, 2048, 1080, 48);
 
         assert!(check_picture_frame_rate_mxf(&path).is_empty());
+    }
+
+    // Table 1 exempts the 2K formats, not a 4K descriptor whose rate will not read
+    #[test]
+    fn four_k_with_no_frame_rate_fires_instead_of_being_exempted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_4k_no_rate.mxf");
+        write_picture_mxf(&path, 4096, 2160, 0);
+
+        let notes = check_picture_frame_rate_mxf(&path);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].code, Code::PictureInvalidFrameRate);
+        assert_eq!(notes[0].severity, crate::Severity::Error);
+        assert!(
+            notes[0].message.contains("0/1"),
+            "the note must name the rate it read, got: {}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn two_k_with_no_frame_rate_stays_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_2k_no_rate.mxf");
+        write_picture_mxf(&path, 2048, 1080, 0);
+
+        assert!(
+            check_picture_frame_rate_mxf(&path).is_empty(),
+            "Table 1 constrains the 4K formats, so 2K has nothing to violate"
+        );
+    }
+
+    #[test]
+    fn picture_essence_is_not_pcm_sound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture.mxf");
+        write_picture_mxf(&path, 2048, 1080, 24);
+
+        assert!(!is_pcm_sound_essence(&path));
+        assert!(!is_pcm_sound_essence(&dir.path().join("absent.mxf")));
     }
 }

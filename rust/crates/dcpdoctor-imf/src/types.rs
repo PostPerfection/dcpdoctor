@@ -40,6 +40,10 @@ pub struct ImfCpl {
     pub all_uuids: Vec<String>,
     pub segment_count: u32,
     pub markers: Vec<Marker>,
+    /// Names of the elements whose text is no integer, so the duration, offset
+    /// and alignment checks that read them ran against 0 instead of the declared
+    /// value.
+    pub integer_parse_failures: Vec<String>,
 }
 
 /// A virtual track (sequence) in the IMF CPL.

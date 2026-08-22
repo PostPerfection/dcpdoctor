@@ -117,20 +117,36 @@ pub fn diff_dcps(dcp_a: &Path, dcp_b: &Path, compare_hashes: bool) -> DiffResult
                 let full_a = dir_a.join(path_a);
                 let full_b = dir_b.join(path_b);
 
-                if full_a.exists() && full_b.exists() {
-                    let hash_a = crate::hash::sha1_base64(&full_a);
-                    let hash_b = crate::hash::sha1_base64(&full_b);
+                if !full_a.exists() || !full_b.exists() {
+                    result.differences.push(DiffEntry {
+                        category: "hash".to_string(),
+                        description: format!("Asset {id} not compared, file missing"),
+                        value_a: presence(&full_a),
+                        value_b: presence(&full_b),
+                    });
+                    continue;
+                }
 
-                    match (hash_a, hash_b) {
-                        (Ok(a), Ok(b)) if a != b => {
-                            result.differences.push(DiffEntry {
-                                category: "hash".to_string(),
-                                description: format!("Asset {id} has different content"),
-                                value_a: a,
-                                value_b: b,
-                            });
-                        }
-                        _ => {}
+                match (
+                    crate::hash::sha1_base64(&full_a),
+                    crate::hash::sha1_base64(&full_b),
+                ) {
+                    (Ok(a), Ok(b)) if a == b => {}
+                    (Ok(a), Ok(b)) => {
+                        result.differences.push(DiffEntry {
+                            category: "hash".to_string(),
+                            description: format!("Asset {id} has different content"),
+                            value_a: a,
+                            value_b: b,
+                        });
+                    }
+                    (a, b) => {
+                        result.differences.push(DiffEntry {
+                            category: "hash".to_string(),
+                            description: format!("Asset {id} not compared, hashing failed"),
+                            value_a: hash_outcome(&a),
+                            value_b: hash_outcome(&b),
+                        });
                     }
                 }
             } else {
@@ -158,4 +174,55 @@ pub fn diff_dcps(dcp_a: &Path, dcp_b: &Path, compare_hashes: bool) -> DiffResult
 
     result.identical = result.differences.is_empty();
     result
+}
+
+fn presence(path: &Path) -> String {
+    if path.exists() {
+        "present".to_string()
+    } else {
+        format!("missing: {}", path.display())
+    }
+}
+
+fn hash_outcome(hash: &std::io::Result<String>) -> String {
+    match hash {
+        Ok(h) => h.clone(),
+        Err(e) => format!("hash failed: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package_copy() -> tempfile::TempDir {
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/valid_smpte");
+        let dir = tempfile::tempdir().unwrap();
+        for entry in std::fs::read_dir(source).unwrap().flatten() {
+            std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn an_asset_missing_on_one_side_is_not_reported_as_identical() {
+        let a = package_copy();
+        let b = package_copy();
+        std::fs::remove_file(b.path().join("picture.mxf")).unwrap();
+
+        let result = diff_dcps(a.path(), b.path(), true);
+        assert!(
+            !result.identical,
+            "an asset that was never compared cannot make the DCPs identical"
+        );
+        assert!(
+            result
+                .differences
+                .iter()
+                .any(|d| d.description.contains("not compared")),
+            "differences: {:?}",
+            result.differences
+        );
+    }
 }
