@@ -1208,15 +1208,22 @@ pub fn check_markers(cpl_path: &Path, strict: bool) -> Vec<Note> {
     }
 
     if strict {
-        // Required markers (SMPTE 429-7; FFOC/LFOC required by Bv2.1)
-        let required = [
-            ("FFMC", "First Frame of Moving Content"),
-            ("LFMC", "Last Frame of Moving Content"),
+        // Bv2.1 requires FFOC and LFOC in every composition, FFMC and FFEC only
+        // in a feature (libdcp MISSING_FFMC_IN_FEATURE / MISSING_FFEC_IN_FEATURE)
+        let kind_re = regex_lite::Regex::new(r"<ContentKind[^>]*>([^<]*)<").unwrap();
+        let is_feature = kind_re
+            .captures(&content)
+            .is_some_and(|c| c[1].trim().eq_ignore_ascii_case("feature"));
+        let mut required = vec![
             ("FFOC", "First Frame of Composition"),
             ("LFOC", "Last Frame of Composition"),
         ];
-        for (label, desc) in required {
-            if !found_markers.contains(label) {
+        if is_feature {
+            required.push(("FFMC", "First Frame of Moving Content"));
+            required.push(("FFEC", "First Frame of End Credits"));
+        }
+        for (label, desc) in &required {
+            if !found_markers.contains(*label) {
                 notes.push(Note {
                     severity: Severity::Warning,
                     code: Code::MarkerMissing,
@@ -1235,8 +1242,13 @@ pub fn check_markers(cpl_path: &Path, strict: bool) -> Vec<Note> {
             ("LFOI", "Last Frame of Intermission"),
             ("FFEC", "First Frame of End Credits"),
             ("LFEC", "Last Frame of End Credits"),
+            ("FFMC", "First Frame of Moving Content"),
+            ("LFMC", "Last Frame of Moving Content"),
         ];
         for (label, desc) in recommended {
+            if required.iter().any(|(r, _)| *r == label) {
+                continue;
+            }
             if !found_markers.contains(label) {
                 notes.push(Note {
                     severity: Severity::Info,
@@ -3708,6 +3720,40 @@ mod tests {
                 .iter()
                 .any(|n| n.code == Code::MarkerMissing),
             "presence is strict-only"
+        );
+    }
+
+    #[test]
+    fn ffmc_ffec_required_in_features_only() {
+        let kind_cpl = |kind: &str| {
+            format!(
+                r#"<CompositionPlaylist><ContentKind>{kind}</ContentKind><Reel><Id>urn:uuid:00000000-0000-0000-0000-0000000000f0</Id><AssetList>
+  <MainMarkers><Id>urn:uuid:00000000-0000-0000-0000-0000000000d0</Id>
+    <MarkerList>
+      <Marker><Label>FFOC</Label><Offset>1</Offset></Marker>
+      <Marker><Label>LFOC</Label><Offset>99</Offset></Marker>
+    </MarkerList>
+  </MainMarkers>
+  <MainPicture><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><Duration>100</Duration></MainPicture>
+</AssetList></Reel></CompositionPlaylist>"#
+            )
+        };
+        let feature = write_cpl(&kind_cpl("feature"));
+        let notes = check_markers(feature.path(), true);
+        for label in ["FFMC", "FFEC"] {
+            assert!(
+                notes.iter().any(|n| n.code == Code::MarkerMissing
+                    && n.severity == Severity::Warning
+                    && n.message.contains(label)),
+                "a feature must warn {label} missing, got: {notes:?}"
+            );
+        }
+        let test_kind = write_cpl(&kind_cpl("test"));
+        assert!(
+            !check_markers(test_kind.path(), true)
+                .iter()
+                .any(|n| n.severity == Severity::Warning && n.code == Code::MarkerMissing),
+            "a test composition with FFOC/LFOC must draw no required-marker warning"
         );
     }
 

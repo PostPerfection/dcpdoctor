@@ -27,6 +27,7 @@
 - KDM digest rules the schema cannot express, all errors: a DeviceList `<CertificateThumbprint>` that does not decode to a 20-byte SHA-1 digest (`kdm_thumbprint_invalid`), the same for `<ContentAuthenticator>` when present (`kdm_content_authenticator_invalid`), and the DCI assume-trust marker (DCSS 9.4.3.5) sharing a DeviceList with a real device thumbprint (`kdm_assume_trust_conflict`). Checked against real DCP-o-matic KDMs, one per ISDCF formulation, under `tests/fixtures/kdm`.
 
 ### Fixed
+- FFMC and FFEC are required under `--strict` only in a feature, which is the Bv2.1 scope, so a test or trailer composition carrying FFOC and LFOC no longer warns. LFMC, which no rule requires, is recommended rather than required.
 - `kdm_required` no longer reports a missing KDM when one was supplied to the run (`--kdm`): it only looked for a file inside the package directory.
 - Picture bitrate is no longer measured off encrypted frames. asdcplib returns ciphertext when it is given no content key, and an AES frame is longer than the codestream it carries, so an encrypted track without a KDM reported the wrapping's rate: on a DCP that fed the DCI limit verdict. Encrypted essence is now measured only where a key decrypts it.
 - `cpl_invalid_language` no longer fires on a conformant `ReleaseTerritory`. A territory declaring the ST 429-16 UN M.49 scope carries a numeric code, which was being measured against the RFC 5646 region grammar and flagged every time. It is now checked only where libdcp checks it, outside that scope.
