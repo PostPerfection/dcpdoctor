@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.5.0] - 2026-08-22
 
 ### Added
 - CPL and PKL identity (Bv2.1 §8.1): a SMPTE CPL's `AnnotationText` must be present (`missing_required_element`) and equal its `ContentTitleText` (`cpl_annotation_text_mismatch`), and a PKL packaging exactly one CPL must repeat that title as its own `AnnotationText` (`pkl_annotation_text_mismatch`). A PKL listing one asset id twice now errors as `duplicate_asset_id`, the rule the ASSETMAP already had.
