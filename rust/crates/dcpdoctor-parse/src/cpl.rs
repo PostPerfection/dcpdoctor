@@ -42,7 +42,6 @@ pub struct Cpl {
     pub issuer: String,
     pub annotation: String,
     pub edit_rate: String,
-    pub has_signature: bool,
     pub reels: Vec<Reel>,
 }
 
@@ -53,10 +52,7 @@ pub fn parse_cpl(xml: &str) -> Option<Cpl> {
     }
 
     let mut reader = Reader::from_str(xml);
-    let mut cpl = Cpl {
-        has_signature: xml.contains("Signature") && xml.contains("SignatureValue"),
-        ..Default::default()
-    };
+    let mut cpl = Cpl::default();
     let mut in_reel = false;
     let mut in_main_picture = false;
     let mut in_main_sound = false;
@@ -221,7 +217,6 @@ mod tests {
         assert_eq!(cpl.content_kind, "feature");
         assert_eq!(cpl.issuer, "acme");
         assert_eq!(cpl.annotation, "note");
-        assert!(!cpl.has_signature);
         assert_eq!(cpl.reels.len(), 1);
 
         let reel = &cpl.reels[0];
