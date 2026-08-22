@@ -1,14 +1,78 @@
-//! XML digital signature verification for signed CPL/PKL.
+//! XML digital signature verification for signed CPL/PKL and KDM documents.
 //!
 //! The enveloped-signature check (digest + RSA over the canonicalized document)
-//! is delegated to postkit. On top of that we validate the embedded certificate
-//! chain: DCI signatures carry the whole chain (leaf -> intermediate -> root) in
-//! ds:KeyInfo, so the trust model is self-contained: each cert must be signed by
-//! the next and the chain must terminate in a self-signed root, all within dates.
+//! is delegated to postkit. A CPL or PKL signs the whole document; a KDM signs
+//! its AuthenticatedPublic and AuthenticatedPrivate elements by Id, so the two
+//! reach different postkit entry points.
+//!
+//! A verified signature proves the document has not changed since it was signed.
+//! It says nothing about who signed it, since the verifying key is the leaf
+//! certificate the document itself carries. Whether that chain is acceptable is
+//! checked on top, here and in cert_rules. DCI signatures carry the whole chain
+//! (leaf -> intermediate -> root) in ds:KeyInfo, so the trust model is
+//! self-contained: each cert must be signed by the next and the chain must
+//! terminate in a self-signed root, all within dates.
 use crate::{Code, Note};
 use base64::Engine;
 use std::path::Path;
 use x509_parser::prelude::*;
+
+/// The namespace an XML-DSig Signature element is bound to.
+const DSIG_NAMESPACE: &[u8] = b"http://www.w3.org/2000/09/xmldsig#";
+
+/// The attribute a KDM's ds:Reference elements name their targets by. A KDM
+/// signs AuthenticatedPublic and AuthenticatedPrivate by Id rather than covering
+/// the whole document, so it needs the by-Id verifier.
+const KDM_REFERENCE_ID_ATTRIBUTE: &str = "Id";
+
+/// True when the document carries an XML-DSig Signature element.
+///
+/// Resolved by namespace, not by prefix: real packages bind the signature
+/// namespace to `ds:` (postkit, asdcplib) and to `dsig:` (DCP-o-matic, the ISDCF
+/// reference DCPs), and a prefix nothing recognised read as unsigned, so those
+/// documents were never verified. A Signature in no namespace counts too, so a
+/// malformed one reaches the verifier rather than passing as unsigned.
+pub fn has_signature(content: &str) -> bool {
+    use quick_xml::events::Event;
+    use quick_xml::name::ResolveResult;
+
+    let mut reader = quick_xml::NsReader::from_str(content);
+    loop {
+        match reader.read_resolved_event() {
+            Ok((ns, Event::Start(e) | Event::Empty(e)))
+                if e.local_name().as_ref() == b"Signature" =>
+            {
+                let is_dsig = match ns {
+                    ResolveResult::Bound(ns) => ns.0 == DSIG_NAMESPACE,
+                    _ => true,
+                };
+                if is_dsig {
+                    return true;
+                }
+            }
+            Ok((_, Event::Eof)) | Err(_) => return false,
+            Ok(_) => {}
+        }
+    }
+}
+
+/// Verify the by-Id enveloped signature on a KDM, over the `xml` already read
+/// from `kdm_path`. Empty when the KDM carries no signature.
+pub fn verify_kdm_signature(xml: &str, kdm_path: &Path) -> Vec<Note> {
+    if !has_signature(xml) {
+        return Vec::new();
+    }
+    match postkit::xmldsig::verify_enveloped(xml, KDM_REFERENCE_ID_ATTRIBUTE, None) {
+        Ok(()) => Vec::new(),
+        Err(e) => vec![
+            Note::error(
+                Code::SignatureInvalid,
+                format!("XML signature verification failed: {e}"),
+            )
+            .with_file(kdm_path),
+        ],
+    }
+}
 
 /// Verify the enveloped XML signature on a signed CPL/PKL.
 ///
@@ -26,7 +90,7 @@ pub fn verify_signature(xml_file: &Path, strict: bool) -> Vec<Note> {
     };
 
     // Nothing to verify on an unsigned document.
-    if !content.contains("<Signature") && !content.contains("<ds:Signature") {
+    if !has_signature(&content) {
         return Vec::new();
     }
 
@@ -231,5 +295,124 @@ mod tests {
             notes.iter().any(|n| n.code == Code::SignatureInvalid),
             "a broken signature must be reported invalid, got: {notes:?}"
         );
+    }
+
+    // ─── which documents count as signed ──────────────────────────────────
+
+    fn signature_element(prefix_declaration: &str, open: &str, close: &str) -> String {
+        format!(
+            "<CompositionPlaylist{prefix_declaration}><Id>u</Id>{open}<x/>{close}</CompositionPlaylist>"
+        )
+    }
+
+    #[test]
+    fn a_signature_is_found_whatever_prefix_carries_the_namespace() {
+        let dsig = r#" xmlns:dsig="http://www.w3.org/2000/09/xmldsig#""#;
+        for (label, xml) in [
+            (
+                "ds:",
+                signature_element(
+                    r#" xmlns:ds="http://www.w3.org/2000/09/xmldsig#""#,
+                    "<ds:Signature>",
+                    "</ds:Signature>",
+                ),
+            ),
+            (
+                "dsig:",
+                signature_element(dsig, "<dsig:Signature>", "</dsig:Signature>"),
+            ),
+            (
+                "default namespace",
+                signature_element(
+                    "",
+                    r#"<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">"#,
+                    "</Signature>",
+                ),
+            ),
+            (
+                "no namespace",
+                signature_element("", "<Signature>", "</Signature>"),
+            ),
+        ] {
+            assert!(has_signature(&xml), "{label} must count as signed: {xml}");
+        }
+
+        for (label, xml) in [
+            (
+                "unsigned",
+                "<CompositionPlaylist><Id>u</Id></CompositionPlaylist>".to_string(),
+            ),
+            (
+                "a Signature in someone else's namespace",
+                signature_element(
+                    r#" xmlns:other="http://example.invalid/ns""#,
+                    "<other:Signature>",
+                    "</other:Signature>",
+                ),
+            ),
+        ] {
+            assert!(
+                !has_signature(&xml),
+                "{label} must not count as signed: {xml}"
+            );
+        }
+    }
+
+    // ─── real signed packages ─────────────────────────────────────────────
+
+    /// The ISDCF/DTB Bv21 reference DCP: a real signed SMPTE package whose CPL
+    /// and PKL bind the signature namespace to `dsig:`, declare the plain
+    /// comment-free canonicalization, and carry XML comments inside the signed
+    /// document. Each of those three broke verification on its own.
+    const ISDCF_PACKAGE: &str = "../../../tests/dcps/isdcf/SMPTE_TST-1-Bv21_51-71_20170110_SMPTE_Folders/SMPTE_TST-1-Bv21_S_EN-EN-CCAP_US_51-HI-VI_2K_ISDCF_20170110_DTB_SMPTE_OV";
+    const ISDCF_CPL: &str =
+        "CPL_SMPTE_TST-1-Bv21_S_EN-EN-CCAP_US_51-HI-VI_2K_ISDCF_20170110_DTB_SMPTE_OV.xml";
+    const ISDCF_PKL: &str =
+        "PKL_SMPTE_TST-1-Bv21_S_EN-EN-CCAP_US_51-HI-VI_2K_ISDCF_20170110_DTB_SMPTE_OV.xml";
+    const PLAIN_C14N: &str = r#"Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315""#;
+
+    fn isdcf_document(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(ISDCF_PACKAGE)
+            .join(name)
+    }
+
+    #[test]
+    fn a_real_dsig_prefixed_signed_document_verifies() {
+        for name in [ISDCF_CPL, ISDCF_PKL] {
+            let path = isdcf_document(name);
+            let xml = std::fs::read_to_string(&path).expect("the package is committed");
+            assert!(xml.contains("<dsig:Signature"), "{name} prefix changed");
+            assert!(xml.contains("<!--"), "{name} no longer carries a comment");
+            assert!(xml.contains(PLAIN_C14N), "{name} canonicalization changed");
+            assert!(has_signature(&xml), "{name} must count as signed");
+
+            let notes = verify_signature(&path, false);
+            assert!(
+                !notes.iter().any(|n| n.code == Code::SignatureInvalid),
+                "{name} is validly signed and must not fire signature_invalid, got: {notes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_byte_changed_after_signing_is_reported_invalid() {
+        let xml = std::fs::read_to_string(isdcf_document(ISDCF_CPL)).unwrap();
+        let tampered = xml.replacen("<Label>G</Label>", "<Label>R</Label>", 1);
+        assert_ne!(tampered, xml, "the tamper anchor is gone from the CPL");
+
+        let (_d, path) = write("cpl.xml", &tampered);
+        let notes = verify_signature(&path, false);
+        let invalid: Vec<&Note> = notes
+            .iter()
+            .filter(|n| n.code == Code::SignatureInvalid)
+            .collect();
+        assert_eq!(
+            invalid.len(),
+            1,
+            "a document changed after signing must fire one signature_invalid, got: {notes:?}"
+        );
+        assert_eq!(invalid[0].severity, crate::Severity::Error);
+        assert_eq!(invalid[0].file.as_deref(), Some(path.as_path()));
     }
 }

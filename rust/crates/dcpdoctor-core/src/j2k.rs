@@ -2126,6 +2126,7 @@ mod as02_tests {
             resource_ids: vec![],
             hdr: None,
             asset_uuid: None,
+            timed_text_duration_frames: None,
         });
         assert!(result.success, "AS-02 wrap failed: {}", result.error);
         out

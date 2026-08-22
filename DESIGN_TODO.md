@@ -5,26 +5,6 @@ README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N 
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
 policy plus the measurement gap listed below.
 
-## Document signatures are not verified
-
-The CPL, PKL and KDM signature checks are presence-only: `check_dcp_signed`
-requires a `<Signature>` element, cert_rules.rs holds the signer chain to
-ST 430-2, and the KDM path checks digests, but nothing verifies the
-SignatureValue against the document. A package whose XML changed after signing
-passes clean. Evidence: the 2026-08-22 dci-ctp differential, where all 50
-resealed DCP-o-matic corpus packages carry stale CPL and PKL signatures,
-ClairMeta rejects every one via `check_document_signature`, and dcpdoctor
-passes them. libdcp, ClairMeta and Photon all verify. A server verifies on
-ingest, so a QC pass that skips it clears packages a projector booth refuses.
-
-Verification needs XML C14N canonicalization plus digest and RSA checks over
-SignedInfo. The RSA and x509 side exists in signature.rs and cert_rules.rs, and
-libxml2 is already a build dependency (the deb installs libxml2-dev), so
-canonicalization has a native path rather than shelling out. Severity: ERROR
-whenever a Signature is present and does not verify, encrypted or not, since it
-indicates post-signing modification. Presence stays with the existing
-`dcp_not_signed` / `unencrypted_dcp_not_signed` split.
-
 ## P-HFR gets no bitrate limit of its own
 
 Peak bitrate is read frame by frame for every picture essence dcpdoctor can
@@ -55,6 +35,55 @@ the four codes already moved to ERROR (see "Severity escalations to spec" under
 Done).
 
 # Done
+
+## Document signatures verify against the document (2026-08-22)
+
+The item this replaces said nothing verified a SignatureValue. Something did:
+`signature::verify_signature` has always called postkit's enveloped verifier, on
+every CPL and PKL `verify_dcp` reaches under `check_signatures`. Three separate
+faults kept it from reporting the packages it should have.
+
+- The presence test was two string literals, `<Signature` and `<ds:Signature`.
+  DCP-o-matic and the ISDCF reference DCPs bind the signature namespace to
+  `dsig:`, so those documents read as unsigned: never verified, and
+  `unencrypted_dcp_not_signed` fired on a package that carries a signature. That
+  is why all 50 resealed corpus packages passed, and why the differential's
+  not-signed counts were wrong too. `signature::has_signature` resolves the
+  namespace instead, and `check_dcp_signed` and `verify_signature` share it so
+  the two cannot disagree about what a signed document is.
+- KDM signatures were not checked at all. A KDM's ds:Reference elements name
+  AuthenticatedPublic and AuthenticatedPrivate by their Id attribute rather than
+  covering the whole document, so the whole-document verifier is the wrong entry
+  point for one. `validate_kdm` now calls postkit's by-Id `verify_enveloped`
+  through `signature::verify_kdm_signature`.
+- postkit canonicalized with comments whatever a signature declared, so a
+  document declaring the plain comment-free C14N and carrying a comment in the
+  signed region failed its digest and read as tampered. That is the ISDCF and
+  orca_wrapping shape. Fixed in postkit (pin 8256659 -> 97c8e82), which reads the
+  declared CanonicalizationMethod and the per-reference transforms.
+
+Severity is what the plan called for: ERROR on `signature_invalid` whenever a
+Signature is present and does not verify, encrypted or not. Presence stays with
+the `dcp_not_signed` / `unencrypted_dcp_not_signed` split.
+
+Verification stays in-process. Shelling out to xmlsec1 was the plan, and it turns
+out an OpenSSL under the current crypto policy refuses rsa-sha1 outright, so that
+tool cannot verify an Interop signature at all on such a machine, and it needs
+`--id-attr` hints for a KDM or it reports a valid one as broken. There is no
+skip code for a missing tool because there is no tool to miss.
+
+What a verified signature proves is that the document has not changed since it
+was signed. It does not prove who signed it: the verifying key is the leaf
+certificate the document itself carries, so whether that chain is acceptable
+remains cert_rules.rs' question.
+
+Measured over the 217 signed CPL, PKL and KDM documents in the dci-ctp corpus,
+ClairMeta's ECL set and this repo's test tree: dcpdoctor and `xmlsec1 --verify`
+now agree on every document xmlsec1 will render a verdict on. The corpus
+fixtures this newly rejects (111 resealed invalid packages, plus
+`valid/dcp_encrypted_signed` and `subcmd/kdm_valid.xml`, whose signatures the
+generator writes without a DigestMethod or over the wrong bytes) are dci-ctp's
+to fix.
 
 ## Encrypted IMF essence reads with the run's content keys (2026-08-17)
 

@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::assetmap::AssetMap;
+use crate::signature::has_signature;
 use crate::{Code, Note, Severity, Standard};
 
 // ─── Native MXF essence probes (asdcplib) ─────────────────────────────────────
@@ -286,12 +287,6 @@ pub fn check_encryption(dcp_dir: &Path, cpl_paths: &[PathBuf], kdm_supplied: boo
     }
 
     notes
-}
-
-/// True if an XML document carries an enveloped signature (same presence test
-/// signature verification uses).
-fn has_signature(content: &str) -> bool {
-    content.contains("<Signature") || content.contains("<ds:Signature")
 }
 
 /// True if any CPL declares encrypted essence (a KeyId or an embedded

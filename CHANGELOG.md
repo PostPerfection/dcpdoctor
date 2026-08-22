@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- CPL, PKL and KDM signatures are verified against the document they cover. The presence test matched the literal prefixes `<Signature` and `<ds:Signature`, so a package binding the signature namespace to `dsig:`, which is what DCP-o-matic and the ISDCF reference DCPs write, read as unsigned: nothing verified its signature and `unencrypted_dcp_not_signed` fired on a package that carries one. Detection resolves the namespace now, a KDM gets the by-Id verification its `ds:Reference` elements need (it had none), and postkit canonicalizes under the algorithm each signature declares (pin 8256659 -> 97c8e82), without which a document declaring the plain comment-free C14N and carrying an XML comment failed its digest. A document changed after signing errors as `signature_invalid`. That verdict means the document has not changed since it was signed, not that a trusted party signed it: the verifying key is the leaf certificate the document itself carries, and whether that chain is acceptable remains the `certificate_*` rules' verdict.
+
 ## [0.5.0] - 2026-08-22
 
 ### Added

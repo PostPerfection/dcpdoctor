@@ -223,6 +223,7 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
         }
     };
 
+    notes.extend(crate::signature::verify_kdm_signature(&xml, kdm_path));
     notes.extend(check_digests(&xml, kdm_path));
 
     // Check validity period
@@ -677,6 +678,46 @@ mod digest_tests {
                 "{name} must satisfy the vendored ST 430-1 / 430-3 schemas, got: {notes:?}"
             );
         }
+    }
+
+    #[test]
+    fn real_kdm_signatures_verify() {
+        for name in ALL_FIXTURES {
+            let xml = fixture_xml(name);
+            assert!(
+                crate::signature::has_signature(&xml),
+                "{name} must carry a signature for this to check anything"
+            );
+            let notes = validate_kdm(&fixture_path(name), None);
+            assert!(
+                !notes.iter().any(|n| n.code == Code::SignatureInvalid),
+                "{name} is validly signed and must not fire signature_invalid, got: {notes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_date_changed_after_signing_fails_the_kdm_signature() {
+        // ContentKeysNotValidAfter sits inside AuthenticatedPublic, which the
+        // KDM's by-Id references cover.
+        let signed_date = extract_element(&fixture_xml(DCI_ANY), "ContentKeysNotValidAfter")
+            .expect("the fixture declares a key validity end");
+        let moved_year = format!("2099{}", &signed_date[4..]);
+        assert_ne!(signed_date, moved_year, "the tamper must change the date");
+
+        let f = mutated_fixture(DCI_ANY, &signed_date, &moved_year);
+        let notes = validate_kdm(f.path(), None);
+        let invalid: Vec<&Note> = notes
+            .iter()
+            .filter(|n| n.code == Code::SignatureInvalid)
+            .collect();
+        assert_eq!(
+            invalid.len(),
+            1,
+            "a date changed after signing must fire one signature_invalid, got: {notes:?}"
+        );
+        assert_eq!(invalid[0].severity, crate::Severity::Error);
+        assert_eq!(invalid[0].file.as_deref(), Some(f.path()));
     }
 
     #[test]
