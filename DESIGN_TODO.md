@@ -5,6 +5,41 @@ README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N 
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
 policy plus the measurement gap listed below.
 
+## Policy: no silent skips
+
+A check that cannot run must say so. `schema_validation_skipped` is the
+template, `check_skipped` is the generic code for it, and `kdm_required`'s split
+(INFO when nothing was supplied, WARNING when what was supplied does not cover
+the asset) is the severity model. "Checked and clean" and "not checked" must
+never look the same in the output: a missing tool, an unreadable input, a parse
+failure coerced to a default that disables a downstream guard, and a fallback
+that checks less all get a note. The 2026-08-22 audit that enforced this found
+roughly sixty such paths, several hiding real defects (an encrypted DCP read as
+unencrypted when ffprobe was absent, a corrupt subtitle MXF passing a default
+verify, a garbage PKL Size disabling the size check). New checks follow the
+policy from the start.
+
+## Three studio checks are wired but can never fire
+
+Found by the no-silent-skips audit and left in place because each needs a real
+measurement, not a skip note. Implement or delete:
+
+- `studio.rs check_continuity_compliance`: `analyze_reel_continuity` never
+  writes `gap_frames` and always leaves `audio_video_sync` true, so neither of
+  its notes can fire, and `timing_continuous` is set but never read.
+- `studio.rs check_subtitle_font_compliance`: `validate_subtitle_fonts` collects
+  `font_ids` but never fills `missing_fonts` and leaves `min_display_seconds` at
+  its 999.0 sentinel, so both notes are dead.
+- `studio.rs detect_stereoscopic` frame counts: `frame_count_match` is
+  hardcoded true and the per-eye counts are never filled, so the mismatch and
+  missing-eye notes cannot fire.
+
+Two adjacent CLI defects from the same audit, also open: auto-qc prints
+`ch.channel + 1` while astats already numbers channels from 1, so reported
+channel numbers are one too high, and `fix.rs` rewrites a PKL hash with a
+first-occurrence substring replace over the whole file, which can corrupt
+unrelated text when the parsed hash is short or garbled.
+
 ## P-HFR gets no bitrate limit of its own
 
 Peak bitrate is read frame by frame for every picture essence dcpdoctor can

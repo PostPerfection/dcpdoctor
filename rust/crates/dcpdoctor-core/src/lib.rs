@@ -83,6 +83,10 @@ pub enum Code {
     XmlParseError,
     XmlSchemaViolation,
     SchemaValidationSkipped,
+    /// A check that should have run did not (tool missing, input unreadable,
+    /// measurement failed). The message names the check and the reason, so a
+    /// skipped check is never mistaken for a clean one.
+    CheckSkipped,
     InvalidUuid,
     MissingRequiredElement,
 
@@ -245,6 +249,7 @@ impl Code {
             Code::XmlParseError => "xml_parse_error",
             Code::XmlSchemaViolation => "xml_schema_violation",
             Code::SchemaValidationSkipped => "schema_validation_skipped",
+            Code::CheckSkipped => "check_skipped",
             Code::InvalidUuid => "invalid_uuid",
             Code::MissingRequiredElement => "missing_required_element",
             Code::PklHashMismatch => "pkl_hash_mismatch",
