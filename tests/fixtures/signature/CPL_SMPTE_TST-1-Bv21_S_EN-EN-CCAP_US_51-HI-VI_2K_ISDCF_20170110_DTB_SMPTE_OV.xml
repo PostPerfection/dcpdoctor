@@ -1,0 +1,413 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?><CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:f5f10f5e-80db-42cf-9955-e622c9c99e90</Id>
+  <AnnotationText>SMPTE_TST-1-Bv21_S_EN-EN-CCAP_US_51-HI-VI_2K_ISDCF_20170110_DTB_SMPTE_OV</AnnotationText>
+  <IssueDate>2017-01-10T20:15:49+00:00</IssueDate>
+  <Issuer>DTB</Issuer>
+  <Creator>Cipher CplGen 1.1.3</Creator>
+  <ContentTitleText>SMPTE_TST-1-Bv21_S_EN-EN-CCAP_US_51-HI-VI_2K_ISDCF_20170110_DTB_SMPTE_OV</ContentTitleText>
+  <ContentKind>test</ContentKind>
+  <ContentVersion>
+    <Id>urn:uuid:79f85a38-1009-426e-956a-1da372f91556</Id>
+    <LabelText>ISDCF-TestContent_Bv21-51</LabelText>
+  </ContentVersion>
+  <RatingList>
+    <Rating>
+      <Agency>http://www.mpaa.org/2003-ratings</Agency>
+      <Label>G</Label>
+    </Rating>
+  </RatingList>
+  <ReelList>
+    <!-- 1 reel -->
+    <Reel>
+      <!-- Reel 1, 1536 frames -->
+      <Id>urn:uuid:cac19a2b-4f8a-4f4a-a363-e4e30987381e</Id>
+      <AssetList>
+        <MainMarkers>
+          <Id>urn:uuid:ca7c5cbe-18a8-4ee7-8c2a-72d29eebfc63</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>1536</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+          <Duration>1536</Duration>
+          <MarkerList>
+            <Marker>
+              <Label>FFOC</Label>
+              <Offset>1</Offset>
+            </Marker>
+            <Marker>
+              <Label>LFOC</Label>
+              <Offset>1535</Offset>
+            </Marker>
+          </MarkerList>
+        </MainMarkers>
+        <MainPicture>
+          <Id>urn:uuid:3fce9663-94a1-498d-9484-7b66e2783403</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>1536</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+          <Duration>1536</Duration>
+          <KeyId>urn:uuid:0d39eaf8-b434-40c9-a9f4-ca61be1d8eb1</KeyId>
+          <Hash>ZXQyCc97DDT2E5FX0RJ5gkr14i8=</Hash>
+          <FrameRate>24 1</FrameRate>
+          <ScreenAspectRatio>2048 858</ScreenAspectRatio>
+        </MainPicture>
+        <MainSound>
+          <Id>urn:uuid:f692f17c-5761-46f9-8594-eaa61b60249b</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>1536</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+          <Duration>1536</Duration>
+          <KeyId>urn:uuid:802ab723-6cec-4709-b652-743565a60441</KeyId>
+          <Hash>/IR35E24NCSX1DHI2P8NSc7ehfg=</Hash>
+        </MainSound>
+        <MainSubtitle>
+          <Id>urn:uuid:9a640cf0-9bd7-4b11-b0ea-4b9038b79bfe</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>1536</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+          <Duration>1536</Duration>
+          <KeyId>urn:uuid:a540a009-3117-438b-9a3b-d132cabbea37</KeyId>
+          <Hash>GkcMA+q4qh4OQIa1HAg+d8WPFmY=</Hash>
+        </MainSubtitle>
+        <cc-cpl:ClosedCaption xmlns:cc-cpl="http://www.smpte-ra.org/schemas/429-12/2008/TT">
+          <Id>urn:uuid:502ffef9-f93b-49b9-b11d-50e78c84f7b6</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>1536</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint>
+          <Duration>1536</Duration>
+          <KeyId>urn:uuid:02ed0d10-6563-4e99-b9ba-46fc538dee72</KeyId>
+          <Hash>4IZYqdShH2AesA3PmTYecHWxAb4=</Hash>
+          <cc-cpl:Language>en</cc-cpl:Language>
+        </cc-cpl:ClosedCaption>
+        <cpl-meta:CompositionMetadataAsset xmlns:cpl-meta="http://www.smpte-ra.org/schemas/429-16/2014/CPL-Metadata">
+          <Id>urn:uuid:f0bd9198-61b5-48f6-8b1c-5c6a9321bf8b</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>1536</IntrinsicDuration>
+          <cpl-meta:FullContentTitleText language="en">ISDCF-TestContent_Bv21-51</cpl-meta:FullContentTitleText>
+          <cpl-meta:ReleaseTerritory>us</cpl-meta:ReleaseTerritory>
+          <cpl-meta:VersionNumber status="final">1</cpl-meta:VersionNumber>
+          <cpl-meta:Chain>ALL</cpl-meta:Chain>
+          <cpl-meta:Distributor>isdcf</cpl-meta:Distributor>
+          <cpl-meta:Facility>dtb</cpl-meta:Facility>
+          <cpl-meta:AlternateContentVersionList>
+            <cpl-meta:ContentVersion>
+              <Id>urn:uuid:98fd6529-4200-458f-bc0a-d013d9409769</Id>
+              <LabelText>SMPTE-Bv21</LabelText>
+            </cpl-meta:ContentVersion>
+          </cpl-meta:AlternateContentVersionList>
+          <cpl-meta:Luminance units="foot-lambert">14</cpl-meta:Luminance>
+          <cpl-meta:MainSoundConfiguration>51/L,R,C,LFE,Ls,Rs,HI,VIN,-,-,-,-,DBOX,DBOX2,-,-</cpl-meta:MainSoundConfiguration>
+          <cpl-meta:MainSoundSampleRate>48000 1</cpl-meta:MainSoundSampleRate>
+          <cpl-meta:MainPictureStoredArea>
+            <cpl-meta:Width>2048</cpl-meta:Width>
+            <cpl-meta:Height>858</cpl-meta:Height>
+          </cpl-meta:MainPictureStoredArea>
+          <cpl-meta:MainPictureActiveArea>
+            <cpl-meta:Width>2048</cpl-meta:Width>
+            <cpl-meta:Height>858</cpl-meta:Height>
+          </cpl-meta:MainPictureActiveArea>
+          <cpl-meta:MainSubtitleLanguageList>en</cpl-meta:MainSubtitleLanguageList>
+          <cpl-meta:ExtensionMetadataList>
+            <cpl-meta:ExtensionMetadata scope="http://www.smpte-ra.org/schemas/429-16/2013/Ext-Meta#scope">
+              <cpl-meta:Name>SMPTE</cpl-meta:Name>
+              <cpl-meta:PropertyList>
+                <cpl-meta:Property>
+                  <cpl-meta:Name>Version</cpl-meta:Name>
+                  <cpl-meta:Value>Bv2.1</cpl-meta:Value>
+                </cpl-meta:Property>
+              </cpl-meta:PropertyList>
+            </cpl-meta:ExtensionMetadata>
+          </cpl-meta:ExtensionMetadataList>
+          <mca:MCASubDescriptors xmlns:mca="http://isdcf.com/ns/cplmd/mca" xmlns:r0="http://www.smpte-ra.org/reg/395/2014/13/1/aaf" xmlns:r1="http://www.smpte-ra.org/reg/335/2012">
+            <r0:SoundfieldGroupLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:f9a5ca0f-cfd4-4e7f-bc63-e98b01fd72c5</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.03020201.00000000</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:6aff5007-0be0-4093-86e6-c2512d8a9283</r1:MCALinkID>
+              <r1:MCATagSymbol>sg51</r1:MCATagSymbol>
+              <r1:MCATagName>5.1</r1:MCATagName>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+            </r0:SoundfieldGroupLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:120e5bca-e9cb-4f3a-817b-52ea071faef8</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.03020101.00000000</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:b9523acb-e250-4ca2-97f9-61a2eee5027f</r1:MCALinkID>
+              <r1:MCATagSymbol>chL</r1:MCATagSymbol>
+              <r1:MCATagName>Left</r1:MCATagName>
+              <r1:MCAChannelID>1</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+              <r1:SoundfieldGroupLinkID>urn:uuid:6aff5007-0be0-4093-86e6-c2512d8a9283</r1:SoundfieldGroupLinkID>
+            </r0:AudioChannelLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:766e7294-94c1-41da-9ae7-c2a816aad5bb</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.03020102.00000000</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:9e26cc0d-03b5-48de-983c-fd1763bdb7dc</r1:MCALinkID>
+              <r1:MCATagSymbol>chR</r1:MCATagSymbol>
+              <r1:MCATagName>Right</r1:MCATagName>
+              <r1:MCAChannelID>2</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+              <r1:SoundfieldGroupLinkID>urn:uuid:6aff5007-0be0-4093-86e6-c2512d8a9283</r1:SoundfieldGroupLinkID>
+            </r0:AudioChannelLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:d93c4ea5-bad5-48b3-a9c7-0ca719f5feea</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.03020103.00000000</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:67de3039-8fcc-45a1-98e4-112cb83f533f</r1:MCALinkID>
+              <r1:MCATagSymbol>chC</r1:MCATagSymbol>
+              <r1:MCATagName>Center</r1:MCATagName>
+              <r1:MCAChannelID>3</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+              <r1:SoundfieldGroupLinkID>urn:uuid:6aff5007-0be0-4093-86e6-c2512d8a9283</r1:SoundfieldGroupLinkID>
+            </r0:AudioChannelLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:ac46db56-b56c-42e7-82fa-bcf2a1e3c7c0</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.03020104.00000000</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:b668b930-edd5-419c-aa56-bf0db6b26685</r1:MCALinkID>
+              <r1:MCATagSymbol>chLFE</r1:MCATagSymbol>
+              <r1:MCATagName>LFE</r1:MCATagName>
+              <r1:MCAChannelID>4</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+              <r1:SoundfieldGroupLinkID>urn:uuid:6aff5007-0be0-4093-86e6-c2512d8a9283</r1:SoundfieldGroupLinkID>
+            </r0:AudioChannelLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:60376861-60a6-42c5-8c0d-85b3266a362c</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.03020105.00000000</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:ef632bdc-3a15-423f-ae27-e35858c251a7</r1:MCALinkID>
+              <r1:MCATagSymbol>chLs</r1:MCATagSymbol>
+              <r1:MCATagName>Left Surround</r1:MCATagName>
+              <r1:MCAChannelID>5</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+              <r1:SoundfieldGroupLinkID>urn:uuid:6aff5007-0be0-4093-86e6-c2512d8a9283</r1:SoundfieldGroupLinkID>
+            </r0:AudioChannelLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:853b7cfb-e10c-4626-b247-703a2e8d5fdf</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.03020106.00000000</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:3a9ecfbb-2309-4cc1-ab08-b392ae383aea</r1:MCALinkID>
+              <r1:MCATagSymbol>chRs</r1:MCATagSymbol>
+              <r1:MCATagName>Right Surround</r1:MCATagName>
+              <r1:MCAChannelID>6</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+              <r1:SoundfieldGroupLinkID>urn:uuid:6aff5007-0be0-4093-86e6-c2512d8a9283</r1:SoundfieldGroupLinkID>
+            </r0:AudioChannelLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:1980cee9-9396-4742-b7c3-58ce342301b1</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.0302010e.00000000</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:7733ad42-9d72-4c50-beeb-6afd13bc288b</r1:MCALinkID>
+              <r1:MCATagSymbol>chHI</r1:MCATagSymbol>
+              <r1:MCATagName>Hearing Impaired</r1:MCATagName>
+              <r1:MCAChannelID>7</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+            </r0:AudioChannelLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:041142e2-155f-4235-9386-fc7e43f73a63</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.0302010f.00000000</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:312ccd18-749d-4488-98a7-5741d8fd4109</r1:MCALinkID>
+              <r1:MCATagSymbol>chVIN</r1:MCATagSymbol>
+              <r1:MCATagName>Visually Impaired-Narrative</r1:MCATagName>
+              <r1:MCAChannelID>8</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+            </r0:AudioChannelLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:6830ab2a-d6f1-455e-ad03-278c619d23ca</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.0e160101.01010201</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:83730f73-8763-41d6-aba7-48d5efbdccb1</r1:MCALinkID>
+              <r1:MCATagSymbol>DBOX</r1:MCATagSymbol>
+              <r1:MCATagName>D-BOX Motion Code Primary Stream</r1:MCATagName>
+              <r1:MCAChannelID>13</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+            </r0:AudioChannelLabelSubDescriptor>
+            <r0:AudioChannelLabelSubDescriptor>
+              <r1:InstanceID>urn:uuid:1d7b17c3-fa53-4d38-b118-60eaad57304c</r1:InstanceID>
+              <r1:MCALabelDictionaryID>urn:smpte:ul:060e2b34.0401010d.0e160101.01010202</r1:MCALabelDictionaryID>
+              <r1:MCALinkID>urn:uuid:dad6c911-d482-4cf6-9e85-2ff10175e4b8</r1:MCALinkID>
+              <r1:MCATagSymbol>DBOX2</r1:MCATagSymbol>
+              <r1:MCATagName>D-BOX Motion Code Secondary Stream</r1:MCATagName>
+              <r1:MCAChannelID>14</r1:MCAChannelID>
+              <r1:RFC5646SpokenLanguage>en-US</r1:RFC5646SpokenLanguage>
+            </r0:AudioChannelLabelSubDescriptor>
+          </mca:MCASubDescriptors>
+        </cpl-meta:CompositionMetadataAsset>
+      </AssetList>
+    </Reel>
+  </ReelList>
+
+  <Signer>
+    <dsig:X509Data xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">
+      <dsig:X509IssuerSerial>
+        <dsig:X509IssuerName>dnQualifier=yCvIsjMTZVe1HsOAdW3Ez9xozC8=,CN=.tdc-admin-c,OU=.cc-ra-1a.s430-2.ca.cinecert.com,O=.ca.cinecert.com</dsig:X509IssuerName>
+        <dsig:X509SerialNumber>1101</dsig:X509SerialNumber>
+      </dsig:X509IssuerSerial>
+    </dsig:X509Data>
+  </Signer>
+  <dsig:Signature xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">
+    <dsig:SignedInfo>
+      <dsig:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+      <dsig:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+      <dsig:Reference URI="">
+        <dsig:Transforms>
+          <dsig:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+        </dsig:Transforms>
+        <dsig:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>
+        <dsig:DigestValue>78zu9fDmsxZ2V+/nWvVpgMZ+lSU=</dsig:DigestValue>
+      </dsig:Reference>
+    </dsig:SignedInfo>
+    <dsig:SignatureValue>TXcvix/T36MxSR2ZL5Mwq4+nQ2LoyhDI7y+Es+GrQp9dZD1oUApYN9y9mfGZLuQK
+U7bpNEnIAQbfiPfYagdb/Li5mDwea/1j2/dObskC4CPCEPE/kSMwrxSAREd3j6HC
+YIKzjXpCgOTJE7owYqqAGdhg32+s61L5R34wu0fkVmNJMaIfh+0D9GLRwgFl9N+K
+b94yF+fkasVlzCbIakyrnN2FJ2sx0Zm5AI9V/klUX/xcMg3H5biS2PhF7590ZtTF
+tJ13pnswhylM0d0gbpdlNmUgcjtpnVnxwhTEbdXtcIJMbpqI5xXLMHlZZOVvlqML
++J/dWw7RR3e6nB1ZhWBGzw==</dsig:SignatureValue>
+  <dsig:KeyInfo>
+<dsig:X509Data>
+<dsig:X509IssuerSerial>
+<dsig:X509IssuerName>dnQualifier=yCvIsjMTZVe1HsOAdW3Ez9xozC8=,CN=.tdc-admin-c,OU=.cc-ra-1a.s430-2.ca.cinecert.com,O=.ca.cinecert.com</dsig:X509IssuerName>
+<dsig:X509SerialNumber>1101</dsig:X509SerialNumber>
+</dsig:X509IssuerSerial>
+<dsig:X509Certificate>MIIEfDCCA2SgAwIBAgICBE0wDQYJKoZIhvcNAQELBQAwgYQxGTAXBgNVBAoTEC5j
+YS5jaW5lY2VydC5jb20xKTAnBgNVBAsTIC5jYy1yYS0xYS5zNDMwLTIuY2EuY2lu
+ZWNlcnQuY29tMRUwEwYDVQQDEwwudGRjLWFkbWluLWMxJTAjBgNVBC4THHlDdklz
+ak1UWlZlMUhzT0FkVzNFejl4b3pDOD0wHhcNMTEwODE1MTgxMDU5WhcNMjMxMjMx
+MDAwMDAwWjCBiTEZMBcGA1UEChMQLmNhLmNpbmVjZXJ0LmNvbTEpMCcGA1UECxMg
+LmNjLXJhLTFhLnM0MzAtMi5jYS5jaW5lY2VydC5jb20xGjAYBgNVBAMTEUNTLnRk
+Yy1idXItdXNlcjAxMSUwIwYDVQQuExxZUmQrc1R2ZEdMaUNqeEZvQ0FEVTRZQnRx
+b0k9MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwfLFCjmVMev2RhIK
+Psu41CvZjqGGFJznKFStkL5jCHMGLv6H00faTYnmUzqF8Fe3j5ZrWa5TqJF/ntc5
+GUGaKxsr1C9w28KJLZqoOIMB/FoE79TbrmBDHD8iB7vHorY1OMlryfHso4jm6EtV
+4SCMi9jloGxhzJGJuHk90BKgmcN5KZYWhbJw4GwAjq1JW+mwy2kvR5KFgfUE2ikM
+ZAiv0qpHFi6O3eVNx+SCJQ+qRO+H7zLE5n0/QuOIfrSKvE3ypgLYo6L+6rUWGKBO
+AaFGRgmi4ITofFfkYgwpWIcgQOxJzshrXdyUheRIP2FWO9zo2IQrbdIx7lycYz4n
+c6nPrwIDAQABo4HwMIHtMAsGA1UdDwQEAwIEsDAMBgNVHRMBAf8EAjAAMB0GA1Ud
+DgQWBBRhF36xO90YuIKPEWgIANThgG2qgjCBsAYDVR0jBIGoMIGlgBTIK8iyMxNl
+V7Uew4B1bcTP3GjML6GBh6SBhDCBgTEZMBcGA1UEChMQLmNhLmNpbmVjZXJ0LmNv
+bTEpMCcGA1UECxMgLmNjLXJhLTFhLnM0MzAtMi5jYS5jaW5lY2VydC5jb20xEjAQ
+BgNVBAMTCS5jYy1yYS0yYzElMCMGA1UELhMcZEZra1FvaDFjSXpCdU5iQ0I5VFd5
+YmhtS29FPYIDAIBOMA0GCSqGSIb3DQEBCwUAA4IBAQCK0PnvQGbMN2JtEfF1xp0y
+OZ4MdKbPHUThrUDpSECb8sbjQ6Qa+OcHlSKl628bw674X6TNede4jB6rDRzXEx7q
+TQhLndMQsLqx4D1uUdo57XVA4HlsMAN9LrGiM2QyTdd2p9HVYc0QttLLHEsh7pLr
+6r8d0Er7DMYtFsUIY6bVMe5JV7H4h6rSHlRF19sh/hshMzcYjn30eg1ALcmo+fWd
+D3l6eSXljGuS6xuxX2mdN2LFaG8eqwWGMK5TFvihMAGMG7s1s0YDUAgVrsyBNORK
+ymg1zuYIUrPkUwJe8LLWEa05jTlfaAOp2zOMxWj4vvbP083V1Q9IY7UYAJR/bC0I
+</dsig:X509Certificate>
+</dsig:X509Data>
+<dsig:X509Data>
+<dsig:X509IssuerSerial>
+<dsig:X509IssuerName>dnQualifier=dFkkQoh1cIzBuNbCB9TWybhmKoE=,CN=.cc-ra-2c,OU=.cc-ra-1a.s430-2.ca.cinecert.com,O=.ca.cinecert.com</dsig:X509IssuerName>
+<dsig:X509SerialNumber>32846</dsig:X509SerialNumber>
+</dsig:X509IssuerSerial>
+<dsig:X509Certificate>MIIEbzCCA1egAwIBAgIDAIBOMA0GCSqGSIb3DQEBCwUAMIGBMRkwFwYDVQQKExAu
+Y2EuY2luZWNlcnQuY29tMSkwJwYDVQQLEyAuY2MtcmEtMWEuczQzMC0yLmNhLmNp
+bmVjZXJ0LmNvbTESMBAGA1UEAxMJLmNjLXJhLTJjMSUwIwYDVQQuExxkRmtrUW9o
+MWNJekJ1TmJDQjlUV3liaG1Lb0U9MB4XDTA3MDMyNzA3MTcwMloXDTI0MDEwMTAw
+MDAwMFowgYQxGTAXBgNVBAoTEC5jYS5jaW5lY2VydC5jb20xKTAnBgNVBAsTIC5j
+Yy1yYS0xYS5zNDMwLTIuY2EuY2luZWNlcnQuY29tMRUwEwYDVQQDEwwudGRjLWFk
+bWluLWMxJTAjBgNVBC4THHlDdklzak1UWlZlMUhzT0FkVzNFejl4b3pDOD0wggEi
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCie7ttr7goATlzRfkefMlGKW60
+K8FlEtdOZ2Y0Mv4jSiy1jNT9CCx6NC0RBMr7KgjCzi8ISE9J+X8JXwbF/FHnsv7y
+RqAeWKbHtzsFjFVSsYaDKXcXCosRpHmZVYlyKTzlAN1LmsYIpKDFovzZHKasDS1l
+rcEz/Rbbs+h+KGX/QpdGbsXBDWdaF7t96ByJbU5uno/EqpepjV3NYyXss60jFKAv
+RuCxkDGzPzCGyxWt/3bS2zCRjXIFR0HvRjbTme6FIzRGCyMlRUEJFswR23Ymy1mX
+m8Jxyx2RPxZlEM013rmrOiGT6cm2RDT4lWuSi9GfKpa8ax5MzDL+cSBpgvnZAgMB
+AAGjgeowgecwCwYDVR0PBAQDAgEGMBIGA1UdEwEB/wQIMAYBAf8CAQAwHQYDVR0O
+BBYEFMgryLIzE2VXtR7DgHVtxM/caMwvMIGkBgNVHSMEgZwwgZmAFHRZJEKIdXCM
+wbjWwgfU1sm4ZiqBoXykejB4MRkwFwYDVQQKExAuY2EuY2luZWNlcnQuY29tMSAw
+HgYDVQQLExcuczQzMC0yLmNhLmNpbmVjZXJ0LmNvbTESMBAGA1UEAxMJLmNjLXJh
+LTFhMSUwIwYDVQQuExxLK0REZHAxeUdXbG5lV2FYM1VJb0lYdEFRVDA9ggMAj8cw
+DQYJKoZIhvcNAQELBQADggEBAMYIzH+bQdmt8cc4GlNHgBZqyDmkx3tb5hAq4abT
+d5JRIJypjYTTze2LvWsLExxl6swK39e4nZvj38PQjBhRFJ/jFKMfDSI6gXRipJJM
+DC+QWx4utefCFmiOSDIuAGVehkxDfJO0ja/TFpgnVX6NsyjNkEIs2DRa3+B1BEaV
+4/F2OL08a5fNtlX8ftf85miJXUPuFQ8kKzgDiGSQRjHPQfH0VI+dP/2wYYSxvQSg
+FqZ/b69Mne6JfU73Sxgyb6Glg4eQKfoztZi0qy5Rj0PbXbMcgN0JSk1Q9/eviT58
+oFK7V8mBrhIFpN/kmDlPNvBt7YrKdc5VL6+KiOMeHuuGiWE=
+</dsig:X509Certificate>
+</dsig:X509Data>
+<dsig:X509Data>
+<dsig:X509IssuerSerial>
+<dsig:X509IssuerName>dnQualifier=K\+DDdp1yGWlneWaX3UIoIXtAQT0=,CN=.cc-ra-1a,OU=.s430-2.ca.cinecert.com,O=.ca.cinecert.com</dsig:X509IssuerName>
+<dsig:X509SerialNumber>36807</dsig:X509SerialNumber>
+</dsig:X509IssuerSerial>
+<dsig:X509Certificate>MIIEWTCCA0GgAwIBAgIDAI/HMA0GCSqGSIb3DQEBCwUAMHgxGTAXBgNVBAoTEC5j
+YS5jaW5lY2VydC5jb20xIDAeBgNVBAsTFy5zNDMwLTIuY2EuY2luZWNlcnQuY29t
+MRIwEAYDVQQDEwkuY2MtcmEtMWExJTAjBgNVBC4THEsrRERkcDF5R1dsbmVXYVgz
+VUlvSVh0QVFUMD0wHhcNMDcwMzI3MDcxMzU2WhcNMjUwMTAxMDAwMDAwWjCBgTEZ
+MBcGA1UEChMQLmNhLmNpbmVjZXJ0LmNvbTEpMCcGA1UECxMgLmNjLXJhLTFhLnM0
+MzAtMi5jYS5jaW5lY2VydC5jb20xEjAQBgNVBAMTCS5jYy1yYS0yYzElMCMGA1UE
+LhMcZEZra1FvaDFjSXpCdU5iQ0I5VFd5YmhtS29FPTCCASIwDQYJKoZIhvcNAQEB
+BQADggEPADCCAQoCggEBAOxGeJOQ2NzJ6mEAu4Ni+YGrI0fqwhZvKylDgbafJtFB
+3/2GTEyYZgCETXyX2YugAh3iie34SUikY3YeF61cSNMGUvKMYxogoo98eK4KjA5l
+T6xPZcRvBL7ln7GgKd4IdwdG/3EzUjIqR78tNcnl/cgJ10bGWGgcNzAzW1Wh+lfG
+b+R34liZxaQ8snb1rSJ/VVkf39ueq2V0EhYs2qzFEcHU9Kha5VTtdP44xDvOF5Sy
+22ig75CdKcJHdgDs/8PJsbrFkvVzb7sEdS4lQ+STJdEwMTrDRk0i+iG5hxCpZJAc
+NFr4bXLu5W8MFCQMDfIHpjaEy84xaGtlLhzvHK6mUAECAwEAAaOB4TCB3jALBgNV
+HQ8EBAMCAQYwEgYDVR0TAQH/BAgwBgEB/wIBAzAdBgNVHQ4EFgQUdFkkQoh1cIzB
+uNbCB9TWybhmKoEwgZsGA1UdIwSBkzCBkIAUK+DDdp1yGWlneWaX3UIoIXtAQT2h
+c6RxMG8xGTAXBgNVBAoTEC5jYS5jaW5lY2VydC5jb20xGTAXBgNVBAsTEC5jYS5j
+aW5lY2VydC5jb20xEDAOBgNVBAMTBy5zNDMwLTIxJTAjBgNVBC4THDhPOFc4b1lI
+bGY5N1k4bjBrZEFnTVU3L2pVVT2CAwDHFjANBgkqhkiG9w0BAQsFAAOCAQEA3Qqg
+ixs7PWXx0lT+b7KUAtQ6yIwqJWJ6ZP6AiVi+uo/yiKMgziKw4D+/x5Uq2qOgorlc
++jTPVr+Gln7IV/HwSvc3HdduGeNy5dg2LomkP8gqIXRkd8UcePji3KUtnuax0jpy
+LXymO+mQzZiFPJY99xthgOTI0ksjZK1ryxbC9S3JqmRDtj0kvZyT/lvDHS3xwitO
+vm3Y7nYOIXLDdC6NZdsi/GaSSOOO0KQJzgJ6afFOlzYMbz1/sSiOd60tmIuztSbf
+exEP1qeNXRCHIRntXOfBlXJvGLu9vwVOeOMK43MZjsQLxgfv8MxLYYwx6crkhWRm
+Nk28wnTwGFz93rhRSg==
+</dsig:X509Certificate>
+</dsig:X509Data>
+<dsig:X509Data>
+<dsig:X509IssuerSerial>
+<dsig:X509IssuerName>dnQualifier=8O8W8oYHlf97Y8n0kdAgMU7/jUU=,CN=.s430-2,OU=.ca.cinecert.com,O=.ca.cinecert.com</dsig:X509IssuerName>
+<dsig:X509SerialNumber>50966</dsig:X509SerialNumber>
+</dsig:X509IssuerSerial>
+<dsig:X509Certificate>MIIETDCCAzSgAwIBAgIDAMcWMA0GCSqGSIb3DQEBCwUAMG8xGTAXBgNVBAoTEC5j
+YS5jaW5lY2VydC5jb20xGTAXBgNVBAsTEC5jYS5jaW5lY2VydC5jb20xEDAOBgNV
+BAMTBy5zNDMwLTIxJTAjBgNVBC4THDhPOFc4b1lIbGY5N1k4bjBrZEFnTVU3L2pV
+VT0wHhcNMDcwMzI3MDcxMzA4WhcNMjYwMTAxMDAwMDAwWjB4MRkwFwYDVQQKExAu
+Y2EuY2luZWNlcnQuY29tMSAwHgYDVQQLExcuczQzMC0yLmNhLmNpbmVjZXJ0LmNv
+bTESMBAGA1UEAxMJLmNjLXJhLTFhMSUwIwYDVQQuExxLK0REZHAxeUdXbG5lV2FY
+M1VJb0lYdEFRVDA9MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8ztG
+Pz71+8WrCu6NwAbIUetNjBORWcqXt7a62UCEHu5mbb/ca+OAV90gRPLL1LqbzsJU
+u8DoptMYhsQ/+d+Ln1fIUjsJhQIJKn5lQxIhiIPJ6iGeKo0+srN/ugAOKru9h/9e
+I9upHpCOo4lfyIKHhkHZAWkkIeSzyM8/VqYF66TGsndjofiwHW8LG964EFpRWouO
+j1reAP5CUc9Ftj8IVdEUcIcexClzwcJqwePWQpjXne5e3w4lRI8TgBiCz0VSgXk1
+9oSEud3n4Pdo+FjvDCOCIWYHMYyjLB+/atnpShCbsstYJ/cc68ad+W27y88HOYSM
+9PGYuamQbUtid9zsIQIDAQABo4HnMIHkMAsGA1UdDwQEAwIBBjASBgNVHRMBAf8E
+CDAGAQH/AgEEMB0GA1UdDgQWBBQr4MN2nXIZaWd5ZpfdQighe0BBPTCBoQYDVR0j
+BIGZMIGWgBTw7xbyhgeV/3tjyfSR0CAxTv+NRaFzpHEwbzEZMBcGA1UEChMQLmNh
+LmNpbmVjZXJ0LmNvbTEZMBcGA1UECxMQLmNhLmNpbmVjZXJ0LmNvbTEQMA4GA1UE
+AxMHLnM0MzAtMjElMCMGA1UELhMcOE84VzhvWUhsZjk3WThuMGtkQWdNVTcvalVV
+PYIJALhGwbfi5fVsMA0GCSqGSIb3DQEBCwUAA4IBAQAPYRpoaH9vKLut/HngT3q7
+x2GWz+QKMxbDKNY21VTEleADF3jdWWz+pUf8adnBS3TScMQtmWWUDIXSpXeUQI07
+4ptSOze0pk13hP2VqZWu5DYosL2Y9mDhW+fxN/15EjbzwpM7/KUPGPOdL4ytSqqT
+wKSApLAK/9yWrchF5OJup1/zcIBuzNP0v5wi63XPByVU1RhcWseyYbwxo452mPB2
+3JOUq6tr3vvFfXagVf8/0wFTV3wtAXpNPQKjhMvz5n4/N/EFqXrknnlcY9dWopFI
+uLIrGE9FVxvsNJ1YzANC9Y6/vCKaRalwQ62W1nClQ/WzQn0C46hkuNxTI4diIm3+
+</dsig:X509Certificate>
+</dsig:X509Data>
+<dsig:X509Data>
+<dsig:X509IssuerSerial>
+<dsig:X509IssuerName>dnQualifier=8O8W8oYHlf97Y8n0kdAgMU7/jUU=,CN=.s430-2,OU=.ca.cinecert.com,O=.ca.cinecert.com</dsig:X509IssuerName>
+<dsig:X509SerialNumber>13278513546878383468</dsig:X509SerialNumber>
+</dsig:X509IssuerSerial>
+<dsig:X509Certificate>MIIESTCCAzGgAwIBAgIJALhGwbfi5fVsMA0GCSqGSIb3DQEBCwUAMG8xGTAXBgNV
+BAoTEC5jYS5jaW5lY2VydC5jb20xGTAXBgNVBAsTEC5jYS5jaW5lY2VydC5jb20x
+EDAOBgNVBAMTBy5zNDMwLTIxJTAjBgNVBC4THDhPOFc4b1lIbGY5N1k4bjBrZEFn
+TVU3L2pVVT0wHhcNMDcwMzEyMTQ1MjEyWhcNMjcwMzA3MTQ1MjEyWjBvMRkwFwYD
+VQQKExAuY2EuY2luZWNlcnQuY29tMRkwFwYDVQQLExAuY2EuY2luZWNlcnQuY29t
+MRAwDgYDVQQDEwcuczQzMC0yMSUwIwYDVQQuExw4TzhXOG9ZSGxmOTdZOG4wa2RB
+Z01VNy9qVVU9MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAph/idpSe
+h3CuscvGWmU+i2nZcyQAWJkztubSvukI9OMyLdLcXA4b1sRpxzkzFJ4NGyloHoVG
+OW3dhm/HrUdbiICHgEzMOJq33bBvZvf8OIw6zbSkTJCu2NbX8rBkjxs72i2ANjXJ
+LBJz4hHi3KQ0027fZRQ80uksUA96pN4xSkUEdz9cm2IrjmIRTXBKxxL7VvG2sK4j
+DodedAOQPMczKYeA4CC64cFpPyl9s4mbZJ6roNahBX3p5zmxk9C/qWDEZeiJoPQS
++gDEfRJFTLOkH2/onrE1Gw5/ErBzhZcfh6uOYUt3YlEYZDN6cJuUyPr3BaSI2rC2
+vB/Ex8HioTm4rwIDAQABo4HnMIHkMB0GA1UdDgQWBBTw7xbyhgeV/3tjyfSR0CAx
+Tv+NRTCBoQYDVR0jBIGZMIGWgBTw7xbyhgeV/3tjyfSR0CAxTv+NRaFzpHEwbzEZ
+MBcGA1UEChMQLmNhLmNpbmVjZXJ0LmNvbTEZMBcGA1UECxMQLmNhLmNpbmVjZXJ0
+LmNvbTEQMA4GA1UEAxMHLnM0MzAtMjElMCMGA1UELhMcOE84VzhvWUhsZjk3WThu
+MGtkQWdNVTcvalVVPYIJALhGwbfi5fVsMBIGA1UdEwEB/wQIMAYBAf8CAQUwCwYD
+VR0PBAQDAgIEMA0GCSqGSIb3DQEBCwUAA4IBAQBXNS39cY/a0bIUJRqL+LfI7lIw
+EY6sXABbwmUUO42Y/eS7gbpacJnSKrGtdRFWhoC0cCNR1QWrn4IOsKNRi3ed0kCo
+ccMjlaUFnUhjLUW5xQSx2w09v+bUkPlUm2hjFxOneFPbSCiWTrlmDFRqPz8+rvpT
+Q7tMBqEDNFtjrB/8KJmJwajf5CaamyFPqc2aMYj9B7GPtzcKPQlbQeAGf+x4l7Iz
+Y5iOkXqv8VqwxV3ngjV9RlLfPN3OhoBH9jTXV8kNe+mkzqQhhf6HYI50FDOVR6yC
+C7Fa0KtH0mnRwmZZKW/8vPOIeffauUs2BVVGz/K6Xvk1XWPz2O34IfGIC8r9
+</dsig:X509Certificate>
+</dsig:X509Data>
+</dsig:KeyInfo>
+</dsig:Signature>
+</CompositionPlaylist>

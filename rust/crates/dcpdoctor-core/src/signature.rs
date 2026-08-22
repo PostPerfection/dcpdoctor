@@ -360,11 +360,12 @@ mod tests {
 
     // ─── real signed packages ─────────────────────────────────────────────
 
-    /// The ISDCF/DTB Bv21 reference DCP: a real signed SMPTE package whose CPL
-    /// and PKL bind the signature namespace to `dsig:`, declare the plain
-    /// comment-free canonicalization, and carry XML comments inside the signed
-    /// document. Each of those three broke verification on its own.
-    const ISDCF_PACKAGE: &str = "../../../tests/dcps/isdcf/SMPTE_TST-1-Bv21_51-71_20170110_SMPTE_Folders/SMPTE_TST-1-Bv21_S_EN-EN-CCAP_US_51-HI-VI_2K_ISDCF_20170110_DTB_SMPTE_OV";
+    /// The ISDCF/DTB Bv21 reference DCP's CPL and PKL, committed under
+    /// tests/fixtures/signature: real signed documents that bind the signature
+    /// namespace to `dsig:`, declare the plain comment-free canonicalization,
+    /// and carry XML comments inside the signed document. Each of those three
+    /// broke verification on its own.
+    const ISDCF_PACKAGE: &str = "../../../tests/fixtures/signature";
     const ISDCF_CPL: &str =
         "CPL_SMPTE_TST-1-Bv21_S_EN-EN-CCAP_US_51-HI-VI_2K_ISDCF_20170110_DTB_SMPTE_OV.xml";
     const ISDCF_PKL: &str =
