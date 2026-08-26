@@ -491,7 +491,7 @@ GitHub Actions runs these Rust checks on Linux, macOS, and Windows. It also buil
 ### Studio Validation
 
 ```bash
-# Studio-level checks (loudness, color, resolution, encryption, subtitles)
+# Studio-level checks (loudness, color, resolution, encryption, reel duration)
 dcpdoctor --studio /path/to/dcp
 
 # Deep per-MXF analysis (color space, bit depth, resolution per file)

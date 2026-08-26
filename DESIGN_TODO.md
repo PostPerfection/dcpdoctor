@@ -3,7 +3,7 @@
 Genuinely open items and standing decisions. Everything advertised in
 README/docs/CHANGELOG is wired (done notes below); every DoM tracker gap (dom#N =
 https://dcpomatic.com/bugs/view.php?id=N) is done. What remains is deliberate
-policy plus the measurement gap listed below.
+policy plus the deliberate omissions below.
 
 ## Policy: no silent skips
 
@@ -18,27 +18,6 @@ roughly sixty such paths, several hiding real defects (an encrypted DCP read as
 unencrypted when ffprobe was absent, a corrupt subtitle MXF passing a default
 verify, a garbage PKL Size disabling the size check). New checks follow the
 policy from the start.
-
-## Three studio checks are wired but can never fire
-
-Found by the no-silent-skips audit and left in place because each needs a real
-measurement, not a skip note. Implement or delete:
-
-- `studio.rs check_continuity_compliance`: `analyze_reel_continuity` never
-  writes `gap_frames` and always leaves `audio_video_sync` true, so neither of
-  its notes can fire, and `timing_continuous` is set but never read.
-- `studio.rs check_subtitle_font_compliance`: `validate_subtitle_fonts` collects
-  `font_ids` but never fills `missing_fonts` and leaves `min_display_seconds` at
-  its 999.0 sentinel, so both notes are dead.
-- `studio.rs detect_stereoscopic` frame counts: `frame_count_match` is
-  hardcoded true and the per-eye counts are never filled, so the mismatch and
-  missing-eye notes cannot fire.
-
-Two adjacent CLI defects from the same audit, also open: auto-qc prints
-`ch.channel + 1` while astats already numbers channels from 1, so reported
-channel numbers are one too high, and `fix.rs` rewrites a PKL hash with a
-first-occurrence substring replace over the whole file, which can corrupt
-unrelated text when the parsed hash is short or garbled.
 
 ## P-HFR gets no bitrate limit of its own
 
@@ -70,6 +49,45 @@ the four codes already moved to ERROR (see "Severity escalations to spec" under
 Done).
 
 # Done
+
+## Three dead studio checks deleted, two CLI defects fixed (2026-08-26)
+
+The no-silent-skips audit left three `--studio` checks in place that no
+measurement could ever reach. None is reimplemented: each would need essence
+work that the checks already in the tree cover better.
+
+`analyze_reel_continuity` never wrote a `gap_frames` entry and always left
+`audio_video_sync` true, so `check_continuity_compliance` had no path to either
+of its notes. `analyze_reel_durations` was its only real consumer, for the reel
+count and the IntrinsicDuration list, so that parse moved into the duration
+analysis and the continuity pair is gone. `validators::check_reel_continuity`,
+which reports `reel_discontinuity` from entry points, is a different check and
+is untouched.
+
+`validate_subtitle_fonts` collected font ids and never filled `missing_fonts`,
+and left `min_display_seconds` at its 999.0 sentinel, so both of
+`check_subtitle_font_compliance`'s notes were dead. subtitle.rs reports
+`subtitle_font_missing` from a real LoadFont resolution and checks glyph
+coverage on top, so nothing was lost with them.
+
+`detect_stereoscopic` hardcoded `frame_count_match` true and never filled the
+per-eye counts, so its only reachable output was a CheckSkipped note describing
+a frame-count comparison that did not exist, which is worse than silence. The
+core path's `validators::check_stereo` covers the ST 429-10 reel, and the
+codestream pass measures each eye. The CLI's `suppress_core_studio_overlap`
+dropped the core `stereo_mismatch` note whenever one of the deleted messages
+appeared, so that half of the suppression went with it and only the
+mixed-encryption case remains.
+
+Two CLI defects from the same audit. auto-qc printed `ch.channel + 1` over
+channel numbers ffmpeg's astats already writes from 1, so every reported channel
+was one too high. The astats parse is now its own function with a test over a
+two-channel excerpt. `fix.rs` rewrote a PKL hash with `replacen` over the whole
+document, which rewrites the first occurrence of that text anywhere: an earlier
+asset's Hash, an AnnotationText, or any string a short or garbled hash is a
+substring of. It now finds the Asset element whose Id matches and rewrites the
+Hash inside it, and still reports the mismatch as unrepaired when that element
+does not carry the recorded text.
 
 ## Document signatures verify against the document (2026-08-22)
 

@@ -1,5 +1,5 @@
-//! Studio-grade DCP validation: loudness, channels, color, stereo, reels,
-//! encryption, content type, subtitle fonts, and resolution analysis.
+//! Studio-grade DCP validation: loudness, channels, color, reel durations,
+//! encryption, content type, and resolution analysis.
 
 use std::path::{Path, PathBuf};
 
@@ -371,242 +371,6 @@ pub fn check_color_compliance(info: &ColorInfo, mxf_path: &Path) -> Vec<Note> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 4. Stereoscopic 3D Validation
-// ════════════════════════════════════════════════════════════════════════════════
-
-/// Stereoscopic content info.
-#[derive(Debug, Clone, Default)]
-pub struct StereoInfo {
-    pub valid: bool,
-    pub is_stereoscopic: bool,
-    pub left_eye_detected: bool,
-    pub right_eye_detected: bool,
-    pub left_frame_count: u64,
-    pub right_frame_count: u64,
-    pub frame_count_match: bool,
-    /// at least one MXF was probed, so "not stereoscopic" is a measurement
-    pub probed: bool,
-    /// why the probe could not run
-    pub probe_error: Option<String>,
-}
-
-/// Detect stereoscopic 3D content in a DCP directory.
-pub fn detect_stereoscopic(dcp_dir: &Path) -> StereoInfo {
-    let mut info = StereoInfo {
-        valid: true,
-        ..Default::default()
-    };
-
-    if !ffprobe_available() {
-        info.probe_error = Some("ffprobe not found on PATH".into());
-        return info;
-    }
-
-    let entries = match std::fs::read_dir(dcp_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            info.probe_error = Some(format!("cannot read {}: {e}", dcp_dir.display()));
-            return info;
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("mxf") {
-            continue;
-        }
-
-        // Stereo MXF typically has twice the frame count or "stereoscopic" in metadata
-        let output = match ffprobe_output(&[
-            "-v",
-            "quiet",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=nb_frames,codec_tag_string",
-            "-show_entries",
-            "format_tags=stereo_mode",
-            "-of",
-            "csv=p=0",
-            &path.to_string_lossy(),
-        ]) {
-            Ok(o) => o,
-            Err(e) => {
-                info.probe_error = Some(format!("{}: {e}", path.display()));
-                continue;
-            }
-        };
-        info.probed = true;
-        if output.contains("stereo") || output.contains("Stereo") {
-            info.is_stereoscopic = true;
-            info.left_eye_detected = true;
-            info.right_eye_detected = true;
-            info.frame_count_match = true;
-            break;
-        }
-    }
-
-    info
-}
-
-/// Check stereoscopic compliance.
-pub fn check_stereo_compliance(info: &StereoInfo, dcp_dir: &Path) -> Vec<Note> {
-    let mut notes = Vec::new();
-
-    match &info.probe_error {
-        Some(reason) => notes.push(
-            Note::warning(
-                Code::CheckSkipped,
-                format!("stereoscopic 3D detection did not run: {reason}"),
-            )
-            .with_file(dcp_dir),
-        ),
-        None if !info.probed => notes.push(
-            Note::warning(
-                Code::CheckSkipped,
-                "stereoscopic 3D detection found no MXF to probe",
-            )
-            .with_file(dcp_dir),
-        ),
-        None => {}
-    }
-
-    if !info.valid || !info.is_stereoscopic {
-        return notes;
-    }
-
-    let file = Some(dcp_dir.to_path_buf());
-
-    if !info.frame_count_match {
-        notes.push(Note {
-            severity: Severity::Error,
-            code: Code::MxfInvalidStructure,
-            message: format!(
-                "Stereoscopic eye frame count mismatch: L={} R={}",
-                info.left_frame_count, info.right_frame_count
-            ),
-            file: file.clone(),
-            line: 0,
-        });
-    }
-
-    if !info.left_eye_detected || !info.right_eye_detected {
-        let missing = if !info.left_eye_detected {
-            "left"
-        } else {
-            "right"
-        };
-        notes.push(Note {
-            severity: Severity::Error,
-            code: Code::MxfInvalidStructure,
-            message: format!("Stereoscopic content missing {missing} eye"),
-            file,
-            line: 0,
-        });
-    }
-
-    notes
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// 5. Cross-Reel Continuity
-// ════════════════════════════════════════════════════════════════════════════════
-
-/// Reel continuity analysis result.
-#[derive(Debug, Clone, Default)]
-pub struct ReelContinuity {
-    pub valid: bool,
-    pub reel_count: u32,
-    pub reel_durations: Vec<u64>,
-    pub gap_frames: Vec<i64>,
-    pub timing_continuous: bool,
-    pub audio_video_sync: bool,
-    pub error: Option<String>,
-}
-
-/// Analyze reel continuity in a DCP by parsing the CPL.
-pub fn analyze_reel_continuity(dcp_dir: &Path) -> ReelContinuity {
-    let mut info = ReelContinuity {
-        audio_video_sync: true,
-        ..Default::default()
-    };
-
-    let cpl_path = match find_cpl(dcp_dir) {
-        Some(p) => p,
-        None => {
-            info.error = Some("No CPL found".into());
-            return info;
-        }
-    };
-
-    let content = match std::fs::read_to_string(&cpl_path) {
-        Ok(c) => c,
-        Err(_) => {
-            info.error = Some("Failed to read CPL".into());
-            return info;
-        }
-    };
-
-    // Count reels
-    info.reel_count =
-        content.matches("<Reel>").count() as u32 + content.matches("<Reel ").count() as u32;
-
-    // Extract IntrinsicDuration values for main picture
-    let re = regex_lite::Regex::new(r"<IntrinsicDuration>(\d+)</IntrinsicDuration>").unwrap();
-    for cap in re.captures_iter(&content) {
-        if let Ok(dur) = cap[1].parse::<u64>() {
-            info.reel_durations.push(dur);
-        }
-    }
-
-    if info.reel_durations.len() > 1 {
-        info.timing_continuous = true;
-    }
-
-    info.valid = true;
-    info
-}
-
-/// Check continuity compliance.
-pub fn check_continuity_compliance(info: &ReelContinuity, dcp_dir: &Path) -> Vec<Note> {
-    let mut notes = Vec::new();
-    if !info.valid {
-        return notes;
-    }
-
-    let file = Some(dcp_dir.to_path_buf());
-
-    for (i, &gap) in info.gap_frames.iter().enumerate() {
-        if gap != 0 {
-            notes.push(Note {
-                severity: Severity::Warning,
-                code: Code::CplInvalidDuration,
-                message: format!(
-                    "Timing gap of {} frames between reel {} and {}",
-                    gap,
-                    i + 1,
-                    i + 2
-                ),
-                file: file.clone(),
-                line: 0,
-            });
-        }
-    }
-
-    if !info.audio_video_sync {
-        notes.push(Note {
-            severity: Severity::Error,
-            code: Code::CplInvalidDuration,
-            message: "Audio/video duration mismatch detected in multi-reel package".into(),
-            file,
-            line: 0,
-        });
-    }
-
-    notes
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
 // 7. Encryption Consistency
 // ════════════════════════════════════════════════════════════════════════════════
 
@@ -751,13 +515,25 @@ pub struct ReelDurationInfo {
 pub fn analyze_reel_durations(dcp_dir: &Path) -> ReelDurationInfo {
     let mut info = ReelDurationInfo::default();
 
-    let continuity = analyze_reel_continuity(dcp_dir);
-    if !continuity.valid {
-        info.error = continuity.error;
+    let Some(cpl_path) = find_cpl(dcp_dir) else {
+        info.error = Some("No CPL found".into());
         return info;
-    }
+    };
+    let Ok(content) = std::fs::read_to_string(&cpl_path) else {
+        info.error = Some("Failed to read CPL".into());
+        return info;
+    };
 
-    info.reel_count = continuity.reel_count;
+    info.reel_count =
+        content.matches("<Reel>").count() as u32 + content.matches("<Reel ").count() as u32;
+
+    let intrinsic_duration =
+        regex_lite::Regex::new(r"<IntrinsicDuration>(\d+)</IntrinsicDuration>").unwrap();
+    let reel_durations: Vec<u64> = intrinsic_duration
+        .captures_iter(&content)
+        .filter_map(|cap| cap[1].parse::<u64>().ok())
+        .collect();
+
     info.frame_rate = 24.0; // default
 
     // Get frame rate from first picture MXF
@@ -781,7 +557,7 @@ pub fn analyze_reel_durations(dcp_dir: &Path) -> ReelDurationInfo {
     }
 
     let mut total: u64 = 0;
-    for (i, &dur) in continuity.reel_durations.iter().enumerate() {
+    for (i, &dur) in reel_durations.iter().enumerate() {
         total += dur;
         if dur > info.longest_reel_frames {
             info.longest_reel_frames = dur;
@@ -1014,106 +790,6 @@ pub fn check_multi_cpl_compliance(info: &MultiCplInfo, dcp_dir: &Path) -> Vec<No
     notes
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 11. Subtitle Font Validation
-// ════════════════════════════════════════════════════════════════════════════════
-
-/// Subtitle font analysis result.
-#[derive(Debug, Clone, Default)]
-pub struct SubtitleFontInfo {
-    pub valid: bool,
-    pub font_count: u32,
-    pub font_ids: Vec<String>,
-    pub missing_fonts: Vec<String>,
-    pub total_subtitle_count: u32,
-    pub min_display_seconds: f64,
-}
-
-/// Validate subtitle fonts in a DCP.
-pub fn validate_subtitle_fonts(dcp_dir: &Path) -> SubtitleFontInfo {
-    let mut info = SubtitleFontInfo {
-        min_display_seconds: 999.0,
-        ..Default::default()
-    };
-
-    let entries = match std::fs::read_dir(dcp_dir) {
-        Ok(e) => e,
-        Err(_) => {
-            info.valid = true;
-            return info;
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("xml") {
-            continue;
-        }
-
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        if !content.contains("SubtitleReel") && !content.contains("DCSubtitle") {
-            continue;
-        }
-
-        // Extract font IDs
-        let font_re = regex_lite::Regex::new(r#"(?:Font|LoadFont)\s+[^>]*ID="([^"]+)"#).unwrap();
-        for cap in font_re.captures_iter(&content) {
-            let font_id = cap[1].to_string();
-            if !info.font_ids.contains(&font_id) {
-                info.font_ids.push(font_id);
-            }
-        }
-
-        // Count subtitles
-        let sub_count = content.matches("<Subtitle").count();
-        info.total_subtitle_count += sub_count as u32;
-    }
-
-    info.font_count = info.font_ids.len() as u32;
-    info.valid = true;
-    info
-}
-
-/// Check subtitle font compliance.
-pub fn check_subtitle_font_compliance(info: &SubtitleFontInfo, dcp_dir: &Path) -> Vec<Note> {
-    let mut notes = Vec::new();
-    if !info.valid {
-        return notes;
-    }
-
-    let file = Some(dcp_dir.to_path_buf());
-
-    for font in &info.missing_fonts {
-        notes.push(Note {
-            severity: Severity::Error,
-            code: Code::SubtitleFontMissing,
-            message: format!("Subtitle references font '{font}' which is not embedded"),
-            file: file.clone(),
-            line: 0,
-        });
-    }
-
-    if info.min_display_seconds < 0.8 {
-        notes.push(Note {
-            severity: Severity::Warning,
-            code: Code::SubtitleParseError,
-            message: format!(
-                "Shortest subtitle display time is {:.2}s — minimum recommended is 0.83s (20 frames @ 24fps)",
-                info.min_display_seconds
-            ),
-            file,
-            line: 0,
-        });
-    }
-
-    notes
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
 // 12. Resolution & Aspect Ratio Validation
 // ════════════════════════════════════════════════════════════════════════════════
 
@@ -1252,20 +928,9 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
     let enc = check_encryption(dcp_dir);
     notes.extend(check_encryption_compliance(&enc, dcp_dir));
 
-    // Reel continuity & duration
-    let continuity = analyze_reel_continuity(dcp_dir);
-    notes.extend(check_continuity_compliance(&continuity, dcp_dir));
-
+    // Reel duration
     let duration = analyze_reel_durations(dcp_dir);
     notes.extend(check_duration_compliance(&duration, dcp_dir));
-
-    // Stereoscopic
-    let stereo = detect_stereoscopic(dcp_dir);
-    notes.extend(check_stereo_compliance(&stereo, dcp_dir));
-
-    // Subtitle fonts
-    let sub_fonts = validate_subtitle_fonts(dcp_dir);
-    notes.extend(check_subtitle_font_compliance(&sub_fonts, dcp_dir));
 
     // Per-MXF checks (deep mode)
     if deep && let Ok(entries) = std::fs::read_dir(dcp_dir) {

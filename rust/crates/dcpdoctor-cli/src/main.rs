@@ -1624,35 +1624,27 @@ struct ValidateFlags {
     recipient_key: Option<PathBuf>,
 }
 
-/// The --studio ffprobe checks re-cover a couple of findings the core path
-/// already reports from CPL declarations. When a deep studio note is present,
-/// drop the superseded core note so the finding shows once, then recount.
+/// The --studio ffprobe checks re-cover a finding the core path already reports
+/// from CPL declarations. When the deep studio note is present, drop the
+/// superseded core note so the finding shows once, then recount.
 fn suppress_core_studio_overlap(
     result: &mut dcpdoctor_core::VerifyResult,
     studio: &[dcpdoctor_core::Note],
 ) {
     use dcpdoctor_core::{Code, Severity};
-    let studio_has = |needle: &str| studio.iter().any(|n| n.message.contains(needle));
 
-    // studio "Mixed encryption" reads actual MXF essence state; it supersedes the
+    // studio "Mixed encryption" reads actual MXF essence state, it supersedes the
     // core reel-coherence note derived from CPL KeyId presence.
-    let drop_enc = studio_has("Mixed encryption");
-    // studio stereo eye checks (ffprobe frame counts) supersede the core
-    // StereoMismatch structural note.
-    let drop_stereo = studio_has("Stereoscopic eye")
-        || studio_has("missing left eye")
-        || studio_has("missing right eye");
-
-    if !drop_enc && !drop_stereo {
+    let mixed_encryption = studio
+        .iter()
+        .any(|n| n.message.contains("Mixed encryption"));
+    if !mixed_encryption {
         return;
     }
 
-    result.notes.retain(|n| {
-        let enc_dup =
-            drop_enc && n.code == Code::ReelIncoherent && n.message.contains("encryption");
-        let stereo_dup = drop_stereo && n.code == Code::StereoMismatch;
-        !enc_dup && !stereo_dup
-    });
+    result
+        .notes
+        .retain(|n| !(n.code == Code::ReelIncoherent && n.message.contains("encryption")));
 
     result.error_count = result
         .notes
