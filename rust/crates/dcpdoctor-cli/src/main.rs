@@ -1030,15 +1030,13 @@ fn main() {
                             if ch.peak_dbfs >= clipping_threshold {
                                 findings.push(format!(
                                     "Audio clipping: channel {} peak {:.1} dBFS",
-                                    ch.channel + 1,
-                                    ch.peak_dbfs
+                                    ch.channel, ch.peak_dbfs
                                 ));
                             }
                             if ch.rms_dbfs < silence_threshold {
                                 findings.push(format!(
                                     "Audio silence: channel {} RMS {:.1} dBFS",
-                                    ch.channel + 1,
-                                    ch.rms_dbfs
+                                    ch.channel, ch.rms_dbfs
                                 ));
                             }
                         }

@@ -73,7 +73,23 @@ pub fn analyze_audio(audio_path: &Path) -> Result<AudioAnalysis, String> {
         }
     }
 
-    // Parse astats output
+    let channels = parse_astats_channels(&stderr);
+
+    // If astats parsing failed, try with volumedetect filter per channel
+    if channels.is_empty() {
+        return analyze_audio_volumedetect(audio_path);
+    }
+
+    analysis.channels = channels;
+    analysis.per_channel = true;
+
+    Ok(analysis)
+}
+
+/// Read per-channel levels out of ffmpeg astats stderr. The "Channel: N" lines
+/// astats writes already count from 1, and `ChannelInfo.channel` keeps that
+/// numbering.
+fn parse_astats_channels(stderr: &str) -> Vec<ChannelInfo> {
     let mut current_channel: Option<u32> = None;
     let mut channels: std::collections::HashMap<u32, ChannelInfo> =
         std::collections::HashMap::new();
@@ -86,18 +102,7 @@ pub fn analyze_audio(audio_path: &Path) -> Result<AudioAnalysis, String> {
             current_channel = None;
             continue;
         }
-        if let Some(ch_str) = trimmed.strip_suffix("").and_then(|_| {
-            if trimmed.contains("Channel:") {
-                let parts: Vec<&str> = trimmed.split("Channel:").collect();
-                parts
-                    .get(1)
-                    .and_then(|s| s.split_whitespace().next()?.parse::<u32>().ok())
-            } else {
-                None
-            }
-        }) {
-            current_channel = Some(ch_str);
-        } else if trimmed.contains("Channel:")
+        if trimmed.contains("Channel:")
             && let Some(num) = trimmed
                 .split("Channel:")
                 .nth(1)
@@ -128,17 +133,9 @@ pub fn analyze_audio(audio_path: &Path) -> Result<AudioAnalysis, String> {
         }
     }
 
-    // If astats parsing failed, try with volumedetect filter per channel
-    if channels.is_empty() {
-        return analyze_audio_volumedetect(audio_path);
-    }
-
     let mut sorted: Vec<ChannelInfo> = channels.into_values().collect();
     sorted.sort_by_key(|c| c.channel);
-    analysis.channels = sorted;
-    analysis.per_channel = true;
-
-    Ok(analysis)
+    sorted
 }
 
 /// Fallback: analyze using volumedetect filter.
@@ -345,6 +342,30 @@ mod tests {
             extract_db_value("[Parsed_astats_0 @ 0x0] Peak level dB: -18.061535"),
             Some(-18.061535)
         );
+    }
+
+    #[test]
+    fn astats_channel_numbers_are_kept_as_ffmpeg_writes_them() {
+        let stderr = "\
+[Parsed_astats_0 @ 0x55d0] Channel: 1
+[Parsed_astats_0 @ 0x55d0] Peak level dB: -3.010300
+[Parsed_astats_0 @ 0x55d0] RMS level dB: -20.000000
+[Parsed_astats_0 @ 0x55d0] Channel: 2
+[Parsed_astats_0 @ 0x55d0] Peak level dB: -0.100000
+[Parsed_astats_0 @ 0x55d0] RMS level dB: -90.000000
+[Parsed_astats_0 @ 0x55d0] Overall
+[Parsed_astats_0 @ 0x55d0] Peak level dB: -0.100000
+";
+
+        let channels = parse_astats_channels(stderr);
+
+        assert_eq!(channels.len(), 2);
+        assert_eq!(channels[0].channel, 1);
+        assert_eq!(channels[1].channel, 2);
+        assert_eq!(channels[0].peak_dbfs, -3.0103);
+        assert!(!channels[0].clipping);
+        assert!(channels[1].clipping);
+        assert!(channels[1].silent);
     }
 
     #[test]
