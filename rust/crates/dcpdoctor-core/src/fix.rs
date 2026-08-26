@@ -148,14 +148,16 @@ pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
                         if computed == pkl_asset.hash {
                             continue;
                         }
-                        if !xml.contains(&pkl_asset.hash) {
+                        let rewritten =
+                            replace_asset_hash(&xml, &pkl_asset.id, &pkl_asset.hash, &computed);
+                        let Some(rewritten) = rewritten else {
                             failure_reasons.insert(
                                 full_path,
                                 "the hash the PKL records was not found in its text".into(),
                             );
                             continue;
-                        }
-                        xml = xml.replacen(&pkl_asset.hash, &computed, 1);
+                        };
+                        xml = rewritten;
                         pkl_modified = true;
                         repaired_assets.insert(full_path.clone());
                         rewritten_in_this_pkl.push(full_path);
@@ -210,6 +212,91 @@ pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
     }
 
     result
+}
+
+/// Rewrite the `<Hash>` text of the `<Asset>` whose `<Id>` is `asset_id`, so a
+/// hash string that also appears elsewhere in the PKL is left alone. Returns
+/// None when no asset carries that id or when its Hash text is not
+/// `recorded_hash`.
+fn replace_asset_hash(
+    xml: &str,
+    asset_id: &str,
+    recorded_hash: &str,
+    computed_hash: &str,
+) -> Option<String> {
+    let asset = asset_element_range(xml, asset_id)?;
+    let hash_text = element_text_range(xml, asset, "Hash")?;
+    let text = &xml[hash_text.clone()];
+    if text.trim() != recorded_hash {
+        return None;
+    }
+    let start = hash_text.start + (text.len() - text.trim_start().len());
+    let end = start + recorded_hash.len();
+    Some(format!("{}{computed_hash}{}", &xml[..start], &xml[end..]))
+}
+
+/// Byte range from the `<Asset>` open tag to its `</Asset>` close tag, for the
+/// asset whose `<Id>` is `asset_id`.
+fn asset_element_range(xml: &str, asset_id: &str) -> Option<std::ops::Range<usize>> {
+    for (open, _) in xml.match_indices('<') {
+        if local_name_at(xml, open) != Some(("Asset", false)) {
+            continue;
+        }
+        let Some(close) = find_close_tag(xml, open + 1..xml.len(), "Asset") else {
+            continue;
+        };
+        let asset = open..close;
+        let Some(id_text) = element_text_range(xml, asset.clone(), "Id") else {
+            continue;
+        };
+        if dcpdoctor_parse::strip_urn_uuid(xml[id_text].trim()) == asset_id {
+            return Some(asset);
+        }
+    }
+    None
+}
+
+/// Byte range of the text inside the first element named `local` within
+/// `region`. Any namespace prefix is accepted.
+fn element_text_range(
+    xml: &str,
+    region: std::ops::Range<usize>,
+    local: &str,
+) -> Option<std::ops::Range<usize>> {
+    for (offset, _) in xml.get(region.clone())?.match_indices('<') {
+        let open = region.start + offset;
+        if local_name_at(xml, open) != Some((local, false)) {
+            continue;
+        }
+        let text_start = open + xml[open..region.end].find('>')? + 1;
+        let close = find_close_tag(xml, text_start..region.end, local)?;
+        return Some(text_start..close);
+    }
+    None
+}
+
+/// Offset of the `<` of the first closing tag named `local` within `region`.
+fn find_close_tag(xml: &str, region: std::ops::Range<usize>, local: &str) -> Option<usize> {
+    xml.get(region.clone())?
+        .match_indices('<')
+        .map(|(offset, _)| region.start + offset)
+        .find(|&open| local_name_at(xml, open) == Some((local, true)))
+}
+
+/// Local name of the tag starting at `open`, plus whether it is a closing tag.
+/// None for comments, declarations and anything unparseable.
+fn local_name_at(xml: &str, open: usize) -> Option<(&str, bool)> {
+    let rest = xml.get(open + 1..)?;
+    let (closing, rest) = match rest.strip_prefix('/') {
+        Some(rest) => (true, rest),
+        None => (false, rest),
+    };
+    if rest.starts_with(['?', '!']) {
+        return None;
+    }
+    let name_end = rest.find(|c: char| c.is_whitespace() || c == '>' || c == '/')?;
+    let name = &rest[..name_end];
+    Some((name.rsplit(':').next()?, closing))
 }
 
 /// Fix XML namespace to match detected standard.
@@ -341,6 +428,104 @@ mod tests {
                 .any(|n| n.code == Code::CplInvalidContentKind),
             "the unrepaired ContentKind must reach the report: {:?}",
             result.skipped
+        );
+    }
+
+    /// The stale hash of sound.mxf, planted a second time in the picture asset
+    /// that precedes it.
+    const STALE_SOUND_HASH: &str = "AAAAOYm1qkf6RkMLA7PgTU/KY7s=";
+
+    #[test]
+    fn a_stale_hash_that_also_appears_earlier_is_rewritten_only_in_its_own_asset() {
+        let dir = mutated_package(
+            "pkl.xml",
+            &[
+                (
+                    "<Hash>DvGtOYm1qkf6RkMLA7PgTU/KY7s=</Hash>",
+                    "<Hash>AAAAOYm1qkf6RkMLA7PgTU/KY7s=</Hash>",
+                ),
+                (
+                    "<Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>",
+                    "<Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>\n      <AnnotationText>AAAAOYm1qkf6RkMLA7PgTU/KY7s=</AnnotationText>",
+                ),
+            ],
+        );
+
+        let result = fix_dcp(dir.path());
+
+        assert!(
+            result
+                .repairs
+                .iter()
+                .any(|r| r.code == Code::PklHashMismatch && r.description.contains("sound.mxf")),
+            "the sound hash must be repaired: {:?}",
+            result.repairs
+        );
+        let xml = fs::read_to_string(dir.path().join("pkl.xml")).unwrap();
+        assert!(
+            xml.contains(&format!(
+                "<AnnotationText>{STALE_SOUND_HASH}</AnnotationText>"
+            )),
+            "the earlier occurrence must survive byte for byte: {xml}"
+        );
+        assert_eq!(
+            xml.matches(STALE_SOUND_HASH).count(),
+            1,
+            "only the sound asset's Hash may be rewritten: {xml}"
+        );
+        assert!(
+            xml.contains("<Hash>DvGtOYm1qkf6RkMLA7PgTU/KY7s=</Hash>"),
+            "the sound asset must carry its computed hash: {xml}"
+        );
+        assert!(
+            xml.contains("<Hash>pDjIK8UaYOLZLpbbBBI0hFVQbXE=</Hash>"),
+            "the picture asset's own hash must be untouched: {xml}"
+        );
+    }
+
+    #[test]
+    fn a_hash_the_asset_element_does_not_carry_leaves_the_rest_of_the_pkl_alone() {
+        // the numeric reference parses to the same hash the file does not spell
+        // out, so the recorded hash is nowhere in this asset's text
+        let dir = mutated_package(
+            "pkl.xml",
+            &[
+                (
+                    "<Hash>DvGtOYm1qkf6RkMLA7PgTU/KY7s=</Hash>",
+                    "<Hash>AAAAOYm1qkf6RkMLA7PgTU/KY7s&#61;</Hash>",
+                ),
+                (
+                    "<Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>",
+                    "<Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>\n      <AnnotationText>AAAAOYm1qkf6RkMLA7PgTU/KY7s=</AnnotationText>",
+                ),
+            ],
+        );
+        let pkl = dir.path().join("pkl.xml");
+        let before = fs::read_to_string(&pkl).unwrap();
+
+        let result = fix_dcp(dir.path());
+
+        assert!(
+            !result
+                .repairs
+                .iter()
+                .any(|r| r.code == Code::PklHashMismatch),
+            "no hash was found to rewrite, so no repair may be claimed: {:?}",
+            result.repairs
+        );
+        assert!(
+            result
+                .skipped
+                .iter()
+                .any(|n| n.code == Code::PklHashMismatch
+                    && n.message.contains("was not found in its text")),
+            "the unrepaired hash mismatch must reach the report: {:?}",
+            result.skipped
+        );
+        assert_eq!(
+            fs::read_to_string(&pkl).unwrap(),
+            before,
+            "the PKL must be left byte for byte as it was"
         );
     }
 
