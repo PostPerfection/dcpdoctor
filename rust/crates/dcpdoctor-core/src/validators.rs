@@ -2969,7 +2969,7 @@ mod tests {
             stored_height: 1080,
             aspect_ratio: asdcplib::Rational::new(2048, 1080),
             container_duration: 1,
-            component_count: 3,
+            codestream: crate::codestream_fixtures::cinema_2k(),
         };
         let mut writer = asdcplib::jp2k::MxfWriter::new();
         writer
@@ -4492,7 +4492,7 @@ mod tests {
             stored_height: height,
             aspect_ratio: Rational::new(width as i32, height as i32),
             container_duration: 1,
-            component_count: 3,
+            codestream: crate::codestream_fixtures::cinema_2k(),
         };
         let mut writer = MxfWriter::new();
         writer

@@ -1388,7 +1388,7 @@ mod tests {
             stored_height: 1080,
             aspect_ratio: Rational::new(2048, 1080),
             container_duration: frames,
-            component_count: 3,
+            codestream: crate::codestream_fixtures::imf_4k(),
         };
         let mut writer = asdcplib::as02::jp2k::MxfWriter::new();
         writer

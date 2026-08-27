@@ -5,6 +5,8 @@ pub mod av_sync;
 pub mod bitrate;
 pub mod cert_rules;
 pub mod checksum_verify;
+#[cfg(test)]
+mod codestream_fixtures;
 pub mod compliance;
 pub mod conformance;
 pub mod cpl;

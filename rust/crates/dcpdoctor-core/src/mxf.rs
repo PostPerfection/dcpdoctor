@@ -524,7 +524,7 @@ mod tests {
             stored_height: height,
             aspect_ratio: Rational::new(width as i32, height as i32),
             container_duration: 1,
-            component_count: 3,
+            codestream: crate::codestream_fixtures::cinema_2k(),
         };
         let mut writer = MxfWriter::new();
         writer

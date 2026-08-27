@@ -1634,7 +1634,7 @@ pub(crate) mod frame_scan_tests {
             stored_height: 1080,
             aspect_ratio: Rational::new(2048, 1080),
             container_duration: frames,
-            component_count: 3,
+            codestream: crate::codestream_fixtures::cinema_2k(),
         }
     }
 
@@ -1769,6 +1769,7 @@ pub(crate) mod frame_scan_tests {
         descriptor.stored_width = width;
         descriptor.stored_height = height;
         descriptor.aspect_ratio = Rational::new(width as i32, height as i32);
+        descriptor.codestream = crate::codestream_fixtures::imf_4k();
 
         let mut info = fixture_writer_info();
         let mut crypto = encryption.map(|(key_id, content_key)| {
@@ -2242,11 +2243,12 @@ mod as02_tests {
     use super::*;
     use postkit::mxf_wrap::{EssenceType, MxfStandard, MxfWrapOptions, mxf_wrap};
 
-    // Wrap a synthetic 2K codestream as AS-02 (OP1a, IMF) picture essence.
-    fn write_as02_mxf(dir: &Path, width: u32, height: u32) -> PathBuf {
-        let frame = super::cinema_tests::build_j2k(3, width, height, width, height, 1, &[64; 3]);
+    // Wrap the IMF 4K fixture frame as AS-02 (OP1a, IMF) picture essence. The
+    // wrap refuses a DCI cinema RSIZ, and refuses to write a picture track with
+    // no ColorPrimaries or TransferCharacteristic.
+    fn write_as02_mxf(dir: &Path) -> PathBuf {
         let j2c = dir.join("frame.j2c");
-        std::fs::write(&j2c, &frame).unwrap();
+        std::fs::write(&j2c, crate::codestream_fixtures::imf_4k_bytes()).unwrap();
         let out = dir.join("as02.mxf");
         let result = mxf_wrap(&MxfWrapOptions {
             input_files: vec![j2c],
@@ -2259,7 +2261,7 @@ mod as02_tests {
             encryption: None,
             mca_config: None,
             resource_ids: vec![],
-            hdr: None,
+            hdr: Some(postkit::mxf_wrap::rec709_sdr_picture_colour()),
             asset_uuid: None,
             timed_text_duration_frames: None,
         });
@@ -2277,7 +2279,7 @@ mod as02_tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let mxf = write_as02_mxf(dir.path(), 2048, 1080);
+        let mxf = write_as02_mxf(dir.path());
 
         assert!(
             postkit::j2k::read_mxf_j2k_frame(&mxf, 0).is_err(),
@@ -2285,12 +2287,23 @@ mod as02_tests {
         );
 
         let info = analyze_j2k_from_mxf(&mxf).expect("ffprobe fallback must read the AS-02 MXF");
-        assert_eq!((info.width, info.height), (2048, 1080), "dimensions");
+        assert_eq!(
+            (info.width, info.height),
+            (
+                crate::codestream_fixtures::IMF_4K_WIDTH,
+                crate::codestream_fixtures::IMF_4K_HEIGHT
+            ),
+            "dimensions"
+        );
         assert_eq!(info.components, 3, "components");
-        assert_eq!(info.bit_depth, 12, "bit depth");
+        assert_eq!(
+            info.bit_depth,
+            crate::codestream_fixtures::FIXTURE_BIT_DEPTH,
+            "bit depth"
+        );
         assert!(info.irreversible_transform, "9-7 assumed for DCI");
         assert_eq!(
-            info.profile, "Cinema 2K (from MXF)",
+            info.profile, "Cinema 4K (from MXF)",
             "profile guessed from width"
         );
         assert_eq!(
@@ -2337,8 +2350,10 @@ mod as02_tests {
         );
     }
 
+    /// The 2K side of the same guess. The wrapped fixture is always 4K, so this
+    /// one writes its own descriptor rather than going through the wrap.
     #[test]
-    fn as02_4k_profile_guess_follows_width() {
+    fn as02_2k_profile_guess_follows_width() {
         if std::process::Command::new("ffprobe")
             .arg("-version")
             .output()
@@ -2347,11 +2362,17 @@ mod as02_tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let mxf = write_as02_mxf(dir.path(), 3840, 2160);
+        let mxf = super::frame_scan_tests::write_as02_picture_mxf(
+            dir.path(),
+            "as02_2k.mxf",
+            2048,
+            1080,
+            &[(5, 64)],
+        );
         let info = analyze_j2k_from_mxf(&mxf).expect("ffprobe fallback must read the AS-02 MXF");
-        assert_eq!((info.width, info.height), (3840, 2160), "dimensions");
+        assert_eq!((info.width, info.height), (2048, 1080), "dimensions");
         assert_eq!(
-            info.profile, "Cinema 4K (from MXF)",
+            info.profile, "Cinema 2K (from MXF)",
             "profile guessed from width"
         );
     }

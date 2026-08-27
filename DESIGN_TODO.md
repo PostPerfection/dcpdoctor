@@ -28,6 +28,29 @@ citing no source, stricter than the document defining it. Neither is normative,
 and either would need the essence coding UL, which dcpdoctor does not read. Same
 note in postkit's DESIGN_TODO.
 
+## App 2E picture conformance is not checked
+
+The IMF validator reads an AS-02 picture track's descriptor and never asks
+whether what it wraps is IMF picture at all. imfwizard shipped cinema-profile
+X'Y'Z' picture in App 2E packages for two months and this validator passed them.
+
+Five checks, all now readable off the asdcplib picture descriptor and
+`as02::jp2k::MxfReader`:
+
+- the codestream Rsiz is an IMF profile, not one of the DCI cinema profiles
+  (`PictureDescriptor.codestream.rsize`)
+- the descriptor carries ColorPrimaries and TransferCharacteristic
+  (`MxfReader::hdr_metadata`)
+- the coding UL matches the Rsiz family and level
+  (`RgbaDescriptor::picture_essence_coding` against the
+  `PICTURE_ESSENCE_CODING_*` constants)
+- the pixel layout depth matches the codestream depth
+  (`RgbaDescriptor::pixel_layout` against `ImageComponent::bit_depth`)
+- a decoded saturated patch is RGB rather than X'Y'Z'
+
+The last one needs a decoder and dcpdoctor does not link grok, so it stays out
+until there is somewhere to decode a frame.
+
 ## Photon has to be fetched, not built
 
 `bootstrap_photon` is gone (see Done, 2026-08-12). dcpdoctor now runs Photon only

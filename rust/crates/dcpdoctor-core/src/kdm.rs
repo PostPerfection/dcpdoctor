@@ -1049,7 +1049,7 @@ pub(crate) mod decrypt_tests {
             stored_height: 1080,
             aspect_ratio: Rational::new(2048, 1080),
             container_duration: 1,
-            component_count: 3,
+            codestream: crate::codestream_fixtures::cinema_2k(),
         };
         let mut enc = AesEncContext::new();
         enc.init_key(&content_key).unwrap();
