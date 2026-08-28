@@ -441,6 +441,11 @@ fn validate_picture_essence(
         }
     }
 
+    // read through asdcplib as well, so it does not wait on the ffprobe descriptor
+    if cpl.application == ImfApplication::App2e {
+        notes.extend(crate::app2e_picture::check_descriptor(mxf_path));
+    }
+
     let pic = match &mxf.picture {
         Some(p) => p,
         None => {
@@ -456,8 +461,6 @@ fn validate_picture_essence(
     };
 
     if cpl.application == ImfApplication::App2e {
-        notes.extend(crate::app2e_picture::check_descriptor(mxf_path));
-
         let valid_resolutions = [(1920, 1080), (2048, 1080), (3840, 2160), (4096, 2160)];
         if pic.width > 0 && pic.height > 0 && !valid_resolutions.contains(&(pic.width, pic.height))
         {
