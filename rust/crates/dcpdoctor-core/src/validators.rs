@@ -1678,19 +1678,30 @@ pub fn check_package_files(dcp_dir: &Path, referenced_paths: &[String]) -> Vec<N
 
 // ─── MainSoundConfiguration (ST 429-16) ───────────────────────────────────────
 
-/// MCA/ISDCF channel labels valid in a MainSoundConfiguration channel slot.
-/// '-' marks an unused slot (ST 429-16).
+/// The ST 428-12 and ISDCF channel labels a MainSoundConfiguration channel slot
+/// is expected to carry. '-' marks an unused slot (ST 429-16). A well-formed
+/// label outside this set is a warning, not an error: the set is what is known,
+/// not what the grammar allows. DBOX2 is the secondary D-BOX motion code stream
+/// of D-BOX Technical Note 124-915-0001-A04 Table 9, which ISDCF Doc 4 points at.
 const SOUND_CHANNEL_LABELS: &[&str] = &[
     "L", "R", "C", "LFE", "Ls", "Rs", "Lss", "Rss", "Lrs", "Rrs", "Lc", "Rc", "Cs", "Ts", "Lw",
-    "Rw", "Lsd", "Rsd", "Lts", "Rts", "HI", "VI", "VIN", "DBOX", "FSK", "SLVS", "Sign", "-",
+    "Rw", "Lsd", "Rsd", "Lts", "Rts", "HI", "VI", "VIN", "DBOX", "DBOX2", "FSK", "SLVS", "Sign",
+    "-",
 ];
 
+/// Longest channel token ST 429-16 section 4.4.2.10 allows.
+const MAX_SOUND_CHANNEL_TOKEN_LEN: usize = 6;
+
 /// Validate the SMPTE ST 429-16 MainSoundConfiguration in a CPL's
-/// CompositionMetadataAsset: presence, a well-formed `<soundfield>/<channels>`
-/// value with recognized MCA/ISDCF labels, and a channel count matching the
-/// referenced MainSound MXF (`actual_channels`). Interop CPLs carry no
-/// CompositionMetadataAsset, so this is SMPTE-only. Mirrors DCP-o-matic's checks;
-/// garbage like "None" (a real easyDCP output) is an error.
+/// CompositionMetadataAsset. Section 4.4.2.10 gives a grammar rather than a list
+/// of labels: a soundfield token, a '/', then channels separated by ',', each
+/// channel either '-' or one to six alphanumerics. A channel that ST 428-12
+/// defines a symbol for should use that symbol, which makes an unknown but
+/// well-formed label a warning and a value outside the grammar an error. The
+/// declared channel count must also match the referenced MainSound MXF
+/// (`actual_channels`). Interop CPLs carry no CompositionMetadataAsset, so this
+/// is SMPTE-only. Garbage like "None" (a real easyDCP output) has no '/' and is
+/// an error.
 pub fn check_main_sound_configuration(
     cpl_path: &Path,
     standard: Standard,
@@ -1745,11 +1756,25 @@ pub fn check_main_sound_configuration(
         return notes;
     }
     for ch in &channel_list {
-        if !SOUND_CHANNEL_LABELS.contains(ch) {
+        let well_formed = *ch == "-"
+            || (ch.len() <= MAX_SOUND_CHANNEL_TOKEN_LEN
+                && ch.chars().all(|c| c.is_ascii_alphanumeric()));
+        if !well_formed {
             notes.push(msc_err(format!(
-                "MainSoundConfiguration '{cfg}' has unrecognized channel label '{ch}'"
+                "MainSoundConfiguration '{cfg}' channel '{ch}' is not '-' or one to six alphanumerics"
             )));
             return notes;
+        }
+        if !SOUND_CHANNEL_LABELS.contains(ch) {
+            notes.push(
+                Note::warning(
+                    Code::MainSoundConfigInvalid,
+                    format!(
+                        "MainSoundConfiguration '{cfg}' channel label '{ch}' is not an ST 428-12 symbol"
+                    ),
+                )
+                .with_file(cpl_path),
+            );
         }
     }
 
@@ -3623,6 +3648,52 @@ mod tests {
                 .any(|n| n.code == Code::MainSoundConfigInvalid && n.severity == Severity::Error),
             "\"None\" must be flagged as an error, got: {notes:?}"
         );
+    }
+
+    /// The ISDCF Bv2.1 reference packages declare DBOX2, and a closed label table
+    /// rejected them.
+    #[test]
+    fn dbox2_is_a_known_channel_label() {
+        let f = write_cpl(&msc_cpl(
+            "71/L,R,C,LFE,Lss,Rss,Lrs,Rrs,HI,VI,-,-,-,DBOX2,-,-",
+        ));
+        let notes = check_main_sound_configuration(f.path(), Standard::Smpte, Some(16));
+        assert!(
+            notes.is_empty(),
+            "DBOX2 is registered, so it draws neither an error nor a warning, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_well_formed_label_outside_the_known_set_warns_rather_than_errors() {
+        let f = write_cpl(&msc_cpl("51/L,R,C,LFE,Ls,XYZ"));
+        let notes = check_main_sound_configuration(f.path(), Standard::Smpte, Some(6));
+        assert_eq!(
+            notes.len(),
+            1,
+            "one note for one unknown label, got: {notes:?}"
+        );
+        assert_eq!(notes[0].code, Code::MainSoundConfigInvalid);
+        assert_eq!(notes[0].severity, Severity::Warning);
+        assert!(
+            notes[0].message.contains("XYZ") && notes[0].message.contains("ST 428-12"),
+            "the warning must name the label and the register it is not in, got: {}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn a_channel_token_outside_the_grammar_is_an_error() {
+        for value in ["51/L,R,C,LFE,Ls,SEVENCH", "51/L,R,C,LFE,Ls,R s"] {
+            let f = write_cpl(&msc_cpl(value));
+            let notes = check_main_sound_configuration(f.path(), Standard::Smpte, None);
+            assert!(
+                notes.iter().any(
+                    |n| n.code == Code::MainSoundConfigInvalid && n.severity == Severity::Error
+                ),
+                "'{value}' is outside the ST 429-16 channel grammar, got: {notes:?}"
+            );
+        }
     }
 
     #[test]

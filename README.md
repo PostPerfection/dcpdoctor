@@ -44,7 +44,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Clipping detection**: Flags audio near 0 dBFS
 - **Silence detection**: Warns on channels below -80 dBFS
 - **Channel count**: Validates channel configuration
-- **MainSoundConfiguration (ST 429-16)**: Presence, `<soundfield>/<channels>` syntax with MCA/ISDCF labels, and channel count matched against the sound MXF (flags garbage like `None`)
+- **MainSoundConfiguration (ST 429-16)**: Presence, the `<soundfield>/<channels>` grammar of section 4.4.2.10 (each channel `-` or one to six alphanumerics), and channel count matched against the sound MXF (flags garbage like `None`). A well-formed label outside the ST 428-12 and ISDCF set warns rather than failing the package
 - **Quantization / block align**: 24-bit PCM and block-align check (`--check-mxf`)
 - **MCA labeling**: Multi-Channel Audio label presence check
 - **Audio sync drift**: Detects picture/sound duration mismatches per reel
