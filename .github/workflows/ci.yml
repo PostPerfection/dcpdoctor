@@ -41,6 +41,12 @@ jobs:
           "OPENSSL_INCLUDE_DIR=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/include" >> $env:GITHUB_ENV
           "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin" >> $env:GITHUB_PATH
 
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       # the patch means local builds never fetch the pinned rev, so nothing else
       # would notice the two drifting apart
       - name: postkit pin matches the submodule
