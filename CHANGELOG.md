@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- App 2E picture descriptor checks on every MainImage track of an App 2E CPL, always on: `picture_not_imf_profile` (the codestream Rsiz is a DCI cinema or other non-IMF profile, so the samples are not the RGB an App 2E track carries), `picture_colour_missing` (ColorPrimaries or TransferCharacteristic absent from the RGBA descriptor), `picture_coding_label_mismatch` (the PictureEssenceCoding label is not the one the Rsiz calls for, nor its generic family label) and `picture_pixel_layout_mismatch` (the pixel layout depths or count differ from the codestream components). A header that will not read reports `check_skipped`. The cinema-profile X'Y'Z' IMPs imfwizard wrote before its `create` was fixed passed this validator, and are the negative fixture. The expected label comes from `jp2k::picture_essence_coding_for_rsize`, the AS-02 writer's own Rsiz to label table, asdcplib-rs 3948330 -> fd9d4a0 and postkit 8ea2f4a -> b2bb489 for the same pin.
 - `check_skipped`: a check that should have run and could not now says so, naming the check and the reason. Introduced by an audit that removed every silent skip found in the codebase: "checked and clean" and "not checked" no longer look the same in any output.
 
 ### Fixed

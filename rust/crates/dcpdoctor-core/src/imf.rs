@@ -456,6 +456,8 @@ fn validate_picture_essence(
     };
 
     if cpl.application == ImfApplication::App2e {
+        notes.extend(crate::app2e_picture::check_descriptor(mxf_path));
+
         let valid_resolutions = [(1920, 1080), (2048, 1080), (3840, 2160), (4096, 2160)];
         if pic.width > 0 && pic.height > 0 && !valid_resolutions.contains(&(pic.width, pic.height))
         {
@@ -1371,8 +1373,15 @@ mod tests {
 
     /// Write an AS-02 picture track file of `frames` frames of `frame_bytes`
     /// each, the wrapping an IMP uses for picture essence.
-    fn write_as02_picture(path: &Path, frames: u32, frame_bytes: usize) {
-        use asdcplib::jp2k::PictureDescriptor;
+    fn write_as02_picture(
+        path: &Path,
+        codestream: asdcplib::jp2k::CodestreamHeader,
+        frames: u32,
+        frame_bytes: usize,
+    ) {
+        use asdcplib::jp2k::{
+            COLOR_PRIMARIES_BT709, HdrMetadata, PictureDescriptor, TRANSFER_CHARACTERISTIC_BT709,
+        };
         use asdcplib::{LabelSet, Rational, WriterInfo};
 
         let info = WriterInfo {
@@ -1388,17 +1397,58 @@ mod tests {
             stored_height: 1080,
             aspect_ratio: Rational::new(2048, 1080),
             container_duration: frames,
-            codestream: crate::codestream_fixtures::imf_4k(),
+            codestream,
+        };
+        let hdr = HdrMetadata {
+            color_primaries: Some(COLOR_PRIMARIES_BT709),
+            transfer_characteristic: Some(TRANSFER_CHARACTERISTIC_BT709),
+            ..Default::default()
         };
         let mut writer = asdcplib::as02::jp2k::MxfWriter::new();
         writer
-            .open_write(path.to_str().unwrap(), &info, &descriptor, 16384)
+            .open_write_hdr(path.to_str().unwrap(), &info, &descriptor, &hdr, 16384)
             .unwrap();
         let frame = vec![0u8; frame_bytes];
         for _ in 0..frames {
             writer.write_frame(&frame, None, None).unwrap();
         }
         writer.finalize().unwrap();
+    }
+
+    /// Add the ST 2067-21 namespace that `write_imp`'s CPL leaves out.
+    fn declare_app_2e(cpl_path: &Path) {
+        let cpl = std::fs::read_to_string(cpl_path).unwrap();
+        let with_namespace = cpl.replace(
+            r#"xmlns:cc="http://www.smpte-ra.org/schemas/2067-2/2016""#,
+            r#"xmlns:cc="http://www.smpte-ra.org/schemas/2067-2/2016" xmlns:app="http://www.smpte-ra.org/ns/2067-21/2021""#,
+        );
+        assert_ne!(cpl, with_namespace, "the CPL template changed shape");
+        std::fs::write(cpl_path, with_namespace).unwrap();
+    }
+
+    #[test]
+    fn a_cinema_profile_picture_track_fails_an_app_2e_imp_without_the_picture_details_flag() {
+        let imp = tempfile::tempdir().unwrap();
+        write_imp(
+            imp.path(),
+            "1a1a1a1a-0000-0000-0000-000000000000",
+            &[VIDEO_ID, AUDIO_ID],
+            &[VIDEO_ID, AUDIO_ID],
+        );
+        declare_app_2e(&imp.path().join("CPL.xml"));
+        write_as02_picture(
+            &imp.path().join(format!("{VIDEO_ID}.mxf")),
+            crate::codestream_fixtures::cinema_2k(),
+            1,
+            500_000,
+        );
+
+        let notes = validate_imp(imp.path(), None, false, false, &no_keys());
+        let note = notes
+            .iter()
+            .find(|n| n.code == Code::PictureNotImfProfile)
+            .unwrap_or_else(|| panic!("expected a cinema profile error, got: {notes:?}"));
+        assert_eq!(note.severity, Severity::Error);
     }
 
     // 500_000 bytes per frame at 24 fps is 96.0 Mb/s.
@@ -1411,7 +1461,12 @@ mod tests {
             &[VIDEO_ID, AUDIO_ID],
             &[VIDEO_ID, AUDIO_ID],
         );
-        write_as02_picture(&imp.path().join(format!("{VIDEO_ID}.mxf")), 3, 500_000);
+        write_as02_picture(
+            &imp.path().join(format!("{VIDEO_ID}.mxf")),
+            crate::codestream_fixtures::imf_4k(),
+            3,
+            500_000,
+        );
 
         let measured = validate_imp(imp.path(), None, true, false, &no_keys());
         let note = measured

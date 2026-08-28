@@ -1,4 +1,5 @@
 pub mod advanced;
+pub mod app2e_picture;
 pub mod assetmap;
 pub mod audio;
 pub mod av_sync;
@@ -140,6 +141,10 @@ pub enum Code {
     // Picture
     PictureInvalidResolution,
     PictureInvalidFrameRate,
+    PictureNotImfProfile,
+    PictureColourMissing,
+    PictureCodingLabelMismatch,
+    PicturePixelLayoutMismatch,
     J2kBitrateExceeded,
     PictureBitrateMeasured,
     J2kInvalidProfile,
@@ -289,6 +294,10 @@ impl Code {
             Code::InteropNamespaceWrong => "interop_namespace_wrong",
             Code::PictureInvalidResolution => "picture_invalid_resolution",
             Code::PictureInvalidFrameRate => "picture_invalid_frame_rate",
+            Code::PictureNotImfProfile => "picture_not_imf_profile",
+            Code::PictureColourMissing => "picture_colour_missing",
+            Code::PictureCodingLabelMismatch => "picture_coding_label_mismatch",
+            Code::PicturePixelLayoutMismatch => "picture_pixel_layout_mismatch",
             Code::J2kBitrateExceeded => "j2k_bitrate_exceeded",
             Code::PictureBitrateMeasured => "picture_bitrate_measured",
             Code::J2kInvalidProfile => "j2k_invalid_profile",
