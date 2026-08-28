@@ -973,9 +973,6 @@ mod tests {
 
     #[test]
     fn kdm_without_authorized_device_info_violates_the_schema() {
-        if !schema_validation_available() {
-            return;
-        }
         let f = smpte_kdm("");
         let notes = validate_kdm(f.path(), None);
         assert!(
@@ -987,9 +984,10 @@ mod tests {
 
     #[test]
     fn complete_kdm_passes_the_schema() {
-        if !schema_validation_available() {
-            return;
-        }
+        assert!(
+            schema_validation_available(),
+            "this test needs xmllint and the vendored XSDs"
+        );
         let f = smpte_kdm(AUTHORIZED_DEVICE_INFO);
         let notes = validate_kdm(f.path(), None);
         assert!(

@@ -181,14 +181,6 @@ fn schema_validate_rejects_malformed_package_xml_without_schemas() {
 
 #[test]
 fn schema_validate_uses_supplied_xsd_for_each_package_xml() {
-    if std::process::Command::new("xmllint")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        return;
-    }
-
     let package_dir = TempDir::new().unwrap();
     let schema_dir = TempDir::new().unwrap();
     std::fs::write(

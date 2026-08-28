@@ -1938,9 +1938,6 @@ mod tests {
     // passed here and failed at the cinema.
     #[test]
     fn subtitle_asset_is_schema_validated_by_the_pipeline() {
-        if !crate::schema::xmllint_available() {
-            return;
-        }
         // this minimal package's own ASSETMAP and CPL are not schema-conformant,
         // so only findings against the subtitle file itself count here
         let subtitle_violations = |dir: &Path| {
@@ -1975,9 +1972,6 @@ mod tests {
     // a clean run; it now says so, and must stay quiet when it really did run.
     #[test]
     fn a_complete_schema_environment_draws_no_skip_note() {
-        if !crate::schema::xmllint_available() {
-            return;
-        }
         let dir = package_with_subtitle(CONFORMANT_SUBTITLE);
         let result = verify_dcp(dir.path(), &VerifyOptions::default());
         assert!(

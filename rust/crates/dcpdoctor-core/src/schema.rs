@@ -545,12 +545,9 @@ mod tests {
 
     // xsd validation shells out to xmllint; a self-contained schema keyed off the
     // SMPTE AM filename proves check_schema fires on a violation and stays clean
-    // on a conformant doc (non-vacuous). skips where xmllint is not installed.
+    // on a conformant doc (non-vacuous).
     #[test]
     fn check_schema_fires_on_violation_not_on_valid() {
-        if !xmllint_available() {
-            return;
-        }
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("SMPTE-429-9-2007-AM.xsd"),
@@ -619,9 +616,7 @@ mod tests {
     // Interop one surfaces as a violation instead of a silent skip.
     #[test]
     fn smpte_cpl_declaring_digicine_cc_namespace_uses_smpte_schema() {
-        if !xmllint_available() {
-            return;
-        }
+        assert!(xmllint_available(), "this test needs xmllint installed");
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("SMPTE-429-16-2014-CPL-Metadata.xsd"),
@@ -734,9 +729,6 @@ mod tests {
     // routing mistake shows up as a violation on a conformant document.
     #[test]
     fn subtitle_schema_violations_fire_and_conformant_documents_stay_silent() {
-        if !xmllint_available() {
-            return;
-        }
         for (namespace, _) in SMPTE_SUBTITLE_SCHEMAS {
             let good = smpte_subtitle(namespace);
             assert!(
@@ -772,9 +764,6 @@ mod tests {
 
     #[test]
     fn check_schema_xml_validates_a_document_that_is_not_on_disk() {
-        if !xmllint_available() {
-            return;
-        }
         let schema_dir = locate_schema_dir().expect("the repository vendors its XSDs");
         let source = Path::new("sub.mxf");
         let (namespace, _) = SMPTE_SUBTITLE_SCHEMAS[1];
@@ -859,9 +848,6 @@ mod tests {
 
     #[test]
     fn a_complete_environment_reports_nothing() {
-        if !xmllint_available() {
-            return;
-        }
         let schema_dir = locate_schema_dir().expect("the repository vendors its XSDs");
         assert_eq!(schema_pass_unavailable(Some(&schema_dir)), None);
     }

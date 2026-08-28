@@ -1517,9 +1517,6 @@ pub(crate) mod tests {
     // document out of the essence rather than reading a file.
     #[test]
     fn wrapped_timed_text_document_is_readable_for_schema_validation() {
-        if !crate::schema::xmllint_available() {
-            return;
-        }
         let dir = tempfile::tempdir().unwrap();
         let uuid = [0xCD; 16];
         let doc = mxf_doc("Hi", &uuid_urn(&uuid));

@@ -2271,13 +2271,6 @@ mod as02_tests {
 
     #[test]
     fn as02_picture_falls_back_to_ffprobe() {
-        if std::process::Command::new("ffprobe")
-            .arg("-version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
         let dir = tempfile::tempdir().unwrap();
         let mxf = write_as02_mxf(dir.path());
 
@@ -2354,13 +2347,6 @@ mod as02_tests {
     /// one writes its own descriptor rather than going through the wrap.
     #[test]
     fn as02_2k_profile_guess_follows_width() {
-        if std::process::Command::new("ffprobe")
-            .arg("-version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
         let dir = tempfile::tempdir().unwrap();
         let mxf = super::frame_scan_tests::write_as02_picture_mxf(
             dir.path(),

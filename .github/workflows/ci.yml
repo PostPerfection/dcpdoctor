@@ -26,7 +26,7 @@ jobs:
           # vcpkg reads curl 56 and 503 off github's archive host as permanent and
           # refuses to retry the source download, so retry the whole install
           for ($attempt = 1; $attempt -le 5; $attempt++) {
-            vcpkg install openssl xerces-c --triplet x64-windows
+            vcpkg install openssl xerces-c libxml2[tools] --triplet x64-windows
             if ($LASTEXITCODE -eq 0) { break }
             if ($attempt -eq 5) { throw "vcpkg install failed after $attempt attempts" }
             Start-Sleep -Seconds (30 * $attempt)
@@ -40,12 +40,39 @@ jobs:
           "OPENSSL_LIB_DIR=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/lib" >> $env:GITHUB_ENV
           "OPENSSL_INCLUDE_DIR=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/include" >> $env:GITHUB_ENV
           "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin" >> $env:GITHUB_PATH
+          "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/tools/libxml2" >> $env:GITHUB_PATH
+
+      - name: Install xmllint (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxml2-utils
 
       - name: Install ffmpeg (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          curl -sSL -o ffmpeg.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-27-16-45/ffmpeg-n8.1.2-47-g156bb4d299-linux64-gpl-8.1.tar.xz
+          tar -xJf ffmpeg.tar.xz
+          echo "$PWD/ffmpeg-n8.1.2-47-g156bb4d299-linux64-gpl-8.1/bin" >> "$GITHUB_PATH"
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -sSL -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-27-16-45/ffmpeg-n8.1.2-47-g156bb4d299-win64-gpl-8.1.zip
+          unzip -q ffmpeg.zip
+          echo "$(cygpath -w "$PWD/ffmpeg-n8.1.2-47-g156bb4d299-win64-gpl-8.1/bin")" >> "$GITHUB_PATH"
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Check test tools
+        shell: bash
+        run: |
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+          xmllint --version
 
       # the patch means local builds never fetch the pinned rev, so nothing else
       # would notice the two drifting apart
