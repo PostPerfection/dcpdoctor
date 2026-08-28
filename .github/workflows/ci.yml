@@ -63,9 +63,19 @@ jobs:
           unzip -q ffmpeg.zip
           echo "$(cygpath -w "$PWD/ffmpeg-n8.1.2-47-g156bb4d299-win64-gpl-8.1/bin")" >> "$GITHUB_PATH"
 
+      # homebrew's ffmpeg has no libass or freetype
       - name: Install ffmpeg (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: ffmpeg
+          create-args: ffmpeg=8.1.1=gpl_h4b93310_102
+          init-shell: none
+
+      - name: Put ffmpeg on PATH (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "$(dirname "$("${MAMBA_EXE:-micromamba}" run -n ffmpeg which ffmpeg)")" >> "$GITHUB_PATH"
 
       - name: Check test tools
         shell: bash
@@ -86,11 +96,35 @@ jobs:
             exit 1
           fi
 
+      - name: Install coverage tooling (Linux)
+        if: runner.os == 'Linux'
+        run: rustup component add llvm-tools-preview
+
+      - uses: taiki-e/install-action@v2
+        if: runner.os == 'Linux'
+        with:
+          tool: cargo-llvm-cov
+
       - name: Build
         working-directory: rust
         run: cargo build --workspace
 
+      # llvm-cov runs the same tests instrumented, so Linux tests them once here
+      - name: Test with coverage (Linux)
+        if: runner.os == 'Linux'
+        working-directory: rust
+        run: |
+          cargo llvm-cov --workspace --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: lcov
+          path: rust/lcov.info
+
       - name: Test
+        if: runner.os != 'Linux'
         working-directory: rust
         run: cargo test --workspace
 
@@ -151,5 +185,8 @@ jobs:
           TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
           cp target/release/dcpdoctor ../gui/src-tauri/dcpdoctor-${TRIPLE}
 
-      - name: Check GUI Rust
-        run: cargo check --manifest-path gui/src-tauri/Cargo.toml
+      - name: Build GUI Rust
+        run: cargo build --release --manifest-path gui/src-tauri/Cargo.toml
+
+      - name: Test GUI Rust
+        run: cargo test --manifest-path gui/src-tauri/Cargo.toml

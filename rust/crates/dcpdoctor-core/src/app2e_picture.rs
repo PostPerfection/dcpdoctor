@@ -162,29 +162,17 @@ fn check_pixel_layout(pixel_layout: &[u8; 16], components: &[ImageComponent]) ->
 mod tests {
     use super::*;
     use crate::Severity;
+    use crate::app2e_fixtures::{
+        PIXEL_LAYOUT_RGB_10, PIXEL_LAYOUT_RGB_12, bt709, patch_bytes, write_picture as write_mxf,
+    };
     use crate::codestream_fixtures::{cinema_2k, cinema_2k_bytes, imf_4k, imf_4k_bytes};
     use asdcplib::jp2k::{
-        COLOR_PRIMARIES_BT709, CodestreamHeader, PICTURE_ESSENCE_CODING_CINEMA_2K,
-        PICTURE_ESSENCE_CODING_IMF_4K_LOSSY, PICTURE_ESSENCE_CODING_IMF_4K_LOSSY_6_3,
-        PictureDescriptor, TRANSFER_CHARACTERISTIC_BT709,
+        CodestreamHeader, PICTURE_ESSENCE_CODING_CINEMA_2K, PICTURE_ESSENCE_CODING_IMF_4K_LOSSY,
+        PICTURE_ESSENCE_CODING_IMF_4K_LOSSY_6_3,
     };
-    use asdcplib::{LabelSet, Rational, WriterInfo};
     use std::path::PathBuf;
 
-    /// What the AS-02 writer sets for a 12-bit codestream.
-    const PIXEL_LAYOUT_RGB_12: [u8; 8] = [b'R', 12, b'G', 12, b'B', 12, 0, 0];
-    const PIXEL_LAYOUT_RGB_10: [u8; 8] = [b'R', 10, b'G', 10, b'B', 10, 0, 0];
-
-    const HEADER_BYTES: u32 = 16384;
     const FRAMES: u32 = 2;
-
-    fn bt709() -> asdcplib::jp2k::HdrMetadata {
-        asdcplib::jp2k::HdrMetadata {
-            color_primaries: Some(COLOR_PRIMARIES_BT709),
-            transfer_characteristic: Some(TRANSFER_CHARACTERISTIC_BT709),
-            ..Default::default()
-        }
-    }
 
     fn write_picture(
         directory: &tempfile::TempDir,
@@ -193,59 +181,8 @@ mod tests {
         hdr: Option<asdcplib::jp2k::HdrMetadata>,
     ) -> PathBuf {
         let path = directory.path().join("picture.mxf");
-        let info = WriterInfo {
-            asset_uuid: *uuid::Uuid::new_v4().as_bytes(),
-            context_id: *uuid::Uuid::new_v4().as_bytes(),
-            label_set: LabelSet::Smpte,
-            ..Default::default()
-        };
-        let descriptor = PictureDescriptor {
-            edit_rate: Rational::new(24, 1),
-            sample_rate: Rational::new(24, 1),
-            stored_width: codestream.xsize,
-            stored_height: codestream.ysize,
-            aspect_ratio: Rational::new(
-                i32::try_from(codestream.xsize).unwrap(),
-                i32::try_from(codestream.ysize).unwrap(),
-            ),
-            container_duration: FRAMES,
-            codestream,
-        };
-        let mut writer = asdcplib::as02::jp2k::MxfWriter::new();
-        let path_str = path.to_str().unwrap();
-        match hdr {
-            Some(hdr) => writer
-                .open_write_hdr(path_str, &info, &descriptor, &hdr, HEADER_BYTES)
-                .unwrap(),
-            None => writer
-                .open_write(path_str, &info, &descriptor, HEADER_BYTES)
-                .unwrap(),
-        }
-        for _ in 0..FRAMES {
-            writer.write_frame(frame, None, None).unwrap();
-        }
-        writer.finalize().unwrap();
+        write_mxf(&path, codestream, frame, FRAMES, hdr);
         path
-    }
-
-    /// A same-length overwrite keeps every KLV length in the file correct.
-    fn patch_bytes(path: &Path, from: &[u8], to: &[u8]) {
-        assert_eq!(from.len(), to.len(), "a patch must not change any length");
-        let mut bytes = std::fs::read(path).unwrap();
-        let occurrences: Vec<usize> = bytes
-            .windows(from.len())
-            .enumerate()
-            .filter(|(_, window)| *window == from)
-            .map(|(offset, _)| offset)
-            .collect();
-        assert_eq!(
-            occurrences.len(),
-            1,
-            "expected one occurrence of {from:02x?}, found {}",
-            occurrences.len()
-        );
-        bytes[occurrences[0]..occurrences[0] + to.len()].copy_from_slice(to);
-        std::fs::write(path, bytes).unwrap();
     }
 
     fn only_note(notes: &[Note]) -> &Note {

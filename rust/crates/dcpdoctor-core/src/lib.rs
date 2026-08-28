@@ -1,4 +1,5 @@
 pub mod advanced;
+pub mod app2e_fixtures;
 pub mod app2e_picture;
 pub mod assetmap;
 pub mod audio;
