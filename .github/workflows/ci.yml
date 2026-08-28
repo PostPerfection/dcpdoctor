@@ -186,7 +186,9 @@ jobs:
           cp target/release/dcpdoctor ../gui/src-tauri/dcpdoctor-${TRIPLE}
 
       - name: Build GUI Rust
-        run: cargo build --release --manifest-path gui/src-tauri/Cargo.toml
+        # without custom-protocol tauri builds a dev binary that loads the vite
+        # dev url instead of the embedded frontend, tauri build turns it on
+        run: cargo build --release --manifest-path gui/src-tauri/Cargo.toml --features tauri/custom-protocol
 
       - name: Test GUI Rust
         run: cargo test --manifest-path gui/src-tauri/Cargo.toml
