@@ -187,7 +187,7 @@ mod tests {
         let output = "[ERROR] cross_ref_broken - asset is missing (CPL_test.xml)\n\
                       [WARNING] cpl_annotation_text_mismatch - titles differ (CPL_test.xml)\n\
                       [WARN] subtitle_spacing - cues are close (sub.xml)\n\
-                      [INFO] check_skipped - no ffprobe (pic.mxf)";
+                      [INFO] j2k_codestream_summary - 2048x1080, 6 levels (pic.mxf)";
         let results = parse_output(output);
         let severities: Vec<&str> = results.iter().map(|r| r.severity.as_str()).collect();
         assert_eq!(severities, ["error", "warning", "warning", "info"]);
@@ -255,7 +255,7 @@ mod tests {
     // reads as valid
     #[test]
     fn an_info_only_run_summarizes_as_valid() {
-        let results = [line("info", "check_skipped", "no ffprobe", "pic.mxf")];
+        let results = [line("info", "j2k_codestream_summary", "2048x1080, 6 levels", "pic.mxf")];
         assert_eq!(summarize(&results, 0, ""), "DCP is valid — no issues found.");
     }
 

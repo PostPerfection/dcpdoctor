@@ -20,6 +20,29 @@ fn asset_file(block: &str, id_to_file: &HashMap<String, PathBuf>) -> Option<Path
     id_to_file.get(&id).cloned()
 }
 
+/// The `MainStereoscopicPicture` block of every reel, tolerating the msp-cpl
+/// namespace prefix real 3D DCPs emit.
+fn stereoscopic_picture_blocks(content: &str) -> Vec<&str> {
+    let stereo_re = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?MainStereoscopicPicture(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?MainStereoscopicPicture>",
+    )
+    .unwrap();
+    stereo_re
+        .captures_iter(content)
+        .map(|c| c.get(1).unwrap().as_str())
+        .collect()
+}
+
+/// A picture track's stored width, from the MXF descriptor. The CPL defines no
+/// element carrying the picture size, so the essence is the only source.
+fn picture_stored_width(path: &Path) -> Option<u32> {
+    let mut reader = crate::j2k::PictureEssenceReader::open(
+        path.to_str()?,
+        crate::j2k::PictureEssenceFamily::Cinema,
+    )?;
+    Some(reader.picture_descriptor().ok()?.stored_width)
+}
+
 /// Probe a PCM MXF for ST 429-12 MCA label subdescriptors. `Some(true)` when the
 /// header carries channel/soundfield labels, `Some(false)` when it reads as PCM
 /// with none, `None` when the essence can't be read.
@@ -1041,14 +1064,18 @@ pub fn check_playback_compatibility(
     }
 
     // 4K 3D doubles an already-demanding decode; very few projectors manage it
-    let is_stereo = content.contains("MainStereoscopicPicture");
-    let is_four_k = extract_tag(&content, "Resolution")
-        .is_some_and(|r| r.contains("4096") || r.contains("3996"));
-    if is_stereo && is_four_k {
-        notes.push(warn(
-            Code::ProjectorFourKStereoSupport,
-            "DCP is 4K 3D, which only a very limited number of projectors play".into(),
-        ));
+    if let Some(block) = stereoscopic_picture_blocks(&content).first() {
+        match asset_file(block, id_to_file).and_then(|path| picture_stored_width(&path)) {
+            Some(width) if width > crate::mxf::TWO_K_MAX_STORED_WIDTH => notes.push(warn(
+                Code::ProjectorFourKStereoSupport,
+                "DCP is 4K 3D, which only a very limited number of projectors play".into(),
+            )),
+            Some(_) => {}
+            None => notes.push(warn(
+                Code::CheckSkipped,
+                "the 4K 3D playback check did not run: the stereoscopic picture essence would not read, so its stored width is unknown".into(),
+            )),
+        }
     }
 
     if let Some(channels) = first_sound_channel_count_of_cpl(cpl_path, id_to_file)
@@ -1086,15 +1113,7 @@ pub fn check_stereo(cpl_path: &Path, id_to_file: &HashMap<String, PathBuf>) -> V
         return notes;
     };
 
-    // tolerate the msp-cpl namespaced form real 3D DCPs emit
-    let stereo_re = regex_lite::Regex::new(
-        r"<(?:[\w-]+:)?MainStereoscopicPicture(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?MainStereoscopicPicture>",
-    )
-    .unwrap();
-    let stereo_reels: Vec<&str> = stereo_re
-        .captures_iter(&content)
-        .map(|c| c.get(1).unwrap().as_str())
-        .collect();
+    let stereo_reels = stereoscopic_picture_blocks(&content);
 
     if stereo_reels.is_empty() {
         return notes; // Not a 3D DCP
@@ -4981,9 +5000,12 @@ mod tests {
 
     // ─── Playback compatibility ────────────────────────────────────────────
 
-    /// A one-reel CPL at the picture edit rate given, optionally stereoscopic
-    /// and optionally declaring a 4K resolution.
-    fn compat_cpl(rate: &str, stereo: bool, resolution: &str) -> tempfile::NamedTempFile {
+    const COMPAT_PICTURE_ID: &str = "00000000-0000-0000-0000-0000000000b1";
+
+    /// A one-reel CPL at the picture edit rate given, monoscopic or
+    /// stereoscopic. It declares no picture size: the CPL schema has no element
+    /// for one, so the size comes from the essence.
+    fn compat_cpl(rate: &str, stereo: bool) -> tempfile::NamedTempFile {
         let element = if stereo {
             "MainStereoscopicPicture"
         } else {
@@ -4991,13 +5013,47 @@ mod tests {
         };
         write_cpl(&format!(
             r#"<CompositionPlaylist><Reel><AssetList>
-  <{element}><Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</Id><EditRate>{rate}</EditRate><Duration>240</Duration><Resolution>{resolution}</Resolution></{element}>
+  <{element}><Id>urn:uuid:{COMPAT_PICTURE_ID}</Id><EditRate>{rate}</EditRate><Duration>240</Duration></{element}>
 </AssetList></Reel></CompositionPlaylist>"#
         ))
     }
 
     fn compat_notes(cpl: &Path) -> Vec<Note> {
         check_playback_compatibility(cpl, &HashMap::new())
+    }
+
+    /// A single edit unit of stereoscopic picture essence at the stored size
+    /// given, mapped under the id `compat_cpl` references.
+    fn stereo_essence(path: &Path, width: u32, height: u32) -> HashMap<String, PathBuf> {
+        use asdcplib::jp2k::{PictureDescriptor, StereoMxfWriter, StereoscopicPhase};
+        use asdcplib::{LabelSet, Rational, WriterInfo};
+
+        let info = WriterInfo {
+            asset_uuid: [9; 16],
+            label_set: LabelSet::Smpte,
+            ..Default::default()
+        };
+        let desc = PictureDescriptor {
+            edit_rate: Rational::new(24, 1),
+            sample_rate: Rational::new(48, 1),
+            stored_width: width,
+            stored_height: height,
+            aspect_ratio: Rational::new(width as i32, height as i32),
+            container_duration: 1,
+            codestream: crate::codestream_fixtures::cinema_2k(),
+        };
+        let mut writer = StereoMxfWriter::new();
+        writer
+            .open_write(path.to_str().unwrap(), &info, &desc, 16_384)
+            .unwrap();
+        for eye in [StereoscopicPhase::Left, StereoscopicPhase::Right] {
+            writer
+                .write_frame(&[0xFF, 0x4F, 0xFF, 0x93, 0, 0, 0, 0], eye, None, None)
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+
+        HashMap::from([(COMPAT_PICTURE_ID.to_string(), path.to_path_buf())])
     }
 
     #[test]
@@ -5008,7 +5064,7 @@ mod tests {
             ("50 1", "25"),
             ("60 1", "30"),
         ] {
-            let cpl = compat_cpl(rate, false, "2048 1080");
+            let cpl = compat_cpl(rate, false);
             let notes = compat_notes(cpl.path());
             assert!(
                 notes
@@ -5024,7 +5080,7 @@ mod tests {
     // 30fps has no good alternative, so it warns without suggesting one
     #[test]
     fn thirty_fps_warns_without_an_alternative() {
-        let cpl = compat_cpl("30 1", false, "2048 1080");
+        let cpl = compat_cpl("30 1", false);
         let notes = compat_notes(cpl.path());
         let note = notes
             .iter()
@@ -5035,7 +5091,7 @@ mod tests {
 
     #[test]
     fn twenty_four_fps_is_silent() {
-        let cpl = compat_cpl("24 1", false, "2048 1080");
+        let cpl = compat_cpl("24 1", false);
         assert!(
             !compat_notes(cpl.path())
                 .iter()
@@ -5046,19 +5102,37 @@ mod tests {
 
     #[test]
     fn four_k_stereo_warns_but_two_k_stereo_does_not() {
-        let four_k = compat_cpl("24 1", true, "4096 2160");
+        let dir = tempfile::tempdir().unwrap();
+        let cpl = compat_cpl("24 1", true);
+
+        let four_k = stereo_essence(&dir.path().join("four_k.mxf"), 4096, 2160);
+        let notes = check_playback_compatibility(cpl.path(), &four_k);
         assert!(
-            compat_notes(four_k.path())
+            notes
                 .iter()
                 .any(|n| n.code == Code::ProjectorFourKStereoSupport),
-            "4K 3D must warn"
+            "4K 3D must warn, got: {notes:?}"
         );
-        let two_k = compat_cpl("24 1", true, "2048 1080");
+
+        let two_k = stereo_essence(&dir.path().join("two_k.mxf"), 2048, 1080);
+        let notes = check_playback_compatibility(cpl.path(), &two_k);
         assert!(
-            !compat_notes(two_k.path())
+            !notes
                 .iter()
                 .any(|n| n.code == Code::ProjectorFourKStereoSupport),
-            "2K 3D is ordinary"
+            "2K 3D is ordinary, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn stereo_essence_that_will_not_read_says_the_check_did_not_run() {
+        let cpl = compat_cpl("24 1", true);
+        let notes = compat_notes(cpl.path());
+        assert!(
+            notes.iter().any(|n| n.code == Code::CheckSkipped
+                && n.severity == Severity::Warning
+                && n.message.contains("4K 3D")),
+            "an unresolvable stereoscopic asset must say the check did not run, got: {notes:?}"
         );
     }
 

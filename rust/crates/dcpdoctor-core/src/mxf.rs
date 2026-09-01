@@ -152,7 +152,7 @@ pub fn check_sound_essence_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> V
 }
 
 /// Stored width above which ST 429-2 Table 1 calls a picture format 4K.
-const TWO_K_MAX_STORED_WIDTH: u32 = 2048;
+pub(crate) const TWO_K_MAX_STORED_WIDTH: u32 = 2048;
 
 /// Frame rates Table 1 allows for the 4K formats, as numerator over 1.
 const FOUR_K_FRAME_RATES: [i32; 3] = [24, 25, 30];

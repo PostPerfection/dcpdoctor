@@ -224,7 +224,7 @@ pub fn validate_j2k_dci(info: &J2kCodestreamInfo) -> Vec<Note> {
     let mut notes = Vec::new();
 
     if info.marker_fields_unavailable {
-        notes.push(Note::info(
+        notes.push(Note::warning(
             Code::CheckSkipped,
             "codestream fields unavailable, marker-level checks skipped",
         ));
@@ -2328,7 +2328,7 @@ mod as02_tests {
             .iter()
             .find(|n| n.code == Code::CheckSkipped)
             .expect("placeholder fields must say the marker checks did not run");
-        assert_eq!(skipped.severity, crate::Severity::Info);
+        assert_eq!(skipped.severity, crate::Severity::Warning);
         assert!(
             skipped.message.contains("marker-level checks skipped"),
             "got: {}",

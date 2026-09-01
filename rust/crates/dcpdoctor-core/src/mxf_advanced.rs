@@ -173,7 +173,7 @@ pub fn check_dtsx_compliance(info: &DtsxInfo, mxf_path: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
     if !info.error.is_empty() {
         notes.push(
-            Note::info(
+            Note::warning(
                 Code::CheckSkipped,
                 format!("the DTS:X check did not run: {}", info.error),
             )
@@ -224,7 +224,7 @@ mod tests {
         let notes = check_dtsx_compliance(&info, Path::new("sound.mxf"));
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert_eq!(notes[0].code, Code::CheckSkipped);
-        assert_eq!(notes[0].severity, Severity::Info);
+        assert_eq!(notes[0].severity, Severity::Warning);
         assert!(notes[0].message.contains("ffprobe would not run"));
     }
 
