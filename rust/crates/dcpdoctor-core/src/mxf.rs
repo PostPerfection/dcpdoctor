@@ -75,9 +75,13 @@ pub fn check_sound_essence_mxf(path: &Path, keys: &crate::kdm::ContentKeys) -> V
     let Some(s) = path.to_str() else {
         return notes;
     };
+    // the pcm reader logs an edit rate error to stderr on a picture mxf
+    if !is_pcm_sound_essence(path) {
+        return notes;
+    }
     let mut reader = asdcplib::pcm::MxfReader::new();
     if reader.open_read(s).is_err() {
-        return notes; // not a PCM MXF
+        return notes;
     }
     let info = match reader.writer_info() {
         Ok(info) => info,
@@ -426,6 +430,9 @@ pub fn known_non_picture_essence(path: &Path) -> bool {
 }
 
 fn wave_sound_descriptor(path: &Path) -> Option<SoundDescriptor> {
+    if !is_pcm_sound_essence(path) {
+        return None;
+    }
     let mut reader = asdcplib::pcm::MxfReader::new();
     reader.open_read(path.to_str()?).ok()?;
     if reader.writer_info().ok()?.encrypted_essence {
