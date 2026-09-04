@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::Path;
 
 use crate::{Code, Note};
@@ -242,13 +243,23 @@ pub struct MxfInfo {
     pub stream_probe_error: String,
 }
 
+const MXF_HEADER_MAGIC_BYTES: u64 = 16;
+
+// track files run to tens of GB
+fn read_file_head(path: &Path, bytes: u64) -> std::io::Result<Vec<u8>> {
+    let mut head = Vec::new();
+    std::fs::File::open(path)?
+        .take(bytes)
+        .read_to_end(&mut head)?;
+    Ok(head)
+}
+
 /// Read MXF file metadata.
 ///
 /// This is a basic implementation that reads KLV header metadata.
 /// Full MXF parsing requires asdcplib FFI bindings.
 pub fn read_mxf_info(path: &Path) -> MxfInfo {
-    // Read the first bytes to check for MXF header
-    let data = match std::fs::read(path) {
+    let data = match read_file_head(path, MXF_HEADER_MAGIC_BYTES) {
         Ok(d) => d,
         Err(e) => {
             return MxfInfo {
@@ -462,6 +473,17 @@ fn parse_fraction(s: &str) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_header_magic_read_stops_after_sixteen_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture.mxf");
+        std::fs::write(&path, vec![0x06u8; 1 << 20]).unwrap();
+
+        let head = read_file_head(&path, MXF_HEADER_MAGIC_BYTES).unwrap();
+
+        assert_eq!(head.len(), MXF_HEADER_MAGIC_BYTES as usize);
+    }
     use crate::Code;
     use std::path::Path;
 

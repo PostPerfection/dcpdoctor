@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- `validate --check-mxf` read every track file into memory twice, once for the partition scan and once for the header magic check, so a 23 GB feature picture MXF took 12 GB resident and was killed at the session's memory cap. Both reads are bounded now: the partition scan reads the first partition pack and the last 64 KiB, the magic check reads 16 bytes. A test counts the bytes the scan reads from an 8 MiB track file.
+- `mxf_invalid_structure` reported a missing footer partition on every picture MXF whose footer index table is longer than 64 KiB, which is any feature: the check only scanned the last 64 KiB for the partition pack key. The footer offset now comes from the random index pack at the end of the file, confirmed by the partition pack found there, and the tail scan remains only for a file with no RIP.
+
 ## [0.5.1] - 2026-09-03
 
 ### Added
