@@ -4,7 +4,7 @@
 
 [Documentation](https://postperfection.github.io/dcpdoctor/)
 
-Current release: `v0.1.1`.
+Current release: `v0.5.1`.
 
 A comprehensive, professional-grade DCP (Digital Cinema Package) validator, analyzer, and diagnostic tool. Written in Rust.
 
@@ -18,6 +18,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **XML digital signatures**: enveloped signature verification plus embedded X.509 chain linkage and expiry checks; an encrypted package with an unsigned CPL or PKL errors (`dcp_not_signed`), an unsigned unencrypted one warns (`unencrypted_dcp_not_signed`)
 - **Schema validation:** Well-formedness checks for every package XML file, with full XSD validation when schemas are supplied
 - **Duplicate detection**: Identifies duplicate asset IDs across packages
+- **Explicit skipped checks**: A check that cannot run reports `check_skipped` with the reason instead of looking like a clean result
 
 ### Standards Compliance
 - **SMPTE ST 429**: Complete SMPTE DCP standard validation
@@ -37,7 +38,9 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **4K frame rate (ST 429-2 Table 1)**: 4K picture essence must run at 24/1, 25/1 or 30/1 (`--check-mxf`)
 - **Deep J2K codestream**: Profile (RSIZ), decomposition levels, code-block sizes, wavelet type, component validation
 - **Codestream forensics** (`--deep-j2k`): one pass over every frame reports the track's codestream parameters, the fattest frame against the DCI per-frame byte cap, and any parameter that changes partway through (`j2k_parameters_vary`); also a section in `qc-report`. An IMP's AS-02 picture tracks are scanned the same way, minus the cinema-profile checks and the DCI cap, which IMF has no equivalent of
+- **IMF App 2E picture checks**: Confirms every MainImage track uses an IMF JPEG 2000 profile, carries the matching picture coding label, matches the descriptor's pixel layout to the codestream component count and depth, and declares its color primaries and transfer characteristic
 - **4K/2K detection**: Resolution and aspect ratio verification
+- **Large MXF handling**: Partition validation reads the header, Random Index Pack, and a bounded tail window instead of loading a feature-length track file into memory
 
 ### Sound Validation
 - **Audio level analysis**: Per-channel peak and RMS in dBFS
