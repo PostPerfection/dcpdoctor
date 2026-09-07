@@ -1,6 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 2026-09-07
+
+### Changed
+- Version 1.2.0 puts DCP Doctor on the same release number as DCP Wizard and IMF Wizard, which ship together from now on.
 
 ### Fixed
 - `validate --check-mxf` read every track file into memory twice, once for the partition scan and once for the header magic check, so a 23 GB feature picture MXF took 12 GB resident and was killed at the session's memory cap. Both reads are bounded now: the partition scan reads the first partition pack and the last 64 KiB, the magic check reads 16 bytes. A test counts the bytes the scan reads from an 8 MiB track file.

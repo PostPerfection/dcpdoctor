@@ -4,7 +4,7 @@
 
 [Documentation](https://postperfection.github.io/dcpdoctor/)
 
-Current release: `v0.5.1`.
+Current release: `v1.2.0`.
 
 A comprehensive, professional-grade DCP (Digital Cinema Package) validator, analyzer, and diagnostic tool. Written in Rust.
 
