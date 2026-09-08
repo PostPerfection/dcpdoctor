@@ -101,11 +101,22 @@ fn write_html_report<W: Write>(
         writeln!(
             writer,
             "<tr><td class='{class}'>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-            note.severity, note.code, note.message, file
+            note.severity,
+            note.code,
+            escape_markup(&note.message),
+            escape_markup(&file)
         )?;
     }
     writeln!(writer, "</table></body></html>")?;
     Ok(())
+}
+
+/// Text going into an HTML or SVG element. Findings quote element names, so
+/// `has no <Hash> in the CPL` reached the browser as an unknown open tag.
+pub(crate) fn escape_markup(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -150,6 +161,19 @@ mod tests {
         assert!(html.contains("<html>"));
         assert!(html.contains("FAIL"));
         assert!(html.contains("missing_assetmap"));
+    }
+
+    #[test]
+    fn an_element_name_in_a_finding_survives_the_html_report() {
+        let mut r = VerifyResult::default();
+        r.add(Note::warning(
+            Code::CplMissingHash,
+            "Reel 1 picture asset has no <Hash> in the CPL",
+        ));
+        let mut buf = Vec::new();
+        write_report(&r, Path::new("/test/dcp"), &mut buf, ReportFormat::Html).unwrap();
+        let html = String::from_utf8(buf).unwrap();
+        assert!(html.contains("no &lt;Hash&gt; in the CPL"), "{html}");
     }
 
     #[test]

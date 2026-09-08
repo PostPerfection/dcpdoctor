@@ -17,9 +17,15 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+asdcplib = { git = "https://github.com/PostPerfection/asdcplib-rs.git", rev = "6d044c1" }
 assert_cmd = "2"
+base64 = "0.22"
 predicates = "3"
+quick-xml.workspace = true
+scraper = "0.27"
+sha1.workspace = true
 tempfile = "3"
+uuid = "1"
 
 [package.metadata.deb]
 name = "dcpdoctor"

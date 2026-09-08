@@ -220,21 +220,13 @@ pub fn measure_loudness(audio_path: &Path) -> Result<LoudnessResult, String> {
         .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let Some(summary) = ebur128_summary(&stderr) else {
+        return Err("Failed to measure loudness (ffmpeg produced no ebur128 summary)".to_string());
+    };
 
-    let integrated = parse_loudness_value(&stderr, "I:")
-        .or_else(|| parse_loudness_value(&stderr, "Integrated loudness:"))
-        .unwrap_or(f64::NAN);
-    let true_peak = parse_loudness_value(&stderr, "Peak:")
-        .or_else(|| parse_loudness_value(&stderr, "True peak:"))
-        .unwrap_or(f64::NAN);
-    let lra = parse_loudness_value(&stderr, "LRA:")
-        .or_else(|| parse_loudness_value(&stderr, "Loudness range:"))
-        .unwrap_or(f64::NAN);
-
-    // nothing parsed means ffmpeg failed to open the file or lacks ebur128; don't report NaN as success
-    if integrated.is_nan() && true_peak.is_nan() && lra.is_nan() {
-        return Err("Failed to measure loudness (ffmpeg produced no ebur128 output)".to_string());
-    }
+    let integrated = parse_loudness_value(summary, "I:").unwrap_or(f64::NAN);
+    let true_peak = parse_loudness_value(summary, "Peak:").unwrap_or(f64::NAN);
+    let lra = parse_loudness_value(summary, "LRA:").unwrap_or(f64::NAN);
 
     Ok(LoudnessResult {
         integrated_lufs: integrated,
@@ -242,6 +234,15 @@ pub fn measure_loudness(audio_path: &Path) -> Result<LoudnessResult, String> {
         loudness_range_lu: lra,
         short_term_max_lufs: f64::NAN,
     })
+}
+
+/// The ebur128 filter prints a running `I:` and `LRA:` on every progress line,
+/// starting at -70 LUFS, so only the text after `Summary:` holds the measurement.
+fn ebur128_summary(ffmpeg_stderr: &str) -> Option<&str> {
+    const SUMMARY_HEADING: &str = "Summary:";
+    ffmpeg_stderr
+        .rfind(SUMMARY_HEADING)
+        .map(|at| &ffmpeg_stderr[at + SUMMARY_HEADING.len()..])
 }
 
 fn extract_db_value(s: &str) -> Option<f64> {
@@ -379,5 +380,42 @@ mod tests {
             result.is_err(),
             "no levels parsed must not come back as a 0.0 dBFS peak: {result:?}"
         );
+    }
+
+    /// ffmpeg 8.1 stderr for a 1 kHz tone at -20 dBFS, trimmed to the first
+    /// progress line and the summary. The progress lines start at -70 LUFS, the
+    /// value the measurement used to report.
+    const EBUR128_STDERR: &str = "\
+[Parsed_ebur128_0 @ 0x7f3] t: 0.099979   TARGET:-23 LUFS    M: -20.0 S:-120.7     I: -70.0 LUFS       LRA:  12.0 LU  FTPK: -20.0 -20.0 dBFS  TPK: -20.0 -20.0 dBFS
+[Parsed_ebur128_0 @ 0x7f3] t: 1.999979   TARGET:-23 LUFS    M: -20.0 S:-120.7     I: -20.0 LUFS       LRA:   0.0 LU  FTPK: -20.0 -20.0 dBFS  TPK: -20.0 -20.0 dBFS
+[Parsed_ebur128_0 @ 0x7f3] Summary:
+
+  Integrated loudness:
+    I:         -20.0 LUFS
+    Threshold: -30.0 LUFS
+
+  Loudness range:
+    LRA:         3.5 LU
+    Threshold:   0.0 LUFS
+    LRA low:     0.0 LUFS
+    LRA high:    0.0 LUFS
+
+  True peak:
+    Peak:      -20.0 dBFS
+
+[out#0/null @ 0x560] video:0KiB audio:375KiB subtitle:0KiB
+";
+
+    #[test]
+    fn loudness_comes_from_the_summary_not_the_first_progress_line() {
+        let summary = ebur128_summary(EBUR128_STDERR).expect("the stderr carries a summary");
+        assert_eq!(parse_loudness_value(summary, "I:"), Some(-20.0));
+        assert_eq!(parse_loudness_value(summary, "LRA:"), Some(3.5));
+        assert_eq!(parse_loudness_value(summary, "Peak:"), Some(-20.0));
+    }
+
+    #[test]
+    fn ffmpeg_output_with_no_summary_is_no_measurement() {
+        assert!(ebur128_summary("ffmpeg: no such file or directory").is_none());
     }
 }

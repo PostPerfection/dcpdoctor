@@ -6,6 +6,8 @@ use std::process::Command;
 
 use serde::Serialize;
 
+use crate::report::escape_markup;
+
 /// Options for detailed QC report generation.
 pub struct DetailedQcOptions {
     pub imp_dir: PathBuf,
@@ -27,10 +29,30 @@ pub struct DetailedQcResult {
     pub pages: u32,
 }
 
+/// What one file in the package is, as the Track Files table names it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TrackType {
+    Picture,
+    Sound,
+    Metadata,
+}
+
+impl std::fmt::Display for TrackType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TrackType::Picture => "picture",
+            TrackType::Sound => "sound",
+            TrackType::Metadata => "metadata",
+        })
+    }
+}
+
 /// Track info for the report.
 struct TrackInfo {
-    track_type: String,
+    track_type: TrackType,
     filename: String,
+    /// The asset's id in the ASSETMAP, empty for a file the ASSETMAP does not
+    /// list or a directory with no ASSETMAP at all.
     uuid: String,
     size: u64,
 }
@@ -69,7 +91,7 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
     let mut html = String::with_capacity(4096);
     html.push_str("<!DOCTYPE html>\n<html>\n<head>\n");
     html.push_str("<meta charset=\"utf-8\">\n");
-    let _ = writeln!(html, "<title>QC Report — {title}</title>");
+    let _ = writeln!(html, "<title>QC Report — {}</title>", escape_markup(&title));
     html.push_str("<style>\n");
     html.push_str("body { font-family: -apple-system, sans-serif; max-width: 1000px; margin: 0 auto; padding: 2rem; }\n");
     html.push_str("h1 { border-bottom: 2px solid #333; padding-bottom: 0.5rem; }\n");
@@ -88,18 +110,27 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
         current_timestamp()
     );
     if !opts.client.is_empty() {
-        let _ = writeln!(html, "<p class=\"meta\">Client: {}</p>", opts.client);
+        let _ = writeln!(
+            html,
+            "<p class=\"meta\">Client: {}</p>",
+            escape_markup(&opts.client)
+        );
     }
 
     // Package info
     html.push_str("<h2>Package Information</h2>\n");
     html.push_str("<table>\n");
-    let _ = writeln!(html, "<tr><th>Title</th><td>{title}</td></tr>");
+    let _ = writeln!(
+        html,
+        "<tr><th>Title</th><td>{}</td></tr>",
+        escape_markup(&title)
+    );
     let _ = writeln!(
         html,
         "<tr><th>Directory</th><td>{}</td></tr>",
-        opts.imp_dir.display()
+        escape_markup(&opts.imp_dir.display().to_string())
     );
+    let _ = writeln!(html, "<tr><th>Tracks</th><td>{}</td></tr>", tracks.len());
     html.push_str("</table>\n");
 
     // Track files
@@ -107,11 +138,13 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
     html.push_str("<table>\n");
     html.push_str("<tr><th>Type</th><th>Filename</th><th>UUID</th><th>Size</th></tr>\n");
     for t in &tracks {
-        let size_mb = t.size / 1024 / 1024;
         let _ = writeln!(
             html,
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{size_mb} MB</td></tr>",
-            t.track_type, t.filename, t.uuid
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            t.track_type,
+            escape_markup(&t.filename),
+            escape_markup(&t.uuid),
+            format_size(t.size)
         );
     }
     html.push_str("</table>\n");
@@ -125,9 +158,7 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
         };
         let mut sections = String::new();
         for t in &tracks {
-            if t.track_type != "essence"
-                || crate::mxf::is_pcm_sound_essence(&opts.imp_dir.join(&t.filename))
-            {
+            if t.track_type != TrackType::Picture {
                 continue;
             }
             let path = opts.imp_dir.join(&t.filename);
@@ -137,7 +168,7 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
                 family,
                 true,
             );
-            let _ = writeln!(sections, "<h3>{}</h3>", t.filename);
+            let _ = writeln!(sections, "<h3>{}</h3>", escape_markup(&t.filename));
             match forensics {
                 Some(forensics) => sections.push_str(&codestream_forensics_table(&forensics)),
                 // encrypted or unreadable picture essence: the notes are all the
@@ -155,10 +186,10 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
     if opts.include_loudness {
         let mut rows = String::new();
         for t in &tracks {
-            let path = opts.imp_dir.join(&t.filename);
-            if t.track_type != "essence" || !crate::mxf::is_pcm_sound_essence(&path) {
+            if t.track_type != TrackType::Sound {
                 continue;
             }
+            let path = opts.imp_dir.join(&t.filename);
             match crate::audio::measure_loudness(&path) {
                 Ok(m) => {
                     // Leq(m) (ISO 21727) reported alongside the EBU R128 result
@@ -171,15 +202,19 @@ pub fn generate_detailed_qc(opts: &DetailedQcOptions) -> DetailedQcResult {
                     let _ = writeln!(
                         rows,
                         "<tr><td>{}</td><td>{:.1} LUFS</td><td>{:.1} dBTP</td><td>{:.1} LU</td><td>{leq_cell}</td></tr>",
-                        t.filename, m.integrated_lufs, m.true_peak_dbtp, m.loudness_range_lu
+                        escape_markup(&t.filename),
+                        m.integrated_lufs,
+                        m.true_peak_dbtp,
+                        m.loudness_range_lu
                     );
                 }
                 // a sound track with no measurement is not a quiet pass
                 Err(e) => {
                     let _ = writeln!(
                         rows,
-                        "<tr><td>{}</td><td colspan=\"4\">measurement failed: {e}</td></tr>",
-                        t.filename
+                        "<tr><td>{}</td><td colspan=\"4\">measurement failed: {}</td></tr>",
+                        escape_markup(&t.filename),
+                        escape_markup(&e)
                     );
                 }
             }
@@ -237,7 +272,12 @@ fn note_list(notes: &[crate::Note]) -> String {
     }
     let mut list = String::from("<ul>\n");
     for note in notes {
-        let _ = writeln!(list, "<li>{}: {}</li>", note.severity, note.message);
+        let _ = writeln!(
+            list,
+            "<li>{}: {}</li>",
+            note.severity,
+            escape_markup(&note.message)
+        );
     }
     list.push_str("</ul>\n");
     list
@@ -344,6 +384,7 @@ fn gather_track_info(dir: &std::path::Path) -> Vec<TrackInfo> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return tracks;
     };
+    let asset_ids = assetmap_ids_by_file(dir);
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_file() {
@@ -351,8 +392,10 @@ fn gather_track_info(dir: &std::path::Path) -> Vec<TrackInfo> {
         }
         let ext = path.extension().unwrap_or_default().to_string_lossy();
         let track_type = match ext.as_ref() {
-            "mxf" => "essence",
-            "xml" => "metadata",
+            // an MXF asdcplib does not read as PCM is the picture track
+            "mxf" if crate::mxf::is_pcm_sound_essence(&path) => TrackType::Sound,
+            "mxf" => TrackType::Picture,
+            "xml" => TrackType::Metadata,
             _ => continue,
         };
         let filename = path
@@ -362,13 +405,42 @@ fn gather_track_info(dir: &std::path::Path) -> Vec<TrackInfo> {
             .to_string();
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         tracks.push(TrackInfo {
-            track_type: track_type.into(),
+            uuid: asset_ids.get(&filename).cloned().unwrap_or_default(),
+            track_type,
             filename,
-            uuid: String::new(),
             size,
         });
     }
+    tracks.sort_by(|a, b| a.filename.cmp(&b.filename));
     tracks
+}
+
+/// Asset id per file name, as the package's own ASSETMAP states it.
+fn assetmap_ids_by_file(dir: &std::path::Path) -> std::collections::HashMap<String, String> {
+    use crate::assetmap::{AssetMap, ParseXmlFile};
+    crate::dcp::find_assetmap(dir)
+        .and_then(|path| AssetMap::parse(&path))
+        .map(|assetmap| {
+            assetmap
+                .assets
+                .into_iter()
+                .map(|asset| (asset.path, asset.id))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+const BYTES_PER_MEBIBYTE: f64 = 1024.0 * 1024.0;
+const BYTES_PER_KIBIBYTE: f64 = 1024.0;
+
+/// A sound track is often under a megabyte, and whole-megabyte rounding printed
+/// it as 0 MB.
+fn format_size(bytes: u64) -> String {
+    if bytes as f64 >= BYTES_PER_MEBIBYTE {
+        format!("{:.1} MB", bytes as f64 / BYTES_PER_MEBIBYTE)
+    } else {
+        format!("{:.1} KB", bytes as f64 / BYTES_PER_KIBIBYTE)
+    }
 }
 
 #[cfg(test)]

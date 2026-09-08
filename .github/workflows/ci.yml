@@ -48,6 +48,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxml2-utils
 
+      # qc-report --output x.pdf converts the HTML through it
+      - name: Install weasyprint (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y weasyprint
+
+      - name: Install weasyprint (macOS)
+        if: runner.os == 'macOS'
+        run: brew install weasyprint
+
       - name: Install ffmpeg (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -112,6 +121,7 @@ jobs:
           ffprobe -version | head -n 1
           xmllint --version
           java -version
+          if [ "$RUNNER_OS" != "Windows" ]; then weasyprint --version; fi
           # a bash test on the value would read a Windows path, which git bash cannot stat
           test -n "$PHOTON_DIR"
 
