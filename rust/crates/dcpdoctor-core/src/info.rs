@@ -65,6 +65,14 @@ pub fn get_dcp_info(dcp_dir: &Path) -> Option<DcpInfo> {
             continue;
         }
 
+        // the essence type comes from the MXF header, not from the file size
+        if let Some(path) = full_path.to_str()
+            && asdcplib::essence_type(path)
+                .is_ok_and(|essence| essence == asdcplib::EssenceType::DcDataDolbyAtmos)
+        {
+            info.has_atmos = true;
+        }
+
         let mxf_info = crate::mxf::read_mxf_info(&full_path);
         if !mxf_info.valid {
             continue;
@@ -84,18 +92,6 @@ pub fn get_dcp_info(dcp_dir: &Path) -> Option<DcpInfo> {
             && snd.channels > info.audio_channels
         {
             info.audio_channels = snd.channels;
-        }
-
-        // Detect Atmos (auxiliary data / IAB)
-        if mxf_info.essence_type.contains("data") || mxf_info.essence_type.contains("unknown") {
-            // Check if it's an Atmos asset by examining file size patterns
-            // Atmos MXFs tend to be large auxiliary data tracks
-            if mxf_info.file_size_bytes > 1024 * 1024
-                && mxf_info.picture.is_none()
-                && mxf_info.sound.is_none()
-            {
-                info.has_atmos = true;
-            }
         }
     }
 

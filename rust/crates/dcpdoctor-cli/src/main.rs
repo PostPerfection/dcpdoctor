@@ -697,40 +697,52 @@ fn main() {
                     }
                 };
 
-                let info = match dcpdoctor_core::info::get_dcp_info(&dcp_dir) {
-                    Some(i) => i,
-                    None => {
-                        eprintln!("Failed to read DCP at {}", dcp_dir.display());
+                let format = match dcpdoctor_core::profiles::read_package_format(&dcp_dir) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("Failed to read DCP at {}: {e}", dcp_dir.display());
                         std::process::exit(1);
                     }
                 };
 
-                let issues = dcpdoctor_core::profiles::check_compatibility(
-                    &profile,
-                    (info.picture_width, info.picture_height),
-                    info.frame_rate,
-                    info.audio_channels,
-                    info.has_atmos,
-                    info.is_stereo3d,
-                );
+                let report = dcpdoctor_core::profiles::check_compatibility(&profile, &format);
 
                 if cli.json {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "profile": profile.name,
-                            "compatible": issues.is_empty(),
-                            "issues": issues,
+                            "compatible": report.is_compatible(),
+                            "issues": report.issues,
+                            "not_checked": report.not_checked,
                         }))
                         .unwrap()
                     );
-                } else if issues.is_empty() {
+                } else if report.is_compatible() {
                     println!("PASS: DCP is compatible with {}", profile.name);
                 } else {
-                    println!("FAIL: {} issue(s) for {}:", issues.len(), profile.name);
-                    for issue in &issues {
-                        println!("  - {issue}");
+                    if !report.issues.is_empty() {
+                        println!(
+                            "FAIL: {} issue(s) for {}:",
+                            report.issues.len(),
+                            profile.name
+                        );
+                        for issue in &report.issues {
+                            println!("  - {issue}");
+                        }
                     }
+                    if !report.not_checked.is_empty() {
+                        println!(
+                            "INCOMPLETE: {} limit(s) of {} were not checked:",
+                            report.not_checked.len(),
+                            profile.name
+                        );
+                        for skipped in &report.not_checked {
+                            println!("  - {skipped}");
+                        }
+                    }
+                }
+                if !report.is_compatible() {
                     std::process::exit(1);
                 }
             } else {
