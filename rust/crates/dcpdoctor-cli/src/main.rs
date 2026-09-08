@@ -7,6 +7,10 @@ use dcpdoctor_core::report::ReportFormat;
 /// visible rather than encode noise.
 const FRAME_COMPARE_THRESHOLD_PSNR: f64 = 30.0;
 
+/// Where `serve` reads its API key when --api-key is not given, so the key
+/// stays out of the process arguments.
+const API_KEY_VARIABLE: &str = "DCPDOCTOR_API_KEY";
+
 #[derive(Parser)]
 #[command(name = "dcpdoctor", version, about = "DCP/IMF validator and verifier")]
 struct Cli {
@@ -164,11 +168,16 @@ enum Commands {
     /// Start REST API server
     Serve {
         /// Bind address
-        #[arg(long, default_value = "0.0.0.0")]
+        #[arg(long, default_value = dcpdoctor_core::server::DEFAULT_BIND_ADDRESS)]
         bind: String,
         /// Port
-        #[arg(short, long, default_value = "8080")]
+        #[arg(short, long, default_value_t = dcpdoctor_core::server::DEFAULT_PORT)]
         port: u16,
+        /// Require this key in X-Api-Key or Authorization: Bearer on every
+        /// request but /health. Reads DCPDOCTOR_API_KEY when not given, which
+        /// keeps the key off the command line
+        #[arg(long)]
+        api_key: Option<String>,
     },
 
     /// Automatically fix repairable issues in a DCP
@@ -607,8 +616,23 @@ fn main() {
                 interval,
             );
         }
-        Some(Commands::Serve { bind, port }) => {
-            dcpdoctor_core::server::start_server(&bind, port);
+        Some(Commands::Serve {
+            bind,
+            port,
+            api_key,
+        }) => {
+            let config = dcpdoctor_core::server::ServerConfig {
+                bind,
+                port,
+                api_key: api_key.or_else(|| std::env::var(API_KEY_VARIABLE).ok()),
+            };
+            if let Err(error) = dcpdoctor_core::server::start_server(&config) {
+                eprintln!(
+                    "Failed to serve on {}:{}: {error}",
+                    config.bind, config.port
+                );
+                std::process::exit(1);
+            }
         }
         Some(Commands::Fix { dcp_dir, dry_run }) => {
             if dry_run {

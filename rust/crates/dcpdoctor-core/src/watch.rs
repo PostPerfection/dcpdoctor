@@ -95,9 +95,7 @@ fn find_packages(directory: &Path) -> Vec<PathBuf> {
     let mut packages: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_dir() && ASSETMAP_NAMES.iter().any(|name| path.join(name).exists())
-        })
+        .filter(|path| path.is_dir() && ASSETMAP_NAMES.iter().any(|name| path.join(name).exists()))
         .collect();
     packages.sort();
     packages
@@ -275,10 +273,7 @@ mod tests {
 
         assert_eq!(
             packages,
-            vec![
-                ingest.path().join("interop"),
-                ingest.path().join("smpte"),
-            ],
+            vec![ingest.path().join("interop"), ingest.path().join("smpte"),],
             "a folder without an asset map is not a package"
         );
     }
@@ -323,7 +318,10 @@ mod tests {
             "a file outside the package must not count as delivered"
         );
         assert_eq!(contained_path(Path::new("/ingest/dcp"), "../escape"), None);
-        assert_eq!(contained_path(Path::new("/ingest/dcp"), "/etc/passwd"), None);
+        assert_eq!(
+            contained_path(Path::new("/ingest/dcp"), "/etc/passwd"),
+            None
+        );
         assert_eq!(
             contained_path(Path::new("/ingest/dcp"), "pkl.xml"),
             Some(PathBuf::from("/ingest/dcp/pkl.xml"))

@@ -317,6 +317,9 @@ Manifest JSON format:
 # REST API server
 dcpdoctor serve --port 8080
 
+# ... requiring a key on everything but /health
+DCPDOCTOR_API_KEY=$(openssl rand -hex 32) dcpdoctor serve --bind 127.0.0.1 --port 8080
+
 # Auto-validate new DCPs in a directory
 dcpdoctor watch /ingest/incoming --interval 5000
 ```
@@ -329,6 +332,15 @@ alone, and each package is reported once.
 REST API endpoints:
 - `GET /health`: Returns `{"status": "ok"}`
 - `POST /validate`: Body: `{"path": "/path/to/dcp"}`, returns validation result. Add an optional `"ov": "/path/to/ov"` to resolve a supplemental package's cross-package references against the OV.
+- `POST /verify`: the same, with the package under `"dcp_dir"`. Kept for older callers.
+
+`--api-key <key>`, or `DCPDOCTOR_API_KEY` in the environment, requires that key in
+`X-Api-Key` or `Authorization: Bearer` on every request but `GET /health`.
+Without one the server accepts any caller that reaches the port, and the default
+bind address is `0.0.0.0`: set a key, or bind `127.0.0.1`, on any machine others
+can reach. A body over 1 MiB is refused with 413, a body that is not a validation
+request with 400, and a path that does not exist with 404. The response is only
+ever the validation result, never anything read out of the package.
 
 ### Performance Options
 
