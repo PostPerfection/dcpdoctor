@@ -1934,12 +1934,20 @@ fn run_premium_checks(dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdo
         }
     }
 
-    if flags.hdr || flags.dolby_vision || flags.prores {
+    // the picture descriptor answers the transfer and primaries, the CPL the light levels
+    if flags.hdr {
+        let light = premium::read_cpl_content_light(dir);
+        for mxf in mxf_files(dir) {
+            let hdr = premium::detect_hdr_metadata(&mxf);
+            notes.extend(premium::check_hdr_compliance(&hdr, light, &mxf));
+        }
+    }
+
+    if flags.dolby_vision || flags.prores {
         // every one of these detectors reads its answer out of ffprobe, and
         // without it they all report "nothing detected"
         if !dcpdoctor_core::studio::ffprobe_available() {
             let requested = [
-                (flags.hdr, "HDR metadata"),
                 (flags.dolby_vision, "Dolby Vision"),
                 (flags.prores, "ProRes essence"),
             ];
@@ -1956,10 +1964,6 @@ fn run_premium_checks(dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdo
         }
 
         for mxf in mxf_files(dir) {
-            if flags.hdr {
-                let h = premium::detect_hdr_metadata(&mxf);
-                notes.extend(premium::check_hdr_compliance(&h, &mxf));
-            }
             if flags.dolby_vision {
                 let dv = premium::parse_dolby_vision(&mxf);
                 notes.extend(premium::check_dolby_vision_compliance(&dv, &mxf));

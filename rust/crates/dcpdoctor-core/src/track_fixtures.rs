@@ -26,6 +26,28 @@ const IAB_ESSENCE_DESCRIPTOR_UL: [u8; 16] = [
     0x06, 0x0e, 0x2b, 0x34, 0x02, 0x53, 0x01, 0x01, 0x0d, 0x01, 0x01, 0x01, 0x01, 0x01, 0x7b, 0x00,
 ];
 
+// the SDR colour an App 2E picture track carries, defined once for both fixture modules
+pub use crate::app2e_fixtures::bt709;
+
+// PQ over BT.2020 with an ST 2086 display mastered to 1000 nits
+pub fn pq_bt2020() -> asdcplib::jp2k::HdrMetadata {
+    asdcplib::jp2k::HdrMetadata {
+        transfer_characteristic: Some(asdcplib::jp2k::TRANSFER_CHARACTERISTIC_ST2084),
+        color_primaries: Some(asdcplib::jp2k::COLOR_PRIMARIES_BT2020),
+        mastering_display_max_luminance: Some(10_000_000),
+        mastering_display_min_luminance: Some(50),
+        ..Default::default()
+    }
+}
+
+pub fn hlg_bt2020() -> asdcplib::jp2k::HdrMetadata {
+    asdcplib::jp2k::HdrMetadata {
+        transfer_characteristic: Some(crate::premium::TRANSFER_CHARACTERISTIC_HLG),
+        color_primaries: Some(asdcplib::jp2k::COLOR_PRIMARIES_BT2020),
+        ..Default::default()
+    }
+}
+
 pub struct ReelTiming {
     pub picture_entry: i64,
     pub picture_duration: i64,

@@ -162,6 +162,84 @@ fn the_black_threshold_decides_whether_a_dim_run_is_black() {
     );
 }
 
+// an App 2E CPL carrying the ST 2067-21 clause 7.5 light levels and nothing else
+fn write_content_light_cpl(path: &Path, max_cll: u32, max_fall: u32) {
+    std::fs::write(
+        path,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:4b0c85d9-b65d-4b1a-9cfd-92f0b28ca5f0</Id>
+  <ExtensionProperties>
+    <app2e:MaxCLL xmlns:app2e="http://www.smpte-ra.org/ns/2067-21/2020">{max_cll}</app2e:MaxCLL>
+    <app2e:MaxFALL xmlns:app2e="http://www.smpte-ra.org/ns/2067-21/2020">{max_fall}</app2e:MaxFALL>
+  </ExtensionProperties>
+</CompositionPlaylist>"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn validate_hdr_reports_the_transfer_and_the_cpl_light_levels() {
+    use dcpdoctor_core::track_fixtures::{pq_bt2020, write_picture_track};
+
+    let directory = TempDir::new().unwrap();
+    write_picture_track(&directory.path().join("PICTURE.mxf"), 2, Some(pq_bt2020()));
+    write_content_light_cpl(&directory.path().join("CPL.xml"), 993, 362);
+
+    cmd()
+        .args([
+            "validate",
+            directory.path().to_str().unwrap(),
+            "--hdr",
+            "--verbose",
+        ])
+        .assert()
+        .stdout(predicates::str::contains("HDR: HDR10, BT.2020 primaries"))
+        .stdout(predicates::str::contains(
+            "MaxCLL: 993 nits, MaxFALL: 362 nits",
+        ));
+}
+
+#[test]
+fn validate_hdr_flags_a_max_fall_above_its_max_cll() {
+    use dcpdoctor_core::track_fixtures::{pq_bt2020, write_picture_track};
+
+    let directory = TempDir::new().unwrap();
+    write_picture_track(&directory.path().join("PICTURE.mxf"), 2, Some(pq_bt2020()));
+    write_content_light_cpl(&directory.path().join("CPL.xml"), 400, 900);
+
+    cmd()
+        .args(["validate", directory.path().to_str().unwrap(), "--hdr"])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("hdr_metadata_invalid"))
+        .stdout(predicates::str::contains(
+            "MaxFALL 900 nits exceeds MaxCLL 400 nits",
+        ));
+}
+
+#[test]
+fn validate_hdr_says_nothing_about_a_rec_709_picture() {
+    use dcpdoctor_core::track_fixtures::{bt709, write_picture_track};
+
+    let directory = TempDir::new().unwrap();
+    write_picture_track(&directory.path().join("PICTURE.mxf"), 2, Some(bt709()));
+    write_content_light_cpl(&directory.path().join("CPL.xml"), 993, 362);
+
+    cmd()
+        .args([
+            "validate",
+            directory.path().to_str().unwrap(),
+            "--hdr",
+            "--verbose",
+        ])
+        .assert()
+        .stdout(predicates::str::contains("HDR:").not())
+        .stdout(predicates::str::contains("MaxCLL").not());
+}
+
 #[test]
 fn validate_atmos_names_the_object_count_and_leaves_a_pcm_track_alone() {
     use dcpdoctor_core::track_fixtures::{SoundStretch, write_atmos_track, write_sound_track};

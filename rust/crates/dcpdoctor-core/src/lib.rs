@@ -160,6 +160,8 @@ pub enum Code {
     J2kPocInvalid,
     J2kParametersVary,
     J2kCodestreamSummary,
+    HdrMetadataSummary,
+    HdrMetadataInvalid,
 
     // Sound
     SoundInvalidSampleRate,
@@ -313,6 +315,8 @@ impl Code {
             Code::J2kPocInvalid => "j2k_poc_invalid",
             Code::J2kParametersVary => "j2k_parameters_vary",
             Code::J2kCodestreamSummary => "j2k_codestream_summary",
+            Code::HdrMetadataSummary => "hdr_metadata_summary",
+            Code::HdrMetadataInvalid => "hdr_metadata_invalid",
             Code::SoundInvalidSampleRate => "sound_invalid_sample_rate",
             Code::SoundInvalidChannelCount => "sound_invalid_channel_count",
             Code::SoundInvalidQuantization => "sound_invalid_quantization",

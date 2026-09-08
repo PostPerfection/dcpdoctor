@@ -488,7 +488,6 @@ pub fn check_atmos_compliance(info: &AtmosIabInfo, source: &Path) -> Vec<Note> {
 // 4. HDR Metadata (ST 2098)
 // ════════════════════════════════════════════════════════════════════════════════
 
-/// HDR type classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HdrType {
     #[default]
@@ -500,29 +499,108 @@ pub enum HdrType {
     DolbyVision,
 }
 
-/// HDR metadata from a picture MXF.
 #[derive(Debug, Clone, Default)]
 pub struct HdrMetadata {
     pub detected: bool,
     pub hdr_type: HdrType,
     pub transfer_function: String,
     pub color_primaries: String,
-    pub max_cll: u16,
-    pub max_fall: u16,
     pub master_display_max: f64,
     pub master_display_min: f64,
+    // set when the descriptor was read rather than ffprobe's stream metadata
+    pub from_descriptor: bool,
 }
 
-/// Detect HDR metadata from picture MXF using ffprobe.
+// ST 2067-21 clause 7.5 content light levels, which a CPL carries and no essence
+// descriptor asdcplib writes or reads has room for
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ContentLightLevels {
+    pub max_cll: u32,
+    pub max_fall: u32,
+}
+
+// ST 2067-21:2020 TransferCharacteristic_HLG_OETF, absent from asdcplib's exports
+pub const TRANSFER_CHARACTERISTIC_HLG: [u8; 16] = [
+    0x06, 0x0e, 0x2b, 0x34, 0x04, 0x01, 0x01, 0x0d, 0x04, 0x01, 0x01, 0x01, 0x01, 0x0b, 0x00, 0x00,
+];
+
+// ST 2086 luminance is carried in units of 0.0001 cd/m2
+const LUMINANCE_UNITS_PER_NIT: f64 = 10_000.0;
+
 pub fn detect_hdr_metadata(mxf_path: &Path) -> HdrMetadata {
+    match hdr_from_descriptor(mxf_path) {
+        Some(hdr) => hdr,
+        None => hdr_from_ffprobe(mxf_path),
+    }
+}
+
+// the picture essence descriptor carries the transfer and primaries as ULs, so
+// it settles the type without ffprobe having to map them first
+fn hdr_from_descriptor(mxf_path: &Path) -> Option<HdrMetadata> {
+    let path = mxf_path.to_str()?;
+    let descriptor = read_dcp_hdr_descriptor(path).or_else(|| read_imf_hdr_descriptor(path))?;
+
+    let mut hdr = HdrMetadata {
+        from_descriptor: true,
+        ..Default::default()
+    };
+
+    match descriptor.transfer_characteristic {
+        Some(asdcplib::jp2k::TRANSFER_CHARACTERISTIC_ST2084) => {
+            hdr.detected = true;
+            hdr.hdr_type = HdrType::Pq;
+            hdr.transfer_function = "PQ (SMPTE ST 2084)".into();
+        }
+        Some(TRANSFER_CHARACTERISTIC_HLG) => {
+            hdr.detected = true;
+            hdr.hdr_type = HdrType::Hlg;
+            hdr.transfer_function = "HLG (ARIB STD-B67)".into();
+        }
+        _ => {}
+    }
+
+    hdr.color_primaries = match descriptor.color_primaries {
+        Some(asdcplib::jp2k::COLOR_PRIMARIES_BT2020) => "BT.2020".into(),
+        Some(asdcplib::jp2k::COLOR_PRIMARIES_P3D65) => "P3-D65".into(),
+        Some(asdcplib::jp2k::COLOR_PRIMARIES_BT709) => "BT.709".into(),
+        _ => String::new(),
+    };
+
+    if let Some(max) = descriptor.mastering_display_max_luminance {
+        hdr.master_display_max = max as f64 / LUMINANCE_UNITS_PER_NIT;
+    }
+    if let Some(min) = descriptor.mastering_display_min_luminance {
+        hdr.master_display_min = min as f64 / LUMINANCE_UNITS_PER_NIT;
+    }
+
+    Some(hdr)
+}
+
+fn read_dcp_hdr_descriptor(path: &str) -> Option<asdcplib::jp2k::HdrMetadata> {
+    let mut reader = asdcplib::jp2k::MxfReader::new();
+    reader.open_read(path).ok()?;
+    let hdr = reader.hdr_metadata().ok();
+    let _ = reader.close();
+    hdr
+}
+
+fn read_imf_hdr_descriptor(path: &str) -> Option<asdcplib::jp2k::HdrMetadata> {
+    let mut reader = asdcplib::as02::jp2k::MxfReader::new();
+    reader.open_read(path).ok()?;
+    let hdr = reader.hdr_metadata().ok();
+    let _ = reader.close();
+    hdr
+}
+
+// anything that is not a JPEG 2000 track file still answers through ffprobe
+fn hdr_from_ffprobe(mxf_path: &Path) -> HdrMetadata {
     let mut hdr = HdrMetadata::default();
 
     let cmd = format!(
         "ffprobe -v quiet -select_streams v:0 -show_entries \
          stream=color_transfer,color_primaries,color_space,bits_per_raw_sample \
          -show_entries \
-         side_data=side_data_type,max_content,max_average,red_x,red_y,green_x,\
-         green_y,blue_x,blue_y,white_point_x,white_point_y,min_luminance,max_luminance \
+         side_data=side_data_type,max_content,max_average,min_luminance,max_luminance \
          -of json \"{}\" 2>/dev/null",
         mxf_path.display()
     );
@@ -532,17 +610,15 @@ pub fn detect_hdr_metadata(mxf_path: &Path) -> HdrMetadata {
         return hdr;
     }
 
-    // Parse transfer characteristics
     let transfer_re = regex_lite::Regex::new(r#""color_transfer"\s*:\s*"([^"]+)""#).unwrap();
     if let Some(cap) = transfer_re.captures(&output) {
-        let transfer = &cap[1];
-        match transfer {
+        match &cap[1] {
             "smpte2084" | "smpte-st-2084" => {
                 hdr.detected = true;
                 hdr.hdr_type = HdrType::Pq;
                 hdr.transfer_function = "PQ (SMPTE ST 2084)".into();
             }
-            "arib-std-b67" | "bt2020-10" | "bt2020-12" => {
+            "arib-std-b67" => {
                 hdr.detected = true;
                 hdr.hdr_type = HdrType::Hlg;
                 hdr.transfer_function = "HLG (ARIB STD-B67)".into();
@@ -551,68 +627,79 @@ pub fn detect_hdr_metadata(mxf_path: &Path) -> HdrMetadata {
         }
     }
 
-    // Parse color primaries
     let primaries_re = regex_lite::Regex::new(r#""color_primaries"\s*:\s*"([^"]+)""#).unwrap();
     if let Some(cap) = primaries_re.captures(&output) {
-        hdr.color_primaries = cap[1].to_string();
-        if hdr.color_primaries == "bt2020" {
-            hdr.color_primaries = "BT.2020".into();
-            if !hdr.detected {
-                hdr.detected = true;
-                hdr.hdr_type = HdrType::Pq;
-                hdr.transfer_function = "unknown (BT.2020 primaries)".into();
-            }
-        }
+        hdr.color_primaries = match &cap[1] {
+            "bt2020" => "BT.2020".into(),
+            "smpte432" => "P3-D65".into(),
+            other => other.to_string(),
+        };
     }
 
-    // MaxCLL
-    let max_content_re = regex_lite::Regex::new(r#""max_content"\s*:\s*(\d+)"#).unwrap();
-    if let Some(cap) = max_content_re.captures(&output) {
-        hdr.max_cll = cap[1].parse().unwrap_or(0);
-        hdr.detected = true;
-    }
-
-    // MaxFALL
-    let max_average_re = regex_lite::Regex::new(r#""max_average"\s*:\s*(\d+)"#).unwrap();
-    if let Some(cap) = max_average_re.captures(&output) {
-        hdr.max_fall = cap[1].parse().unwrap_or(0);
-        hdr.detected = true;
-    }
-
-    // Mastering display luminance
     let max_lum_re = regex_lite::Regex::new(r#""max_luminance"\s*:\s*"?(\d+)"#).unwrap();
     if let Some(cap) = max_lum_re.captures(&output) {
-        hdr.master_display_max = cap[1].parse::<f64>().unwrap_or(0.0) / 10000.0;
-        hdr.detected = true;
+        hdr.master_display_max = cap[1].parse::<f64>().unwrap_or(0.0) / LUMINANCE_UNITS_PER_NIT;
     }
 
     let min_lum_re = regex_lite::Regex::new(r#""min_luminance"\s*:\s*"?(\d+)"#).unwrap();
     if let Some(cap) = min_lum_re.captures(&output) {
-        hdr.master_display_min = cap[1].parse::<f64>().unwrap_or(0.0) / 10000.0;
-    }
-
-    // Classify if detected via metadata but no transfer function
-    if hdr.detected && hdr.hdr_type == HdrType::None {
-        if hdr.max_cll > 0 || hdr.master_display_max > 0.0 {
-            hdr.hdr_type = HdrType::Hdr10;
-        } else {
-            hdr.hdr_type = HdrType::Pq;
-        }
+        hdr.master_display_min = cap[1].parse::<f64>().unwrap_or(0.0) / LUMINANCE_UNITS_PER_NIT;
     }
 
     hdr
 }
 
-/// Check HDR compliance for DCI theatrical.
-pub fn check_hdr_compliance(hdr: &HdrMetadata, source: &Path) -> Vec<Note> {
+// MaxCLL and MaxFALL live in the CPL's ExtensionProperties, under whatever
+// prefix the writer bound the App 2E namespace to
+pub fn read_cpl_content_light(dcp_dir: &Path) -> Option<ContentLightLevels> {
+    let entries = std::fs::read_dir(dcp_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("xml") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !content.contains("CompositionPlaylist") {
+            continue;
+        }
+        let max_cll = content_light_element(&content, "MaxCLL");
+        let max_fall = content_light_element(&content, "MaxFALL");
+        if max_cll.is_none() && max_fall.is_none() {
+            continue;
+        }
+        return Some(ContentLightLevels {
+            max_cll: max_cll.unwrap_or(0),
+            max_fall: max_fall.unwrap_or(0),
+        });
+    }
+    None
+}
+
+fn content_light_element(cpl: &str, name: &str) -> Option<u32> {
+    let pattern = format!(r"<(?:[A-Za-z0-9_.\-]+:)?{name}\b[^>]*>\s*(\d+)\s*<");
+    let re = regex_lite::Regex::new(&pattern).ok()?;
+    re.captures(cpl)?.get(1)?.as_str().parse().ok()
+}
+
+pub fn check_hdr_compliance(
+    hdr: &HdrMetadata,
+    light: Option<ContentLightLevels>,
+    source: &Path,
+) -> Vec<Note> {
     let mut notes = Vec::new();
     if !hdr.detected {
         return notes;
     }
 
     let file = Some(source.to_path_buf());
-
-    let type_str = match hdr.hdr_type {
+    let hdr_type = if hdr.hdr_type == HdrType::Pq && light.is_some() {
+        HdrType::Hdr10
+    } else {
+        hdr.hdr_type
+    };
+    let type_str = match hdr_type {
         HdrType::Pq => "PQ (SMPTE ST 2084)",
         HdrType::Hlg => "HLG (ARIB STD-B67)",
         HdrType::Hdr10 => "HDR10",
@@ -621,19 +708,27 @@ pub fn check_hdr_compliance(hdr: &HdrMetadata, source: &Path) -> Vec<Note> {
         HdrType::None => "Unknown",
     };
 
+    let primaries = if hdr.color_primaries.is_empty() {
+        "no colour primaries".to_string()
+    } else {
+        format!("{} primaries", hdr.color_primaries)
+    };
     notes.push(Note {
         severity: Severity::Info,
-        code: Code::PictureInvalidResolution,
-        message: format!("HDR content: {type_str} ({})", hdr.transfer_function),
+        code: Code::HdrMetadataSummary,
+        message: format!("HDR: {type_str}, {primaries}"),
         file: file.clone(),
         line: 0,
     });
 
-    if hdr.color_primaries == "BT.2020" {
+    if hdr.master_display_max > 0.0 {
         notes.push(Note {
             severity: Severity::Info,
-            code: Code::PictureInvalidResolution,
-            message: "Wide color gamut: BT.2020".into(),
+            code: Code::HdrMetadataSummary,
+            message: format!(
+                "Mastering display: {:.4} to {:.1} nits",
+                hdr.master_display_min, hdr.master_display_max
+            ),
             file: file.clone(),
             line: 0,
         });
@@ -642,21 +737,59 @@ pub fn check_hdr_compliance(hdr: &HdrMetadata, source: &Path) -> Vec<Note> {
     if hdr.hdr_type == HdrType::Hlg {
         notes.push(Note {
             severity: Severity::Warning,
-            code: Code::PictureInvalidResolution,
+            code: Code::HdrMetadataSummary,
             message: "HLG transfer function uncommon for DCI theatrical release".into(),
             file: file.clone(),
             line: 0,
         });
     }
 
-    if hdr.max_cll > 0 {
+    let Some(light) = light else {
+        return notes;
+    };
+
+    notes.push(Note {
+        severity: Severity::Info,
+        code: Code::HdrMetadataSummary,
+        message: format!(
+            "MaxCLL: {} nits, MaxFALL: {} nits (CPL ExtensionProperties)",
+            light.max_cll, light.max_fall
+        ),
+        file: file.clone(),
+        line: 0,
+    });
+
+    if light.max_fall > light.max_cll {
         notes.push(Note {
-            severity: Severity::Info,
-            code: Code::PictureInvalidResolution,
+            severity: Severity::Error,
+            code: Code::HdrMetadataInvalid,
             message: format!(
-                "MaxCLL: {} nits, MaxFALL: {} nits",
-                hdr.max_cll, hdr.max_fall
+                "MaxFALL {} nits exceeds MaxCLL {} nits, no frame average can be brighter than the brightest pixel",
+                light.max_fall, light.max_cll
             ),
+            file: file.clone(),
+            line: 0,
+        });
+    }
+
+    if hdr.master_display_max > 0.0 && light.max_cll as f64 > hdr.master_display_max {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: Code::HdrMetadataInvalid,
+            message: format!(
+                "MaxCLL {} nits exceeds the mastering display maximum of {:.1} nits",
+                light.max_cll, hdr.master_display_max
+            ),
+            file: file.clone(),
+            line: 0,
+        });
+    }
+
+    if hdr.hdr_type == HdrType::Hlg {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: Code::HdrMetadataInvalid,
+            message: "ST 2067-21 clause 7.5 defines MaxCLL and MaxFALL for the PQ colour systems only, this composition is HLG".into(),
             file,
             line: 0,
         });
@@ -1140,7 +1273,8 @@ fn parse_ttml_time(time_str: &str) -> f64 {
 mod tests {
     use super::*;
     use crate::track_fixtures::{
-        SoundStretch, write_atmos_track, write_iab_track, write_sound_track,
+        SoundStretch, bt709, hlg_bt2020, pq_bt2020, write_atmos_track, write_iab_track,
+        write_picture_track, write_sound_track,
     };
 
     const FRAMES: u32 = 24;
@@ -1196,6 +1330,127 @@ mod tests {
         let notes = check_atmos_compliance(&info, &path);
         let note = only_note(&notes);
         assert!(note.message.contains("IAB"), "{}", note.message);
+    }
+
+    fn app2e_cpl(path: &std::path::Path, max_cll: u32, max_fall: u32) {
+        std::fs::write(
+            path,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:4b0c85d9-b65d-4b1a-9cfd-92f0b28ca5f0</Id>
+  <ExtensionProperties>
+    <app2e:MaxCLL xmlns:app2e="http://www.smpte-ra.org/ns/2067-21/2020">{max_cll}</app2e:MaxCLL>
+    <app2e:MaxFALL xmlns:app2e="http://www.smpte-ra.org/ns/2067-21/2020">{max_fall}</app2e:MaxFALL>
+  </ExtensionProperties>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_pq_picture_track_and_its_cpl_report_the_transfer_and_both_light_levels() {
+        let directory = tempfile::tempdir().unwrap();
+        let picture = directory.path().join("PICTURE.mxf");
+        write_picture_track(&picture, 2, Some(pq_bt2020()));
+        app2e_cpl(&directory.path().join("CPL.xml"), 993, 362);
+
+        let hdr = detect_hdr_metadata(&picture);
+        assert!(hdr.detected);
+        assert!(hdr.from_descriptor);
+        assert_eq!(hdr.hdr_type, HdrType::Pq);
+        assert_eq!(hdr.color_primaries, "BT.2020");
+        assert_eq!(hdr.master_display_max, 1000.0);
+
+        let light = read_cpl_content_light(directory.path()).expect("the CPL declares both");
+        assert_eq!(light.max_cll, 993);
+        assert_eq!(light.max_fall, 362);
+
+        let notes = check_hdr_compliance(&hdr, Some(light), &picture);
+        let messages: Vec<&str> = notes.iter().map(|n| n.message.as_str()).collect();
+        assert!(
+            messages.contains(&"HDR: HDR10, BT.2020 primaries"),
+            "{messages:?}"
+        );
+        assert!(
+            messages.contains(&"Mastering display: 0.0050 to 1000.0 nits"),
+            "{messages:?}"
+        );
+        assert!(
+            messages.contains(&"MaxCLL: 993 nits, MaxFALL: 362 nits (CPL ExtensionProperties)"),
+            "{messages:?}"
+        );
+        assert!(
+            notes.iter().all(|n| n.severity == Severity::Info),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_max_fall_above_max_cll_is_an_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let picture = directory.path().join("PICTURE.mxf");
+        write_picture_track(&picture, 2, Some(pq_bt2020()));
+        app2e_cpl(&directory.path().join("CPL.xml"), 400, 900);
+
+        let light = read_cpl_content_light(directory.path()).unwrap();
+        let notes = check_hdr_compliance(&detect_hdr_metadata(&picture), Some(light), &picture);
+
+        let note = notes
+            .iter()
+            .find(|n| n.code == Code::HdrMetadataInvalid)
+            .unwrap_or_else(|| panic!("no HDR error: {notes:?}"));
+        assert_eq!(note.severity, Severity::Error);
+        assert!(note.message.contains("900"), "{}", note.message);
+    }
+
+    #[test]
+    fn a_max_cll_above_the_mastering_display_is_a_warning() {
+        let directory = tempfile::tempdir().unwrap();
+        let picture = directory.path().join("PICTURE.mxf");
+        write_picture_track(&picture, 2, Some(pq_bt2020()));
+        app2e_cpl(&directory.path().join("CPL.xml"), 4000, 300);
+
+        let light = read_cpl_content_light(directory.path()).unwrap();
+        let notes = check_hdr_compliance(&detect_hdr_metadata(&picture), Some(light), &picture);
+
+        assert!(
+            notes.iter().any(|n| n.code == Code::HdrMetadataInvalid
+                && n.severity == Severity::Warning
+                && n.message.contains("1000.0 nits")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_hlg_picture_track_is_reported_as_hlg() {
+        let directory = tempfile::tempdir().unwrap();
+        let picture = directory.path().join("PICTURE.mxf");
+        write_picture_track(&picture, 2, Some(hlg_bt2020()));
+
+        let hdr = detect_hdr_metadata(&picture);
+
+        assert_eq!(hdr.hdr_type, HdrType::Hlg);
+        let notes = check_hdr_compliance(&hdr, None, &picture);
+        assert!(
+            notes.iter().any(|n| n.message.contains("HDR: HLG")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_rec_709_picture_track_draws_no_hdr_notes() {
+        let directory = tempfile::tempdir().unwrap();
+        let picture = directory.path().join("PICTURE.mxf");
+        write_picture_track(&picture, 2, Some(bt709()));
+        app2e_cpl(&directory.path().join("CPL.xml"), 993, 362);
+
+        let hdr = detect_hdr_metadata(&picture);
+
+        assert!(!hdr.detected, "{hdr:?}");
+        let light = read_cpl_content_light(directory.path());
+        assert!(check_hdr_compliance(&hdr, light, &picture).is_empty());
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub struct ContentLightLevel {
     pub max_fall: u16,
 }
 
-/// Mastering display metadata.
+/// Mastering display metadata, luminances in ST 2086 units of 0.0001 cd/m².
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MasteringDisplay {
     pub min_luminance: u32,
@@ -198,9 +198,10 @@ pub fn validate_hdr_metadata(opts: &HdrValidateOptions) -> HdrValidateResult {
         result.detected.bit_depth = cap[1].parse().unwrap_or(0);
     }
 
-    // Detect MaxCLL/MaxFALL
-    let cll_re = regex_lite::Regex::new(r"max_content\s*:\s*(\d+)").unwrap();
-    let fall_re = regex_lite::Regex::new(r"max_average\s*:\s*(\d+)").unwrap();
+    // ffprobe writes these as JSON members, the light levels as numbers and the
+    // luminances as "<numerator>/10000" strings
+    let cll_re = regex_lite::Regex::new(r#""max_content"\s*:\s*"?(\d+)"#).unwrap();
+    let fall_re = regex_lite::Regex::new(r#""max_average"\s*:\s*"?(\d+)"#).unwrap();
     if let Some(cap) = cll_re.captures(&frame_output) {
         let max_fall = fall_re
             .captures(&frame_output)
@@ -213,12 +214,15 @@ pub fn validate_hdr_metadata(opts: &HdrValidateOptions) -> HdrValidateResult {
         result.detected.content_light = Some(cll);
     }
 
-    // Detect mastering display
-    let master_re = regex_lite::Regex::new(r"min_luminance=(\d+).*?max_luminance=(\d+)").unwrap();
-    if let Some(cap) = master_re.captures(&frame_output) {
+    let min_lum_re = regex_lite::Regex::new(r#""min_luminance"\s*:\s*"?(\d+)"#).unwrap();
+    let max_lum_re = regex_lite::Regex::new(r#""max_luminance"\s*:\s*"?(\d+)"#).unwrap();
+    if let Some(cap) = max_lum_re.captures(&frame_output) {
         result.detected.mastering_display = Some(MasteringDisplay {
-            min_luminance: cap[1].parse().unwrap_or(0),
-            max_luminance: cap[2].parse().unwrap_or(0),
+            min_luminance: min_lum_re
+                .captures(&frame_output)
+                .and_then(|c| c[1].parse().ok())
+                .unwrap_or(0),
+            max_luminance: cap[1].parse().unwrap_or(0),
         });
     }
 
@@ -399,6 +403,69 @@ pub fn validate_cpl_hdr(cpl_path: &Path, video_path: &Path) -> HdrValidateResult
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ffmpeg is the only writer to hand that puts CTA 861.3 light levels on a
+    // stream, and no MXF essence descriptor has room for them
+    fn hdr10_clip(path: &Path) {
+        let output = std::process::Command::new("ffmpeg")
+            .args([
+                "-v", "error", "-y", "-f", "lavfi", "-i",
+                "testsrc=size=64x64:rate=24:duration=0.5",
+                "-pix_fmt", "yuv420p10le",
+                "-c:v", "libx265",
+                "-preset", "ultrafast",
+                "-x265-params",
+                "max-cll=1000,400:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
+                "-color_trc", "smpte2084",
+                "-color_primaries", "bt2020",
+                "-colorspace", "bt2020nc",
+            ])
+            .arg(path)
+            .output()
+            .expect("ffmpeg has to be on PATH");
+        assert!(
+            output.status.success(),
+            "ffmpeg failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn content_light_levels_reach_the_max_cll_check() {
+        let directory = tempfile::tempdir().unwrap();
+        let clip = directory.path().join("hdr10.mkv");
+        hdr10_clip(&clip);
+
+        let result = validate_hdr_metadata(&HdrValidateOptions {
+            video_path: clip,
+            expected_transfer: TransferFunction::Pq,
+            expected_colorimetry: Colorimetry::Bt2020,
+            expected_bit_depth: 0,
+            expected_max_cll: 500,
+            expected_max_fall: 0,
+            expected_max_luminance: 0,
+        });
+
+        assert!(result.success, "{}", result.error);
+        let light = result
+            .detected
+            .content_light
+            .expect("the clip carries MaxCLL and MaxFALL");
+        assert_eq!(light.max_cll, 1000);
+        assert_eq!(light.max_fall, 400);
+        assert_eq!(
+            result.detected.mastering_display.map(|m| m.max_luminance),
+            Some(10_000_000)
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.field == "MaxCLL" && i.actual == "1000 nits"),
+            "{:?}",
+            result.issues
+        );
+    }
 
     #[test]
     fn a_file_ffprobe_cannot_read_does_not_come_back_as_sdr() {
