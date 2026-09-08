@@ -13,7 +13,7 @@ use asdcplib::pcm::{AudioDescriptor, ChannelFormat};
 use asdcplib::{LabelSet, Rational, WriterInfo};
 use base64::Engine;
 use dcpdoctor_core::app2e_fixtures::{
-    PIXEL_LAYOUT_RGB_10, PIXEL_LAYOUT_RGB_12, bt709, patch_bytes, write_picture,
+    PIXEL_LAYOUT_RGB_10, PIXEL_LAYOUT_RGB_12, bt709, patch_bytes, patch_pixel_layout, write_picture,
 };
 use sha1::{Digest, Sha1};
 use std::path::{Path, PathBuf};
@@ -328,7 +328,7 @@ fn write_fixture(output_root: &Path, fixture: &Fixture) -> PathBuf {
             &PICTURE_ESSENCE_CODING_CINEMA_2K,
         ),
         Defect::LayoutMismatch => {
-            patch_bytes(&picture_path, &PIXEL_LAYOUT_RGB_12, &PIXEL_LAYOUT_RGB_10)
+            patch_pixel_layout(&picture_path, &PIXEL_LAYOUT_RGB_12, &PIXEL_LAYOUT_RGB_10)
         }
         _ => {}
     }

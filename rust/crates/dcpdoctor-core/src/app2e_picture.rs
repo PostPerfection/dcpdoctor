@@ -163,7 +163,8 @@ mod tests {
     use super::*;
     use crate::Severity;
     use crate::app2e_fixtures::{
-        PIXEL_LAYOUT_RGB_10, PIXEL_LAYOUT_RGB_12, bt709, patch_bytes, write_picture as write_mxf,
+        PIXEL_LAYOUT_RGB_10, PIXEL_LAYOUT_RGB_12, bt709, patch_bytes, patch_pixel_layout,
+        write_picture as write_mxf,
     };
     use crate::codestream_fixtures::{cinema_2k, cinema_2k_bytes, imf_4k, imf_4k_bytes};
     use asdcplib::jp2k::{
@@ -262,7 +263,7 @@ mod tests {
     fn a_pixel_layout_depth_that_the_codestream_does_not_carry_is_an_error() {
         let directory = tempfile::tempdir().unwrap();
         let path = write_picture(&directory, imf_4k(), &imf_4k_bytes(), Some(bt709()));
-        patch_bytes(&path, &PIXEL_LAYOUT_RGB_12, &PIXEL_LAYOUT_RGB_10);
+        patch_pixel_layout(&path, &PIXEL_LAYOUT_RGB_12, &PIXEL_LAYOUT_RGB_10);
 
         let notes = check_descriptor(&path);
         let note = only_note(&notes);

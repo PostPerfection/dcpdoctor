@@ -153,7 +153,7 @@ checksum = "08dae85b57b725df143d5a2eb92c032dd032f062a636826fda1e1a4b21c40c03"
 [[package]]
 name = "asdcplib"
 version = "0.1.0"
-source = "git+https://github.com/PostPerfection/asdcplib-rs.git?rev=fd9d4a0#fd9d4a0025b20c4b2c927675ebace7092f1c0cd3"
+source = "git+https://github.com/PostPerfection/asdcplib-rs.git?rev=f7b263f#f7b263f5635282cb127394fc469bfe40b4374f87"
 dependencies = [
  "asdcplib-sys",
  "thiserror 2.0.18",
@@ -162,7 +162,7 @@ dependencies = [
 [[package]]
 name = "asdcplib-sys"
 version = "0.1.0"
-source = "git+https://github.com/PostPerfection/asdcplib-rs.git?rev=fd9d4a0#fd9d4a0025b20c4b2c927675ebace7092f1c0cd3"
+source = "git+https://github.com/PostPerfection/asdcplib-rs.git?rev=f7b263f#f7b263f5635282cb127394fc469bfe40b4374f87"
 dependencies = [
  "cc",
  "cmake",
@@ -178,7 +178,7 @@ dependencies = [
  "asn1-rs-derive",
  "asn1-rs-impl",
  "displaydoc",
- "nom",
+ "nom 7.1.3",
  "num-traits",
  "rusticata-macros",
  "thiserror 1.0.69",
@@ -264,9 +264,12 @@ dependencies = [
 
 [[package]]
 name = "bitstream-io"
-version = "2.6.0"
+version = "4.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6099cdc01846bc367c4e7dd630dc5966dccf36b652fae7a74e17b640411a91b2"
+checksum = "7eff00be299a18769011411c9def0d827e8f2d7bf0c3dbf53633147a8867fd1f"
+dependencies = [
+ "no_std_io2",
+]
 
 [[package]]
 name = "bitvec"
@@ -282,9 +285,9 @@ dependencies = [
 
 [[package]]
 name = "bitvec_helpers"
-version = "3.1.6"
+version = "4.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9a6aff977a34114f146bd3379c9d170a8eafcffcdeecbb7cc3bd2470a39709a"
+checksum = "52e5938870db620c26a8f329f5735aa3450cedd30f4a4bb98475b1b076d8edae"
 dependencies = [
  "bitstream-io",
 ]
@@ -618,7 +621,7 @@ checksum = "5cd0a5c643689626bec213c4d8bd4d96acc8ffdb4ad4bb6bc16abf27d5f4b553"
 dependencies = [
  "asn1-rs",
  "displaydoc",
- "nom",
+ "nom 7.1.3",
  "num-bigint",
  "num-traits",
  "rusticata-macros",
@@ -684,9 +687,9 @@ dependencies = [
 
 [[package]]
 name = "dolby_vision"
-version = "3.3.2"
+version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "533d9f32336f4d03822e87fcee32277fd4a52e3f1278549bf42c8b28e3b0f798"
+checksum = "9a5f4ca7214c0353837ad9f9f7ac48df4da212aa0333b1adf5a515f1bae1e171"
 dependencies = [
  "anyhow",
  "bitvec",
@@ -987,6 +990,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hevc_parser"
+version = "0.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19d181a8f3d9530b912659983a7827a05744eb28740cf739106debfcfeffc852"
+dependencies = [
+ "anyhow",
+ "bitvec_helpers",
+ "nom 8.0.0",
+]
+
+[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1254,6 +1268,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "no_std_io2"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "418abd1b6d34fbf6cae440dc874771b0525a604428704c76e48b29a5e67b8003"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1261,6 +1284,15 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "nom"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -1523,6 +1555,7 @@ dependencies = [
  "dirs",
  "dolby_vision",
  "ebur128",
+ "hevc_parser",
  "hex",
  "hound",
  "libc",
@@ -1820,9 +1853,12 @@ dependencies = [
 
 [[package]]
 name = "roxmltree"
-version = "0.20.0"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "rsa"
@@ -1893,7 +1929,7 @@ version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf0c4a6ece9950b9abdb62b1cfcf2a68b3b67a10ba445b3bb85be2a293d0632"
 dependencies = [
- "nom",
+ "nom 7.1.3",
 ]
 
 [[package]]
@@ -2964,7 +3000,7 @@ dependencies = [
  "data-encoding",
  "der-parser",
  "lazy_static",
- "nom",
+ "nom 7.1.3",
  "oid-registry",
  "ring",
  "rusticata-macros",

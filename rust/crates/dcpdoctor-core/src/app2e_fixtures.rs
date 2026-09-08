@@ -74,20 +74,32 @@ pub fn write_picture(
 /// A same-length overwrite keeps every KLV length in the file correct. Panics
 /// unless `from` occurs exactly once.
 pub fn patch_bytes(path: &Path, from: &[u8], to: &[u8]) {
+    patch_occurrences(path, from, to, 1);
+}
+
+/// The layout is written twice, as the RGBA descriptor's PixelLayout and as the
+/// jpeg 2000 subdescriptor's J2CLayout, and a mismatched file has both wrong.
+pub fn patch_pixel_layout(path: &Path, from: &[u8], to: &[u8]) {
+    patch_occurrences(path, from, to, 2);
+}
+
+fn patch_occurrences(path: &Path, from: &[u8], to: &[u8], expected: usize) {
     assert_eq!(from.len(), to.len(), "a patch must not change any length");
     let mut bytes = std::fs::read(path).unwrap();
-    let occurrences: Vec<usize> = bytes
+    let offsets: Vec<usize> = bytes
         .windows(from.len())
         .enumerate()
         .filter(|(_, window)| *window == from)
         .map(|(offset, _)| offset)
         .collect();
     assert_eq!(
-        occurrences.len(),
-        1,
-        "expected one occurrence of {from:02x?}, found {}",
-        occurrences.len()
+        offsets.len(),
+        expected,
+        "expected {expected} occurrences of {from:02x?}, found {}",
+        offsets.len()
     );
-    bytes[occurrences[0]..occurrences[0] + to.len()].copy_from_slice(to);
+    for &offset in &offsets {
+        bytes[offset..offset + to.len()].copy_from_slice(to);
+    }
     std::fs::write(path, bytes).unwrap();
 }

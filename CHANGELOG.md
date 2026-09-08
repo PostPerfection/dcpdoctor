@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Leq(m) is measured on the ISO 21727 reference through postkit 13b5b33: the M weighting curve replaces the CCIR 468 one and the B-chain offset moves from 105.0 to 108.01 dB, so every `leq_m_db` the CLI and the QC report print is about 2.6 dB lower than 1.2.0 printed for the same track. dcpdoctor thresholds nothing on it, so no verdict changes.
+
 ## [1.2.0] - 2026-09-07
 
 ### Changed

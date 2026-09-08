@@ -88,9 +88,9 @@ mod tests {
     use std::f32::consts::PI;
 
     // Integration assertion over the re-exported postkit Leq(m): a full-scale
-    // 1 kHz sine is -3.01 dBFS RMS, weighting is 0 dB at 1 kHz, +105 dB B-chain
-    // offset -> 101.99 dB. Guards that the CLI's leq_m_db stays on the right
-    // reference across the postkit switch.
+    // 1 kHz sine is -3.01 dBFS RMS, the ISO 21727 M weighting is -5.6 dB at
+    // 1 kHz, +108.01 dB B-chain offset -> 99.40 dB. Guards that the CLI's
+    // leq_m_db stays on the right reference across the postkit switch.
     #[test]
     fn full_scale_1khz_sine_matches_derived_leq_m() {
         let sr = 48000u32;
@@ -100,8 +100,8 @@ mod tests {
             .collect();
         let leq = leq_m_from_samples(&samples, sr);
         assert!(
-            (leq - 101.99).abs() < 0.3,
-            "Leq(m) was {leq}, expected ~101.99 dB"
+            (leq - 99.40).abs() < 0.3,
+            "Leq(m) was {leq}, expected ~99.40 dB"
         );
     }
 }
