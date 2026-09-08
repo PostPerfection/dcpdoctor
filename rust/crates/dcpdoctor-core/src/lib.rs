@@ -3,6 +3,7 @@ pub mod app2e_fixtures;
 pub mod app2e_picture;
 pub mod assetmap;
 pub mod audio;
+pub mod auto_qc;
 pub mod av_sync;
 pub mod bitrate;
 pub mod cert_rules;
@@ -47,6 +48,7 @@ pub mod signature;
 pub mod studio;
 pub mod subtitle;
 pub mod timeline;
+pub mod track_fixtures;
 pub mod validate;
 pub mod validators;
 

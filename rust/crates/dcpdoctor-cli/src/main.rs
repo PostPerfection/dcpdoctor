@@ -251,8 +251,8 @@ enum Commands {
         /// Audio file (MXF or WAV)
         #[arg(long)]
         audio: Option<PathBuf>,
-        /// Black frame threshold (0.0-1.0)
-        #[arg(long, default_value = "0.98")]
+        /// Pixel luma at or below this fraction of full scale counts as black (0.0-1.0)
+        #[arg(long, default_value = "0.10")]
         black_threshold: f64,
         /// Silence threshold in dBFS
         #[arg(long, default_value = "-60")]
@@ -986,88 +986,38 @@ fn main() {
             clipping_threshold,
             freeze_threshold,
         }) => {
-            let mut findings = Vec::new();
-
-            if let Some(ref video_path) = video {
-                match run_qc_ffmpeg(
-                    video_path,
-                    &format!("blackdetect=d=0.04:pix_th={black_threshold}"),
-                ) {
-                    Ok(stderr) => {
-                        let black_count = stderr.matches("black_start:").count();
-                        if black_count > 0 {
-                            findings
-                                .push(format!("Black frames detected: {black_count} segment(s)"));
-                        }
-                    }
-                    Err(e) => findings.push(format!("Black-frame analysis failed: {e}")),
-                }
-
-                match run_qc_ffmpeg(
-                    video_path,
-                    &format!("freezedetect=n={freeze_threshold}:d=0.5"),
-                ) {
-                    Ok(stderr) => {
-                        let freeze_count = stderr.matches("freeze_start:").count();
-                        if freeze_count > 0 {
-                            findings
-                                .push(format!("Freeze frames detected: {freeze_count} segment(s)"));
-                        }
-                    }
-                    Err(e) => findings.push(format!("Freeze-frame analysis failed: {e}")),
-                }
-            }
-
-            if let Some(ref audio_path) = audio {
-                match dcpdoctor_core::audio::analyze_audio(audio_path) {
-                    Ok(analysis) => {
-                        if !analysis.per_channel {
-                            findings.push(
-                                "Per-channel audio levels unavailable, the levels below are one aggregate over all channels".to_string(),
-                            );
-                        }
-                        for ch in &analysis.channels {
-                            if ch.peak_dbfs >= clipping_threshold {
-                                findings.push(format!(
-                                    "Audio clipping: channel {} peak {:.1} dBFS",
-                                    ch.channel, ch.peak_dbfs
-                                ));
-                            }
-                            if ch.rms_dbfs < silence_threshold {
-                                findings.push(format!(
-                                    "Audio silence: channel {} RMS {:.1} dBFS",
-                                    ch.channel, ch.rms_dbfs
-                                ));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        findings.push(format!("Audio analysis failed: {e}"));
-                    }
-                }
-            }
-
             if video.is_none() && audio.is_none() {
                 eprintln!("At least one of --video or --audio is required");
                 std::process::exit(1);
             }
 
+            let result = dcpdoctor_core::auto_qc::run(&dcpdoctor_core::auto_qc::AutoQcOptions {
+                video,
+                audio,
+                black_threshold,
+                freeze_threshold,
+                silence_threshold,
+                clipping_threshold,
+            });
+
             if cli.json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
-                        "pass": findings.is_empty(),
-                        "findings": findings,
+                        "pass": result.pass(),
+                        "findings": result.findings,
                     }))
                     .unwrap()
                 );
-            } else if findings.is_empty() {
+            } else if result.pass() {
                 println!("Auto-QC PASS: no issues detected");
             } else {
-                println!("Auto-QC findings ({}):", findings.len());
-                for f in &findings {
-                    println!("  - {f}");
+                println!("Auto-QC findings ({}):", result.findings.len());
+                for finding in &result.findings {
+                    println!("  - {finding}");
                 }
+            }
+            if !result.pass() {
                 std::process::exit(1);
             }
         }
@@ -1884,26 +1834,6 @@ fn run_deep_j2k(dcp_dir: &std::path::Path) -> Vec<dcpdoctor_core::Note> {
     }
 
     notes
-}
-
-/// Run an ffmpeg detect filter and return its stderr, or an error on failure.
-fn run_qc_ffmpeg(video: &std::path::Path, filter: &str) -> Result<String, String> {
-    let output = std::process::Command::new("ffmpeg")
-        .arg("-i")
-        .arg(video)
-        .arg("-vf")
-        .arg(filter)
-        .arg("-f")
-        .arg("null")
-        .arg("-")
-        .output()
-        .map_err(|e| format!("failed to run ffmpeg: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail = stderr.trim().lines().last().unwrap_or("unknown error");
-        return Err(format!("ffmpeg exited with error: {tail}"));
-    }
-    Ok(String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
 /// Resolve the picture-track MXF inside a DCP/IMP directory.

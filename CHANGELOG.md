@@ -10,6 +10,12 @@
 
 - Every finding Photon prints was dropped on the floor: the parser read lines beginning `ERROR:`, `FATAL:` or `WARNING:`, and Photon 5.0.1 logs through slf4j-simple, so a finding reads `[main] ERROR com.netflix.imflibrary.app.IMPAnalyzer - ERROR-<message> [Photon version: 5.0.1]`. `validate` printed PASS on an IMP whose CPL Photon had just rejected. Both forms parse now, each note carries the document named on the INFO line above the finding, the version suffix that repeats on every line is trimmed, and a Photon run that threw partway (a truncated track file does it) reports `check_skipped` instead of contributing nothing. The unit tests are Photon 5.0.1's own stderr, pasted from a run.
 
+- `auto-qc --black-threshold` was handed to ffmpeg's `pixel_black_th`, the luma below which a pixel counts as black, while its default 0.98 is `picture_black_ratio_th`'s default, the share of a frame that has to be black. A flat mid-grey frame was reported as a black frame. The flag now sets the pixel threshold and defaults to ffmpeg's 0.10, the picture ratio stays at 0.98, and a 20% grey run is reported only when `--black-threshold` is raised past it.
+
+- `auto-qc` decided silence from the whole file's per-channel RMS, so it fired only on a track that is silent end to end and never on a silent stretch inside one: a second of digital silence between two seconds of tone reported nothing. Silence now comes from ffmpeg's `silencedetect` at the `--silence-threshold` given, and a run in a real AS-DCP sound track file is reported as `Audio silence from 1.00 s to 2.00 s`.
+
+- `auto-qc` named no position for anything it found, printing `Black frames detected: 1 segment(s)`. Every black, freeze and silence run now names the seconds it covers, and a run reaching the end of the file says so. The detectors moved into `dcpdoctor-core::auto_qc`, black and freeze read out of one decode rather than two, and `--json` exits 1 on findings as the text output already did.
+
 ### Changed
 - Leq(m) is measured on the ISO 21727 reference through postkit 13b5b33: the M weighting curve replaces the CCIR 468 one and the B-chain offset moves from 105.0 to 108.01 dB, so every `leq_m_db` the CLI and the QC report print is about 2.6 dB lower than 1.2.0 printed for the same track. dcpdoctor thresholds nothing on it, so no verdict changes.
 
