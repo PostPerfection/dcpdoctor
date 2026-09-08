@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
   <Id>urn:uuid:5c3d4b1b-19cc-43de-896b-b22b3f39b766</Id>
-  <ContentTitleText>Test DCP</ContentTitleText>
   <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>dcplint test fixture generator</Issuer>
+  <Creator>dcplint test fixture generator</Creator>
+  <ContentTitleText>Test DCP</ContentTitleText>
   <ContentKind>test</ContentKind>
+  <ContentVersion>
+    <Id>urn:uuid:5c3d4b1b-19cc-43de-896b-b22b3f39b766</Id>
+    <LabelText>Test DCP</LabelText>
+  </ContentVersion>
+  <RatingList/>
   <ReelList>
     <Reel>
       <Id>urn:uuid:35e485f4-d779-4391-a9a3-21adc074bbc4</Id>
@@ -12,8 +19,8 @@
           <Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>
           <EditRate>24 1</EditRate>
           <IntrinsicDuration>100</IntrinsicDuration>
-          <Duration>100</Duration>
           <EntryPoint>0</EntryPoint>
+          <Duration>100</Duration>
           <FrameRate>24 1</FrameRate>
           <ScreenAspectRatio>1998 1080</ScreenAspectRatio>
         </MainPicture>
@@ -21,8 +28,8 @@
           <Id>urn:uuid:3878f6e9-eeec-4d0f-b2b3-4fb96b7759e1</Id>
           <EditRate>24 1</EditRate>
           <IntrinsicDuration>100</IntrinsicDuration>
-          <Duration>100</Duration>
           <EntryPoint>0</EntryPoint>
+          <Duration>100</Duration>
         </MainSound>
       </AssetList>
     </Reel>

@@ -2,7 +2,9 @@
 <AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
   <Id>urn:uuid:01cfce20-0df4-4393-87a6-bd8b0251e5bd</Id>
   <Creator>dcplint test fixture generator</Creator>
+  <VolumeCount>1</VolumeCount>
   <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>dcplint test fixture generator</Issuer>
   <AssetList>
     <Asset>
       <Id>urn:uuid:dfb16c73-27c3-4afa-915f-1d4dc616cd7a</Id>

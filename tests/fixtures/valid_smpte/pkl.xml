@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <PackingList xmlns="http://www.smpte-ra.org/schemas/429-8/2007/PKL">
   <Id>urn:uuid:dfb16c73-27c3-4afa-915f-1d4dc616cd7a</Id>
-  <Creator>dcplint test fixture generator</Creator>
   <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>dcplint test fixture generator</Issuer>
+  <Creator>dcplint test fixture generator</Creator>
   <AssetList>
     <Asset>
       <Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>
@@ -20,8 +21,8 @@
     </Asset>
     <Asset>
       <Id>urn:uuid:5c3d4b1b-19cc-43de-896b-b22b3f39b766</Id>
-      <Hash>heQ3vGWLVqSDm3WgD60pxi8orD8=</Hash>
-      <Size>1112</Size>
+      <Hash>qDk/CM/dShMEAPbj2zsrHvBEqK8=</Hash>
+      <Size>1364</Size>
       <Type>text/xml</Type>
       <OriginalFileName>cpl.xml</OriginalFileName>
     </Asset>
