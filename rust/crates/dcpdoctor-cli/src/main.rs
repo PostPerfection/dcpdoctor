@@ -635,54 +635,39 @@ fn main() {
             }
         }
         Some(Commands::Fix { dcp_dir, dry_run }) => {
-            if dry_run {
-                let opts = dcpdoctor_core::VerifyOptions {
-                    check_hashes: true,
-                    check_signatures: false,
-                    check_picture_details: false,
-                    strict_smpte: true,
-                    ..Default::default()
-                };
-                let verify_result = dcpdoctor_core::verify(&dcp_dir, &opts);
-                let suggestions = dcpdoctor_core::fixes::suggest_fixes(&verify_result.notes);
-                if suggestions.is_empty() {
-                    println!("Nothing to fix.");
-                } else {
-                    println!("{} fix suggestion(s):", suggestions.len());
-                    for s in &suggestions {
-                        let tag = if s.auto_fixable { "auto" } else { "manual" };
-                        println!("  [{tag}] {}", s.description);
-                        if !s.command.is_empty() {
-                            println!("        $ {}", s.command);
-                        }
-                    }
-                }
+            use dcpdoctor_core::fix::FixMode;
+            let mode = if dry_run {
+                FixMode::DryRun
             } else {
-                let fix_result = dcpdoctor_core::fix::fix_dcp(&dcp_dir);
-                if fix_result.repairs.is_empty() {
-                    println!("Nothing to fix — DCP is clean.");
-                } else {
-                    println!("Fixed {} issue(s):", fix_result.repair_count());
-                    for repair in &fix_result.repairs {
-                        println!("  [{}] {}", repair.code.as_str(), repair.description);
-                    }
+                FixMode::Apply
+            };
+            let fix_result = dcpdoctor_core::fix::fix_dcp(&dcp_dir, mode);
+            if fix_result.repairs.is_empty() {
+                println!("Nothing to fix — DCP is clean.");
+            } else {
+                let verb = if dry_run { "Would fix" } else { "Fixed" };
+                println!("{verb} {} issue(s):", fix_result.repair_count());
+                for repair in &fix_result.repairs {
+                    println!("  [{}] {}", repair.code.as_str(), repair.description);
                 }
-                if !fix_result.skipped.is_empty() {
-                    let unfixable: Vec<_> = fix_result
-                        .skipped
-                        .iter()
-                        .filter(|n| n.severity == dcpdoctor_core::Severity::Error)
-                        .collect();
-                    if !unfixable.is_empty() {
-                        eprintln!(
-                            "\n{} error(s) remain that cannot be auto-fixed:",
-                            unfixable.len()
-                        );
-                        for note in unfixable {
-                            eprintln!("  [{}] {}", note.code.as_str(), note.message);
-                        }
-                        std::process::exit(1);
-                    }
+            }
+
+            let unfixable: Vec<_> = fix_result
+                .skipped
+                .iter()
+                .filter(|n| n.severity == dcpdoctor_core::Severity::Error)
+                .collect();
+            if !unfixable.is_empty() {
+                eprintln!(
+                    "\n{} error(s) remain that cannot be auto-fixed:",
+                    unfixable.len()
+                );
+                for note in unfixable {
+                    eprintln!("  [{}] {}", note.code.as_str(), note.message);
+                }
+                // a dry run changed nothing, so it has nothing to fail over
+                if !dry_run {
+                    std::process::exit(1);
                 }
             }
         }

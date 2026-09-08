@@ -227,10 +227,11 @@ The `fix` subcommand automatically repairs common issues:
 | Issue | What it fixes |
 |-------|---------------|
 | PKL hash mismatch | Recomputes SHA-1 and rewrites PKL |
+| PKL size mismatch | Rewrites the asset's `Size` alongside its `Hash` |
 | Wrong namespace | Swaps Interop↔SMPTE namespace URIs |
 | Invalid ContentKind | Normalizes to canonical SMPTE value |
 
-After fixing XML files, PKL hashes are automatically recalculated to keep everything consistent.
+After fixing XML files, PKL hashes and sizes are automatically recalculated to keep everything consistent. `--dry-run` runs the same repair pass with every write skipped, so it lists exactly what `fix` would change and leaves the package byte for byte as it was.
 
 ```bash
 # Fix and then re-validate

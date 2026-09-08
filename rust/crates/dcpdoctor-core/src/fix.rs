@@ -14,6 +14,20 @@ pub struct Repair {
     pub file: std::path::PathBuf,
 }
 
+/// Whether a run rewrites the package or only reports what it would rewrite.
+/// One code path answers both, so a preview cannot drift from what `fix` applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixMode {
+    Apply,
+    DryRun,
+}
+
+impl FixMode {
+    fn writes(self) -> bool {
+        self == FixMode::Apply
+    }
+}
+
 /// Result of a fix operation.
 #[derive(Debug, Default)]
 pub struct FixResult {
@@ -27,9 +41,9 @@ impl FixResult {
     }
 }
 
-/// Fix all auto-repairable issues in the given DCP directory.
-/// Returns a summary of what was fixed and what was skipped.
-pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
+/// Fix all auto-repairable issues in the given DCP directory, or under
+/// `FixMode::DryRun` report the same repairs without writing a byte.
+pub fn fix_dcp(dcp_dir: &Path, mode: FixMode) -> FixResult {
     let mut result = FixResult::default();
 
     let dcp = match dcp::open_dcp(dcp_dir) {
@@ -51,25 +65,25 @@ pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
     };
     let verify_result = crate::validate::verify_dcp(dcp_dir, &opts);
 
-    // PKL hash mismatches are repaired in the batch pass below. a note that
-    // reaches neither list would vanish from the report.
-    let mut pending_hash_mismatches: Vec<Note> = Vec::new();
+    // PKL hash and size mismatches are repaired in the batch pass below. a note
+    // that reaches neither list would vanish from the report.
+    let mut pending_pkl_mismatches: Vec<Note> = Vec::new();
 
     for note in &verify_result.notes {
         match note.code {
-            Code::PklHashMismatch => {
-                pending_hash_mismatches.push(note.clone());
+            Code::PklHashMismatch | Code::PklSizeMismatch => {
+                pending_pkl_mismatches.push(note.clone());
             }
             Code::SmpteNamespaceWrong | Code::InteropNamespaceWrong => {
                 let fixed = note
                     .file
                     .as_ref()
-                    .is_some_and(|file| fix_namespace(file, dcp.standard));
+                    .is_some_and(|file| fix_namespace(file, dcp.standard, mode));
                 match (fixed, &note.file) {
                     (true, Some(file)) => result.repairs.push(Repair {
                         code: note.code,
                         description: format!(
-                            "Fixed namespace in {}",
+                            "Namespace in {}",
                             file.file_name().unwrap_or_default().to_string_lossy()
                         ),
                         file: file.clone(),
@@ -81,12 +95,12 @@ pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
                 let fixed = note
                     .file
                     .as_ref()
-                    .is_some_and(|file| fix_content_kind(file));
+                    .is_some_and(|file| fix_content_kind(file, mode));
                 match (fixed, &note.file) {
                     (true, Some(file)) => result.repairs.push(Repair {
                         code: note.code,
                         description: format!(
-                            "Normalized ContentKind in {}",
+                            "ContentKind in {}",
                             file.file_name().unwrap_or_default().to_string_lossy()
                         ),
                         file: file.clone(),
@@ -133,48 +147,103 @@ pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
         };
 
         for pkl_asset in &pkl.assets {
-            if let Some(&asset_rel) = id_to_path.get(pkl_asset.id.as_str()) {
-                let full_path = dcp_dir.join(asset_rel);
-                if !full_path.exists() {
-                    failure_reasons.insert(full_path, "asset file not found".into());
-                    continue;
-                }
-                if pkl_asset.hash.is_empty() {
-                    failure_reasons.insert(full_path, "the PKL records no hash".into());
-                    continue;
-                }
+            let Some(&asset_rel) = id_to_path.get(pkl_asset.id.as_str()) else {
+                continue;
+            };
+            let full_path = dcp_dir.join(asset_rel);
+            if !full_path.exists() {
+                failure_reasons.insert(full_path, "asset file not found".into());
+                continue;
+            }
+            let mut asset_rewritten = false;
+
+            if pkl_asset.hash.is_empty() {
+                failure_reasons.insert(full_path.clone(), "the PKL records no hash".into());
+            } else {
                 match sha1_base64(&full_path) {
-                    Ok(computed) => {
-                        if computed == pkl_asset.hash {
-                            continue;
+                    Ok(computed) if computed != pkl_asset.hash => {
+                        match replace_asset_element(
+                            &xml,
+                            &pkl_asset.id,
+                            "Hash",
+                            &pkl_asset.hash,
+                            &computed,
+                        ) {
+                            Some(rewritten) => {
+                                xml = rewritten;
+                                asset_rewritten = true;
+                                result.repairs.push(Repair {
+                                    code: Code::PklHashMismatch,
+                                    description: format!("Hash for {asset_rel} in PKL"),
+                                    file: pkl_path.clone(),
+                                });
+                            }
+                            None => {
+                                failure_reasons.insert(
+                                    full_path.clone(),
+                                    "the hash the PKL records was not found in its text".into(),
+                                );
+                            }
                         }
-                        let rewritten =
-                            replace_asset_hash(&xml, &pkl_asset.id, &pkl_asset.hash, &computed);
-                        let Some(rewritten) = rewritten else {
-                            failure_reasons.insert(
-                                full_path,
-                                "the hash the PKL records was not found in its text".into(),
-                            );
-                            continue;
-                        };
-                        xml = rewritten;
-                        pkl_modified = true;
-                        repaired_assets.insert(full_path.clone());
-                        rewritten_in_this_pkl.push(full_path);
-                        result.repairs.push(Repair {
-                            code: Code::PklHashMismatch,
-                            description: format!("Updated hash for {} in PKL", asset_rel),
-                            file: pkl_path.clone(),
-                        });
                     }
+                    Ok(_) => {}
                     Err(e) => {
-                        failure_reasons.insert(full_path, format!("could not hash the asset: {e}"));
+                        failure_reasons
+                            .insert(full_path.clone(), format!("could not hash the asset: {e}"));
                     }
                 }
             }
+
+            // a repaired hash without its size leaves the package failing on
+            // pkl_size_mismatch instead
+            let recorded_size = pkl_asset.size.to_string();
+            let computed_size = std::fs::metadata(&full_path).map(|metadata| metadata.len());
+            match computed_size {
+                Ok(computed_size) if computed_size.to_string() != recorded_size => {
+                    match replace_asset_element(
+                        &xml,
+                        &pkl_asset.id,
+                        "Size",
+                        &recorded_size,
+                        &computed_size.to_string(),
+                    ) {
+                        Some(rewritten) => {
+                            xml = rewritten;
+                            asset_rewritten = true;
+                            result.repairs.push(Repair {
+                                code: Code::PklSizeMismatch,
+                                description: format!("Size for {asset_rel} in PKL"),
+                                file: pkl_path.clone(),
+                            });
+                        }
+                        None => {
+                            failure_reasons.insert(
+                                full_path.clone(),
+                                "the size the PKL records was not found in its text".into(),
+                            );
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    failure_reasons.insert(
+                        full_path.clone(),
+                        format!("could not measure the asset: {e}"),
+                    );
+                }
+            }
+
+            if asset_rewritten {
+                pkl_modified = true;
+                repaired_assets.insert(full_path.clone());
+                rewritten_in_this_pkl.push(full_path);
+            }
         }
 
-        if pkl_modified && let Err(e) = std::fs::write(pkl_path, &xml) {
+        if pkl_modified
+            && mode.writes()
+            && let Err(e) = std::fs::write(pkl_path, &xml)
+        {
             result.skipped.push(Note {
                 severity: Severity::Error,
                 code: Code::PklHashMismatch,
@@ -191,7 +260,28 @@ pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
         }
     }
 
-    for note in pending_hash_mismatches {
+    // a repair can clear a finding this run already collected: putting the CPL
+    // namespace back settles the schema violation the wrong one caused. re-read
+    // the package without re-hashing it and keep only what still stands. the
+    // PKL mismatches are settled below instead, from the repairs themselves.
+    if mode.writes() && !result.repairs.is_empty() {
+        let after = crate::validate::verify_dcp(
+            dcp_dir,
+            &VerifyOptions {
+                check_hashes: false,
+                ..opts.clone()
+            },
+        );
+        result.skipped.retain(|note| {
+            matches!(note.code, Code::PklHashMismatch | Code::PklSizeMismatch)
+                || after
+                    .notes
+                    .iter()
+                    .any(|remaining| remaining.code == note.code && remaining.file == note.file)
+        });
+    }
+
+    for note in pending_pkl_mismatches {
         let repaired = note
             .file
             .as_ref()
@@ -214,25 +304,25 @@ pub fn fix_dcp(dcp_dir: &Path) -> FixResult {
     result
 }
 
-/// Rewrite the `<Hash>` text of the `<Asset>` whose `<Id>` is `asset_id`, so a
-/// hash string that also appears elsewhere in the PKL is left alone. Returns
-/// None when no asset carries that id or when its Hash text is not
-/// `recorded_hash`.
-fn replace_asset_hash(
+/// Rewrite the text of `local` inside the `<Asset>` whose `<Id>` is `asset_id`,
+/// so the same string elsewhere in the PKL is left alone. Returns None when no
+/// asset carries that id or when the element's text is not `recorded`.
+fn replace_asset_element(
     xml: &str,
     asset_id: &str,
-    recorded_hash: &str,
-    computed_hash: &str,
+    local: &str,
+    recorded: &str,
+    computed: &str,
 ) -> Option<String> {
     let asset = asset_element_range(xml, asset_id)?;
-    let hash_text = element_text_range(xml, asset, "Hash")?;
-    let text = &xml[hash_text.clone()];
-    if text.trim() != recorded_hash {
+    let element_text = element_text_range(xml, asset, local)?;
+    let text = &xml[element_text.clone()];
+    if text.trim() != recorded {
         return None;
     }
-    let start = hash_text.start + (text.len() - text.trim_start().len());
-    let end = start + recorded_hash.len();
-    Some(format!("{}{computed_hash}{}", &xml[..start], &xml[end..]))
+    let start = element_text.start + (text.len() - text.trim_start().len());
+    let end = start + recorded.len();
+    Some(format!("{}{computed}{}", &xml[..start], &xml[end..]))
 }
 
 /// Byte range from the `<Asset>` open tag to its `</Asset>` close tag, for the
@@ -300,7 +390,7 @@ fn local_name_at(xml: &str, open: usize) -> Option<(&str, bool)> {
 }
 
 /// Fix XML namespace to match detected standard.
-fn fix_namespace(file: &Path, standard: Standard) -> bool {
+fn fix_namespace(file: &Path, standard: Standard, mode: FixMode) -> bool {
     let xml = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(_) => return false,
@@ -321,13 +411,16 @@ fn fix_namespace(file: &Path, standard: Standard) -> bool {
     if !xml.contains(wrong) {
         return false;
     }
+    if !mode.writes() {
+        return true;
+    }
 
     let fixed = xml.replace(wrong, correct);
     std::fs::write(file, &fixed).is_ok()
 }
 
 /// Normalize ContentKind to lowercase canonical form.
-fn fix_content_kind(file: &Path) -> bool {
+fn fix_content_kind(file: &Path, mode: FixMode) -> bool {
     let xml = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(_) => return false,
@@ -350,6 +443,9 @@ fn fix_content_kind(file: &Path) -> bool {
 
     if normalized == original.trim() {
         return false;
+    }
+    if !mode.writes() {
+        return true;
     }
 
     let fixed = format!("{}{}{}", &xml[..start], normalized, &xml[end..]);
@@ -411,7 +507,7 @@ mod tests {
             )],
         );
 
-        let result = fix_dcp(dir.path());
+        let result = fix_dcp(dir.path(), FixMode::Apply);
 
         assert!(
             !result
@@ -451,7 +547,7 @@ mod tests {
             ],
         );
 
-        let result = fix_dcp(dir.path());
+        let result = fix_dcp(dir.path(), FixMode::Apply);
 
         assert!(
             result
@@ -503,7 +599,7 @@ mod tests {
         let pkl = dir.path().join("pkl.xml");
         let before = fs::read_to_string(&pkl).unwrap();
 
-        let result = fix_dcp(dir.path());
+        let result = fix_dcp(dir.path(), FixMode::Apply);
 
         assert!(
             !result
@@ -547,7 +643,7 @@ mod tests {
             return;
         }
 
-        let result = fix_dcp(dir.path());
+        let result = fix_dcp(dir.path(), FixMode::Apply);
 
         assert!(
             !result
@@ -586,7 +682,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(fix_content_kind(&cpl));
+        assert!(fix_content_kind(&cpl, FixMode::Apply));
         let result = fs::read_to_string(&cpl).unwrap();
         assert!(result.contains("<ContentKind>trailer</ContentKind>"));
     }
@@ -601,7 +697,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!fix_content_kind(&cpl));
+        assert!(!fix_content_kind(&cpl, FixMode::Apply));
     }
 
     #[test]
@@ -614,7 +710,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(fix_namespace(&cpl, Standard::Smpte));
+        assert!(fix_namespace(&cpl, Standard::Smpte, FixMode::Apply));
         let result = fs::read_to_string(&cpl).unwrap();
         assert!(result.contains("http://www.smpte-ra.org/schemas/429-7/2006/CPL"));
     }

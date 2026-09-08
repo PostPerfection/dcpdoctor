@@ -2,7 +2,36 @@
 
 use std::path::Path;
 
-use crate::{Code, Note, Severity};
+use crate::{Code, Note, Severity, Standard};
+
+/// A CPL's root namespace must name the same authority the asset map does. A
+/// SMPTE package carrying an Interop CPL, or the reverse, is what `fix`
+/// rewrites, and nothing reported it before.
+pub fn check_cpl_namespace(cpl_path: &Path, standard: Standard) -> Option<Note> {
+    let xml = std::fs::read_to_string(cpl_path).ok()?;
+    let declared = crate::dcp::standard_of_root_namespace(&xml);
+    if declared == Standard::Unknown || declared == standard {
+        return None;
+    }
+    let (code, message) = match standard {
+        Standard::Smpte => (
+            Code::SmpteNamespaceWrong,
+            "CPL declares the Interop namespace in a SMPTE package",
+        ),
+        Standard::Interop => (
+            Code::InteropNamespaceWrong,
+            "CPL declares the SMPTE namespace in an Interop package",
+        ),
+        Standard::Unknown => return None,
+    };
+    Some(Note {
+        severity: Severity::Error,
+        code,
+        message: message.into(),
+        file: Some(cpl_path.to_path_buf()),
+        line: 0,
+    })
+}
 
 /// Check that all XML files in a directory use consistent namespaces.
 pub fn check_namespace_consistency(dir: &Path) -> Vec<Note> {

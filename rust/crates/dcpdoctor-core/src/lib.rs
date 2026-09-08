@@ -17,7 +17,6 @@ pub mod dcp;
 pub mod diff;
 pub mod facility_check;
 pub mod fix;
-pub mod fixes;
 pub mod frame_compare;
 pub mod hash;
 pub mod hdr_validate;

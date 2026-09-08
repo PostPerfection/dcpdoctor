@@ -15,13 +15,13 @@ pub fn detect_standard(dcp_dir: &Path) -> Standard {
     let Ok(content) = std::fs::read_to_string(&am_path) else {
         return Standard::Unknown;
     };
-    standard_of_assetmap(&content)
+    standard_of_root_namespace(&content)
 }
 
-/// The standard an asset map document declares. Matches on the namespace
-/// authority rather than one exact URI, the same test `schema_file_for` uses, so
-/// the IMF asset map namespace still reads as SMPTE.
-pub fn standard_of_assetmap(xml: &str) -> Standard {
+/// The standard an XML document's root namespace declares. Matches on the
+/// namespace authority rather than one exact URI, the same test `schema_file_for`
+/// uses, so the IMF asset map namespace still reads as SMPTE.
+pub fn standard_of_root_namespace(xml: &str) -> Standard {
     let Some(namespace) = crate::schema::root_namespace(xml) else {
         return Standard::Unknown;
     };

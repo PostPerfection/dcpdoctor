@@ -758,6 +758,9 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         for note in check_cpl_annotation_text(cpl_path, cpl, dcp.standard) {
             result.add(note);
         }
+        if let Some(note) = crate::schema_validate::check_cpl_namespace(cpl_path, dcp.standard) {
+            result.add(note);
+        }
         if cpl.reels.is_empty() {
             result.add(Note {
                 severity: Severity::Error,
