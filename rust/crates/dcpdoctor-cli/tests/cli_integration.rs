@@ -218,3 +218,99 @@ fn schema_validate_uses_supplied_xsd_for_each_package_xml() {
         .failure()
         .stdout(predicate::str::contains("Required"));
 }
+
+/// An IMP whose ASSETMAP, CPL and PKL all list a picture track file that is not
+/// on disk: what a delivery looks like when the essence was left behind.
+fn write_imp_missing_its_picture(dir: &std::path::Path) {
+    const CPL_ID: &str = "394080ca-5471-40e9-9827-e6e577753400";
+    const PKL_ID: &str = "d74e5590-b9fd-4482-8fd3-ddb7fe496e64";
+    const PICTURE_ID: &str = "c7d75d7b-7cec-4974-a665-b91536bec4cd";
+
+    std::fs::write(
+        dir.join("CPL.xml"),
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016" xmlns:cc="http://www.smpte-ra.org/ns/2067-2/2020">
+  <Id>urn:uuid:{CPL_ID}</Id>
+  <ContentTitle>Missing picture</ContentTitle>
+  <EditRate>24 1</EditRate>
+  <SegmentList><Segment>
+    <Id>urn:uuid:a3dfa541-9c0a-4b4b-9a43-59de39b5f0d2</Id>
+    <SequenceList><cc:MainImageSequence>
+      <Id>urn:uuid:186bf940-2770-4046-a7dd-b5b90bd3c85e</Id>
+      <ResourceList><Resource>
+        <Id>urn:uuid:d8c4801a-5bdb-47f0-8867-102b88af8815</Id>
+        <EditRate>24 1</EditRate>
+        <IntrinsicDuration>2</IntrinsicDuration>
+        <SourceDuration>2</SourceDuration>
+        <TrackFileId>urn:uuid:{PICTURE_ID}</TrackFileId>
+      </Resource></ResourceList>
+    </cc:MainImageSequence></SequenceList>
+  </Segment></SegmentList>
+</CompositionPlaylist>"#
+        ),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.join("PKL.xml"),
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<PackingList xmlns="http://www.smpte-ra.org/schemas/2067-2/2016/PKL">
+  <Id>urn:uuid:{PKL_ID}</Id>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:{CPL_ID}</Id>
+      <Type>text/xml</Type>
+      <HashAlgorithm Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>
+    </Asset>
+    <Asset>
+      <Id>urn:uuid:{PICTURE_ID}</Id>
+      <Type>application/mxf</Type>
+      <HashAlgorithm Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>
+    </Asset>
+  </AssetList>
+</PackingList>"#
+        ),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.join("ASSETMAP.xml"),
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:2fd93ab2-dab7-481d-bb43-5779ba62384d</Id>
+  <AssetList>
+    <Asset>
+      <Id>urn:uuid:{PKL_ID}</Id>
+      <PackingList>true</PackingList>
+      <ChunkList><Chunk><Path>PKL.xml</Path></Chunk></ChunkList>
+    </Asset>
+    <Asset>
+      <Id>urn:uuid:{CPL_ID}</Id>
+      <ChunkList><Chunk><Path>CPL.xml</Path></Chunk></ChunkList>
+    </Asset>
+    <Asset>
+      <Id>urn:uuid:{PICTURE_ID}</Id>
+      <ChunkList><Chunk><Path>VIDEO.mxf</Path></Chunk></ChunkList>
+    </Asset>
+  </AssetList>
+</AssetMap>"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn validate_fails_an_imp_whose_track_file_is_missing() {
+    let dir = TempDir::new().unwrap();
+    write_imp_missing_its_picture(dir.path());
+
+    cmd()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("asset_not_found"))
+        .stdout(predicate::str::contains("VIDEO.mxf"));
+}

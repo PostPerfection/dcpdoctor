@@ -76,6 +76,13 @@ pub enum TrackType {
 pub struct TrackResource {
     pub id: String,
     pub track_file_id: String,
+    /// The `SourceEncoding` of a TrackFileResource: the id of the
+    /// EssenceDescriptor that describes this resource's essence, never the id of
+    /// the track file itself.
+    pub source_encoding: String,
+    /// The resource's own `Hash`, base64 SHA-1. Optional in ST 2067-3, so an
+    /// empty string means the CPL declared none.
+    pub hash: String,
     pub edit_rate: (u32, u32),
     pub intrinsic_duration: u64,
     pub entry_point: u64,

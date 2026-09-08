@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- `validate` printed PASS for an IMP whose track file was missing, altered or truncated, and for one with no PKL at all: the IMF path ran the CPL checks and Photon only, never the ASSETMAP file-exists, PKL `Size` and PKL `Hash` checks the DCP path runs. Both paths call the same two functions now, so an IMP fails on `asset_not_found`, `pkl_size_mismatch` and `pkl_hash_mismatch` the way a DCP does, `--no-hashes` gates the IMF hashing the same way, and an IMP with no readable `ASSETMAP.xml` says so instead of skipping all three. Two parsing defects fed the same hole: any XML containing the string `PackingList` counted as a PKL, so an ASSETMAP (which carries `<PackingList>true</PackingList>` on its PKL asset) stood in for a deleted PKL, and a CPL `Resource` filled its track file id from whichever of `SourceEncoding` and `TrackFileId` came first, which in ST 2067-3 element order is `SourceEncoding`, the essence descriptor's id, so no ASSETMAP asset matched it and every MXF essence check on that resource was skipped. A PKL is found by its root element now, `SourceEncoding` has its own field, and the EssenceDescriptor cross-reference follows it. A CPL resource `Hash` that disagrees with the PKL's is reported as `cpl_pkl_hash_mismatch`, as on the DCP path.
+
 ### Changed
 - Leq(m) is measured on the ISO 21727 reference through postkit 13b5b33: the M weighting curve replaces the CCIR 468 one and the B-chain offset moves from 105.0 to 108.01 dB, so every `leq_m_db` the CLI and the QC report print is about 2.6 dB lower than 1.2.0 printed for the same track. dcpdoctor thresholds nothing on it, so no verdict changes.
 

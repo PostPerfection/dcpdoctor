@@ -614,28 +614,38 @@ fn validate_essence_descriptor_list(cpl: &ImfCpl, notes: &mut Vec<ImfNote>) {
         return;
     }
 
-    let referenced_ids: HashSet<&str> = cpl
-        .virtual_tracks
-        .iter()
-        .flat_map(|vt| vt.resources.iter())
-        .map(|r| r.track_file_id.as_str())
-        .filter(|id| !id.is_empty())
-        .collect();
-
     let descriptor_ids: HashSet<&str> =
         cpl.essence_descriptors.keys().map(|k| k.as_str()).collect();
 
-    for ref_id in &referenced_ids {
-        if !descriptor_ids.contains(ref_id) {
-            notes.push(ImfNote {
-                severity: ImfSeverity::Warning,
-                code: "cross_ref_broken",
-                message: format!(
-                    "Track file {} referenced in CPL has no matching EssenceDescriptor",
-                    ref_id
-                ),
-            });
+    // a resource names its descriptor with SourceEncoding, and a CPL that keys
+    // the descriptor by the track file id resolves that way instead
+    let mut referenced_ids: HashSet<&str> = HashSet::new();
+    let mut undescribed_track_files: Vec<&str> = Vec::new();
+    for res in cpl.virtual_tracks.iter().flat_map(|vt| vt.resources.iter()) {
+        for id in [res.source_encoding.as_str(), res.track_file_id.as_str()] {
+            if !id.is_empty() {
+                referenced_ids.insert(id);
+            }
         }
+        if res.track_file_id.is_empty() {
+            continue;
+        }
+        let described = descriptor_ids.contains(res.source_encoding.as_str())
+            || descriptor_ids.contains(res.track_file_id.as_str());
+        if !described && !undescribed_track_files.contains(&res.track_file_id.as_str()) {
+            undescribed_track_files.push(res.track_file_id.as_str());
+        }
+    }
+
+    for ref_id in &undescribed_track_files {
+        notes.push(ImfNote {
+            severity: ImfSeverity::Warning,
+            code: "cross_ref_broken",
+            message: format!(
+                "Track file {} referenced in CPL has no matching EssenceDescriptor",
+                ref_id
+            ),
+        });
     }
 
     for desc_id in &descriptor_ids {

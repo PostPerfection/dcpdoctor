@@ -323,11 +323,26 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                             cpl.edit_rate = rate;
                         }
                     }
-                    "TrackFileId" | "SourceEncoding" => {
+                    "TrackFileId" => {
                         if let Some(ref mut res) = current_resource {
                             if res.track_file_id.is_empty() {
                                 res.track_file_id =
                                     text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
+                            }
+                        }
+                    }
+                    "SourceEncoding" => {
+                        if let Some(ref mut res) = current_resource {
+                            if res.source_encoding.is_empty() {
+                                res.source_encoding =
+                                    text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
+                            }
+                        }
+                    }
+                    "Hash" if in_resource => {
+                        if let Some(ref mut res) = current_resource {
+                            if res.hash.is_empty() {
+                                res.hash = text;
                             }
                         }
                     }
@@ -577,6 +592,41 @@ mod tests {
             .unwrap()
             .integer_parse_failures
             .is_empty());
+    }
+
+    #[test]
+    fn a_resource_in_schema_order_keeps_its_track_file_id_apart_from_its_descriptor_id() {
+        // ST 2067-3 puts SourceEncoding, the essence descriptor's id, before
+        // TrackFileId, and reading either into track_file_id leaves no asset to match
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:12345678-1234-1234-1234-123456789abc</Id>
+  <EditRate>24 1</EditRate>
+  <SegmentList><Segment>
+    <MainImageSequence>
+      <Id>urn:uuid:aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa</Id>
+      <ResourceList><Resource>
+        <Id>urn:uuid:bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb</Id>
+        <EditRate>24 1</EditRate>
+        <IntrinsicDuration>240</IntrinsicDuration>
+        <SourceDuration>240</SourceDuration>
+        <SourceEncoding>urn:uuid:dddddddd-4444-4444-4444-dddddddddddd</SourceEncoding>
+        <TrackFileId>urn:uuid:cccccccc-3333-3333-3333-cccccccccccc</TrackFileId>
+      </Resource></ResourceList>
+    </MainImageSequence>
+  </Segment></SegmentList>
+</CompositionPlaylist>"#;
+
+        let cpl = parse_imf_cpl(xml).unwrap();
+        let resource = &cpl.virtual_tracks[0].resources[0];
+        assert_eq!(
+            resource.track_file_id,
+            "cccccccc-3333-3333-3333-cccccccccccc"
+        );
+        assert_eq!(
+            resource.source_encoding,
+            "dddddddd-4444-4444-4444-dddddddddddd"
+        );
     }
 
     #[test]

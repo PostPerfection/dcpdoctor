@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::assetmap::ParseXmlFile;
 use crate::dcp;
 use crate::hash::sha1_base64;
 use crate::{Code, Note, Severity, VerifyOptions, VerifyResult};
@@ -493,6 +494,125 @@ fn format_uuid(bytes: &[u8; 16]) -> String {
     uuid::Uuid::from_bytes(*bytes).to_string()
 }
 
+/// Every file the ASSETMAP lists is on disk. A DCP and an IMP are checked alike.
+fn check_assetmap_files_exist(
+    package_dir: &Path,
+    assetmap_path: &Path,
+    assetmap: &crate::assetmap::AssetMap,
+    result: &mut VerifyResult,
+) {
+    for asset in &assetmap.assets {
+        if !package_dir.join(&asset.path).exists() {
+            result.add(Note {
+                severity: Severity::Error,
+                code: Code::AssetNotFound,
+                message: format!("Asset file not found: {}", asset.path),
+                file: Some(assetmap_path.to_path_buf()),
+                line: 0,
+            });
+        }
+    }
+}
+
+/// One PKL's assets against the files on disk: declared `Size` against the file
+/// length, and `Hash` against the file's SHA-1 when `check_hashes` is set. A DCP
+/// and an IMP are checked alike; the IMF PKL hash is the same base64 SHA-1.
+fn check_pkl_asset_files(
+    package_dir: &Path,
+    pkl_path: &Path,
+    pkl: &crate::pkl::Pkl,
+    id_to_path: &HashMap<&str, &str>,
+    opts: &VerifyOptions,
+    result: &mut VerifyResult,
+) {
+    if pkl.assets_without_id > 0 {
+        result.add(
+            Note::error(
+                Code::MissingRequiredElement,
+                format!(
+                    "PKL lists {} asset(s) with no readable <Id>, so nothing was checked against them",
+                    pkl.assets_without_id
+                ),
+            )
+            .with_file(pkl_path),
+        );
+    }
+    // Verify PKL asset sizes (cheap, so not gated on check_hashes)
+    for pkl_asset in &pkl.assets {
+        if pkl_asset.size_unparseable {
+            result.add(
+                Note::error(
+                    Code::XmlParseError,
+                    format!(
+                        "PKL <Size> for asset {} is not an integer, so the size check did not run",
+                        pkl_asset.id
+                    ),
+                )
+                .with_file(pkl_path),
+            );
+            continue;
+        }
+        if let Some(&asset_path) = id_to_path.get(pkl_asset.id.as_str()) {
+            let full_path = package_dir.join(asset_path);
+            if pkl_asset.size > 0
+                && let Ok(meta) = std::fs::metadata(&full_path)
+                && meta.len() != pkl_asset.size as u64
+            {
+                result.add(Note {
+                    severity: Severity::Error,
+                    code: Code::PklSizeMismatch,
+                    message: format!(
+                        "Size mismatch for {} (PKL says {}, file is {})",
+                        asset_path,
+                        pkl_asset.size,
+                        meta.len()
+                    ),
+                    file: Some(full_path),
+                    line: 0,
+                });
+            }
+        }
+    }
+    // Verify PKL asset hashes
+    if !opts.check_hashes {
+        return;
+    }
+    for pkl_asset in &pkl.assets {
+        let Some(&asset_path) = id_to_path.get(pkl_asset.id.as_str()) else {
+            result.add(Note {
+                severity: Severity::Warning,
+                code: Code::PklMissingAssetReference,
+                message: format!("PKL references unknown asset: {}", pkl_asset.id),
+                file: Some(pkl_path.to_path_buf()),
+                line: 0,
+            });
+            continue;
+        };
+        let full_path = package_dir.join(asset_path);
+        if !full_path.exists() || pkl_asset.hash.is_empty() {
+            continue;
+        }
+        match sha1_base64(&full_path) {
+            Ok(computed) if computed != pkl_asset.hash => {
+                result.add(Note {
+                    severity: Severity::Error,
+                    code: Code::PklHashMismatch,
+                    message: format!(
+                        "Hash mismatch for {} (expected {}, got {})",
+                        asset_path, pkl_asset.hash, computed
+                    ),
+                    file: Some(full_path),
+                    line: 0,
+                });
+            }
+            Err(e) => {
+                tracing::warn!("Failed to hash {}: {}", asset_path, e);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
@@ -559,18 +679,7 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     }
 
     // 2. Verify all referenced files exist
-    for asset in &dcp.assetmap.assets {
-        let full_path = dcp_dir.join(&asset.path);
-        if !full_path.exists() {
-            result.add(Note {
-                severity: Severity::Error,
-                code: Code::AssetNotFound,
-                message: format!("Asset file not found: {}", asset.path),
-                file: Some(dcp.assetmap_path.clone()),
-                line: 0,
-            });
-        }
-    }
+    check_assetmap_files_exist(dcp_dir, &dcp.assetmap_path, &dcp.assetmap, &mut result);
 
     // 2b. ASSETMAP's own file name and its declared chunk lengths (ClairMeta
     // check_am_name / check_assets_am_size).
@@ -614,90 +723,7 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         for note in check_pkl_annotation_text(pkl_path, pkl, &dcp.cpls, dcp.standard) {
             result.add(note);
         }
-        if pkl.assets_without_id > 0 {
-            result.add(
-                Note::error(
-                    Code::MissingRequiredElement,
-                    format!(
-                        "PKL lists {} asset(s) with no readable <Id>, so nothing was checked against them",
-                        pkl.assets_without_id
-                    ),
-                )
-                .with_file(pkl_path),
-            );
-        }
-        // Verify PKL asset sizes (cheap, so not gated on check_hashes)
-        for pkl_asset in &pkl.assets {
-            if pkl_asset.size_unparseable {
-                result.add(
-                    Note::error(
-                        Code::XmlParseError,
-                        format!(
-                            "PKL <Size> for asset {} is not an integer, so the size check did not run",
-                            pkl_asset.id
-                        ),
-                    )
-                    .with_file(pkl_path),
-                );
-                continue;
-            }
-            if let Some(&asset_path) = id_to_path.get(pkl_asset.id.as_str()) {
-                let full_path = dcp_dir.join(asset_path);
-                if pkl_asset.size > 0
-                    && let Ok(meta) = std::fs::metadata(&full_path)
-                    && meta.len() != pkl_asset.size as u64
-                {
-                    result.add(Note {
-                        severity: Severity::Error,
-                        code: Code::PklSizeMismatch,
-                        message: format!(
-                            "Size mismatch for {} (PKL says {}, file is {})",
-                            asset_path,
-                            pkl_asset.size,
-                            meta.len()
-                        ),
-                        file: Some(full_path),
-                        line: 0,
-                    });
-                }
-            }
-        }
-        // Verify PKL asset hashes
-        if opts.check_hashes {
-            for pkl_asset in &pkl.assets {
-                if let Some(&asset_path) = id_to_path.get(pkl_asset.id.as_str()) {
-                    let full_path = dcp_dir.join(asset_path);
-                    if full_path.exists() && !pkl_asset.hash.is_empty() {
-                        match sha1_base64(&full_path) {
-                            Ok(computed) if computed != pkl_asset.hash => {
-                                result.add(Note {
-                                    severity: Severity::Error,
-                                    code: Code::PklHashMismatch,
-                                    message: format!(
-                                        "Hash mismatch for {} (expected {}, got {})",
-                                        asset_path, pkl_asset.hash, computed
-                                    ),
-                                    file: Some(full_path),
-                                    line: 0,
-                                });
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to hash {}: {}", asset_path, e);
-                            }
-                            _ => {}
-                        }
-                    }
-                } else {
-                    result.add(Note {
-                        severity: Severity::Warning,
-                        code: Code::PklMissingAssetReference,
-                        message: format!("PKL references unknown asset: {}", pkl_asset.id),
-                        file: Some(pkl_path.clone()),
-                        line: 0,
-                    });
-                }
-            }
-        }
+        check_pkl_asset_files(dcp_dir, pkl_path, pkl, &id_to_path, opts, &mut result);
     }
 
     // 4. Validate CPLs
@@ -1258,6 +1284,49 @@ fn dcp_asset_ids(dir: &Path) -> HashSet<String> {
     }
 }
 
+/// The file-level checks the DCP path runs, for an IMP: every ASSETMAP-listed
+/// file present, and every PKL asset's size and hash matching the bytes on disk.
+fn check_imp_files(imp_dir: &Path, opts: &VerifyOptions, result: &mut VerifyResult) {
+    let assetmap_path = imp_dir.join(IMP_ASSETMAP_NAME);
+    let assetmap = match crate::assetmap::AssetMap::parse(&assetmap_path) {
+        Some(assetmap) => assetmap,
+        None if assetmap_path.exists() => {
+            result.add(
+                Note::error(
+                    Code::XmlParseError,
+                    "Failed to parse ASSETMAP, so the file, size and hash checks did not run",
+                )
+                .with_file(&assetmap_path),
+            );
+            return;
+        }
+        None => {
+            result.add(
+                Note::error(
+                    Code::MissingAssetmap,
+                    format!("No {IMP_ASSETMAP_NAME} found in IMP"),
+                )
+                .with_file(imp_dir),
+            );
+            return;
+        }
+    };
+
+    check_assetmap_files_exist(imp_dir, &assetmap_path, &assetmap, result);
+
+    let id_to_path: HashMap<&str, &str> = assetmap
+        .assets
+        .iter()
+        .map(|asset| (asset.id.as_str(), asset.path.as_str()))
+        .collect();
+    for (pkl_path, pkl) in crate::imf::read_pkls(imp_dir) {
+        check_pkl_asset_files(imp_dir, &pkl_path, &pkl, &id_to_path, opts, result);
+    }
+}
+
+/// ST 429-9 names an IMP's asset map, unlike a DCP's, with the extension.
+const IMP_ASSETMAP_NAME: &str = "ASSETMAP.xml";
+
 fn verify_imp(imp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     let mut result = VerifyResult {
         standard: crate::Standard::Smpte,
@@ -1278,6 +1347,8 @@ fn verify_imp(imp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     ) {
         result.add(note);
     }
+
+    check_imp_files(imp_dir, opts, &mut result);
 
     // Photon adds deep IMF conformance checks.
     match crate::photon::run_photon(imp_dir) {
@@ -2888,5 +2959,115 @@ mod tests {
     #[test]
     fn a_broadcast_size_is_not_standard() {
         assert!(!is_standard_picture_size(1920, 1080));
+    }
+
+    // ─── IMP file checks ──────────────────────────────────────────────────────
+
+    use crate::imp_fixture::{self, PICTURE_FILE};
+
+    /// Write the IMP fixture into a temp dir, apply `mutate`, and verify it.
+    fn verify_mutated_imp(mutate: impl FnOnce(&Path)) -> VerifyResult {
+        let dir = tempfile::tempdir().unwrap();
+        imp_fixture::write_imp(dir.path());
+        mutate(dir.path());
+        verify_imp(dir.path(), &VerifyOptions::standard())
+    }
+
+    fn note_with(result: &VerifyResult, code: Code, names: &str) -> Note {
+        result
+            .notes
+            .iter()
+            .find(|n| n.code == code && n.message.contains(names))
+            .unwrap_or_else(|| panic!("expected {code:?} naming {names}, got: {:?}", result.notes))
+            .clone()
+    }
+
+    #[test]
+    fn an_untouched_imp_draws_no_file_finding() {
+        let result = verify_mutated_imp(|_| {});
+        assert!(
+            result.ok(),
+            "the fixture has to verify clean, got: {:?}",
+            result.notes
+        );
+    }
+
+    #[test]
+    fn an_imp_whose_picture_track_file_is_gone_fails() {
+        let result = verify_mutated_imp(|dir| {
+            std::fs::remove_file(dir.join(PICTURE_FILE)).unwrap();
+        });
+        assert!(!result.ok());
+        let note = note_with(&result, Code::AssetNotFound, PICTURE_FILE);
+        assert_eq!(note.severity, Severity::Error);
+    }
+
+    #[test]
+    fn an_imp_whose_picture_track_file_lost_a_byte_value_fails_on_its_hash() {
+        let result = verify_mutated_imp(|dir| {
+            let path = dir.join(PICTURE_FILE);
+            let mut bytes = std::fs::read(&path).unwrap();
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xff;
+            std::fs::write(&path, bytes).unwrap();
+        });
+        assert!(!result.ok());
+        note_with(&result, Code::PklHashMismatch, PICTURE_FILE);
+        assert!(
+            !result.notes.iter().any(|n| n.code == Code::PklSizeMismatch),
+            "the file is the length the PKL declares, so only the hash can catch this"
+        );
+    }
+
+    #[test]
+    fn an_imp_whose_picture_track_file_was_truncated_fails_on_its_size() {
+        let result = verify_mutated_imp(|dir| {
+            let path = dir.join(PICTURE_FILE);
+            let shortened = std::fs::metadata(&path).unwrap().len() / 2;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(shortened)
+                .unwrap();
+        });
+        assert!(!result.ok());
+        note_with(&result, Code::PklSizeMismatch, PICTURE_FILE);
+    }
+
+    #[test]
+    fn an_imp_with_no_packing_list_fails() {
+        let result = verify_mutated_imp(|dir| {
+            std::fs::remove_file(dir.join(imp_fixture::PKL_FILE)).unwrap();
+        });
+        assert!(!result.ok());
+        assert!(
+            result.notes.iter().any(|n| n.code == Code::MissingPkl),
+            "got: {:?}",
+            result.notes
+        );
+        note_with(&result, Code::AssetNotFound, imp_fixture::PKL_FILE);
+    }
+
+    #[test]
+    fn an_imp_hash_check_is_gated_the_way_the_dcp_one_is() {
+        let dir = tempfile::tempdir().unwrap();
+        imp_fixture::write_imp(dir.path());
+        let path = dir.path().join(PICTURE_FILE);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        std::fs::write(&path, bytes).unwrap();
+
+        let opts = VerifyOptions {
+            check_hashes: false,
+            ..VerifyOptions::standard()
+        };
+        let result = verify_imp(dir.path(), &opts);
+        assert!(
+            !result.notes.iter().any(|n| n.code == Code::PklHashMismatch),
+            "--no-hashes must skip the hashing, got: {:?}",
+            result.notes
+        );
     }
 }

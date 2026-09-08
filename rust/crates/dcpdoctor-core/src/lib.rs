@@ -23,6 +23,8 @@ pub mod hdr_validate;
 pub mod hfr_stereo;
 pub mod imf;
 pub mod imf_compliance;
+#[cfg(test)]
+mod imp_fixture;
 pub mod info;
 pub mod isdcf;
 pub mod j2k;

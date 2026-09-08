@@ -12,6 +12,8 @@ use quick_xml::events::Event;
 use quick_xml::name::ResolveResult;
 use quick_xml::{NsReader, Reader};
 
+use crate::assetmap::ParseXmlFile;
+use crate::pkl::Pkl;
 use crate::{Code, Note, Severity};
 
 // Re-export shared types for use by the rest of the crate.
@@ -146,6 +148,14 @@ pub fn validate_imp(
     }
     let ov_provided = ov_dir.is_some();
 
+    let pkls = read_pkls(imp_dir);
+    let pkl_hashes: HashMap<&str, &str> = pkls
+        .iter()
+        .flat_map(|(_, pkl)| &pkl.assets)
+        .filter(|asset| !asset.hash.is_empty())
+        .map(|asset| (asset.id.as_str(), asset.hash.as_str()))
+        .collect();
+
     let cpl_files = find_cpls(imp_dir);
     if cpl_files.is_empty() {
         notes.push(Note {
@@ -222,11 +232,14 @@ pub fn validate_imp(
 
         // TTML subtitle tracks (filesystem)
         validate_ttml_tracks(&cpl, imp_dir, cpl_path, &mut notes);
+
+        // CPL hashes against the PKL ones
+        validate_cpl_pkl_hashes(&cpl, &pkl_hashes, cpl_path, &mut notes);
     }
 
     // PKL ↔ CPL cross-referencing
-    validate_pkl_cpl_refs(imp_dir, &cpl_files, &mut notes);
-    validate_pkl_hash_algorithm(imp_dir, &mut notes);
+    validate_pkl_cpl_refs(imp_dir, &cpl_files, &pkls, &mut notes);
+    validate_pkl_hash_algorithm(&pkls, &mut notes);
 
     notes
 }
@@ -693,14 +706,8 @@ fn validate_ttml_file(ttml_path: &Path, cpl_path: &Path, notes: &mut Vec<Note>) 
 /// that binds it to the wrong namespace has not declared that element at all.
 /// The DCP PKL schema (ST 429-8) has no such element, which is why this runs on
 /// the IMF path only.
-fn validate_pkl_hash_algorithm(imp_dir: &Path, notes: &mut Vec<Note>) {
-    for pkl_path in find_pkls(imp_dir) {
-        let Ok(xml) = std::fs::read_to_string(&pkl_path) else {
-            continue;
-        };
-        let Some(pkl) = dcpdoctor_parse::parse_pkl(&xml) else {
-            continue;
-        };
+fn validate_pkl_hash_algorithm(pkls: &[(PathBuf, Pkl)], notes: &mut Vec<Note>) {
+    for (pkl_path, pkl) in pkls {
         for asset in &pkl.assets {
             if asset.hash_algorithm.is_empty() {
                 notes.push(Note {
@@ -737,9 +744,41 @@ fn validate_pkl_hash_algorithm(imp_dir: &Path, notes: &mut Vec<Note>) {
 
 // ─── PKL ↔ CPL Cross-referencing ──────────────────────────────────────────────
 
-fn validate_pkl_cpl_refs(imp_dir: &Path, cpl_files: &[PathBuf], notes: &mut Vec<Note>) {
-    let pkl_files = find_pkls(imp_dir);
-    if pkl_files.is_empty() {
+// ST 2067-3 leaves the resource Hash optional, so only a declared one is compared
+fn validate_cpl_pkl_hashes(
+    cpl: &ImfCpl,
+    pkl_hashes: &HashMap<&str, &str>,
+    cpl_path: &Path,
+    notes: &mut Vec<Note>,
+) {
+    for res in cpl.virtual_tracks.iter().flat_map(|vt| vt.resources.iter()) {
+        if res.hash.is_empty() || res.track_file_id.is_empty() {
+            continue;
+        }
+        if let Some(&pkl_hash) = pkl_hashes.get(res.track_file_id.as_str())
+            && pkl_hash != res.hash
+        {
+            notes.push(
+                Note::error(
+                    Code::CplPklHashMismatch,
+                    format!(
+                        "Track file {} hash differs between CPL ({}) and PKL ({pkl_hash})",
+                        res.track_file_id, res.hash
+                    ),
+                )
+                .with_file(cpl_path),
+            );
+        }
+    }
+}
+
+fn validate_pkl_cpl_refs(
+    imp_dir: &Path,
+    cpl_files: &[PathBuf],
+    pkls: &[(PathBuf, Pkl)],
+    notes: &mut Vec<Note>,
+) {
+    if pkls.is_empty() {
         notes.push(Note {
             severity: Severity::Error,
             code: Code::MissingPkl,
@@ -753,12 +792,11 @@ fn validate_pkl_cpl_refs(imp_dir: &Path, cpl_files: &[PathBuf], notes: &mut Vec<
     let mut pkl_asset_ids: HashSet<String> = HashSet::new();
     let mut pkl_asset_types: HashMap<String, String> = HashMap::new();
 
-    for pkl_path in &pkl_files {
-        let xml = match std::fs::read_to_string(pkl_path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        parse_pkl_assets(&xml, &mut pkl_asset_ids, &mut pkl_asset_types);
+    for asset in pkls.iter().flat_map(|(_, pkl)| &pkl.assets) {
+        pkl_asset_ids.insert(asset.id.clone());
+        if !asset.asset_type.is_empty() {
+            pkl_asset_types.insert(asset.id.clone(), asset.asset_type.clone());
+        }
     }
 
     for cpl_path in cpl_files {
@@ -851,12 +889,34 @@ fn find_pkls(imp_dir: &Path) -> Vec<PathBuf> {
             continue;
         }
         if let Ok(content) = std::fs::read_to_string(&path)
-            && content.contains("PackingList")
+            && is_packing_list(&content)
         {
             pkls.push(path);
         }
     }
     pkls
+}
+
+// an ASSETMAP carries <PackingList>true</PackingList> on its PKL asset
+fn is_packing_list(xml: &str) -> bool {
+    let mut reader = Reader::from_str(xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element) | Event::Empty(element)) => {
+                return element.local_name().as_ref() == b"PackingList";
+            }
+            Ok(Event::Eof) | Err(_) => return false,
+            _ => {}
+        }
+    }
+}
+
+// a PKL whose XML does not parse is dropped, so it reads as no PKL at all
+pub(crate) fn read_pkls(imp_dir: &Path) -> Vec<(PathBuf, Pkl)> {
+    find_pkls(imp_dir)
+        .into_iter()
+        .filter_map(|path| Pkl::parse(&path).map(|pkl| (path, pkl)))
+        .collect()
 }
 
 /// Parse asset ID→path mapping from an ASSETMAP.xml.
@@ -915,62 +975,6 @@ fn parse_assetmap_paths(xml: &str) -> HashMap<String, String> {
     map
 }
 
-/// Parse PKL assets: collect IDs and their MIME types.
-fn parse_pkl_assets(xml: &str, ids: &mut HashSet<String>, types: &mut HashMap<String, String>) {
-    let mut reader = Reader::from_str(xml);
-    let mut in_asset = false;
-    let mut current_id = String::new();
-    let mut current_type = String::new();
-    let mut current_tag = String::new();
-
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let local = e.local_name();
-                let name = String::from_utf8_lossy(local.as_ref()).to_string();
-                if name == "Asset" {
-                    in_asset = true;
-                    current_id.clear();
-                    current_type.clear();
-                } else {
-                    current_tag = name;
-                }
-            }
-            Ok(Event::End(ref e)) => {
-                let local = e.local_name();
-                let name = String::from_utf8_lossy(local.as_ref());
-                if name == "Asset" && in_asset {
-                    if !current_id.is_empty() {
-                        ids.insert(current_id.clone());
-                        if !current_type.is_empty() {
-                            types.insert(current_id.clone(), current_type.clone());
-                        }
-                    }
-                    in_asset = false;
-                }
-            }
-            Ok(Event::Text(ref e)) if in_asset => {
-                let text = decode_text(e).trim().to_string();
-                if text.is_empty() {
-                    continue;
-                }
-                match current_tag.as_str() {
-                    "Id" if current_id.is_empty() => {
-                        current_id = text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
-                    }
-                    "Type" | "MIMEType" => {
-                        current_type = text;
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
-        }
-    }
-}
-
 /// Extract the CPL Id from XML.
 fn extract_cpl_id(xml: &str) -> String {
     let mut reader = Reader::from_str(xml);
@@ -1007,6 +1011,24 @@ fn extract_cpl_id(xml: &str) -> String {
 mod tests {
     use super::*;
 
+    // ─── Finding the PKL ──────────────────────────────────────────────────────
+
+    #[test]
+    fn an_assetmap_is_not_mistaken_for_the_packing_list_it_points_at() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::imp_fixture::write_imp(dir.path());
+        assert_eq!(
+            find_pkls(dir.path()),
+            vec![dir.path().join(crate::imp_fixture::PKL_FILE)]
+        );
+
+        std::fs::remove_file(dir.path().join(crate::imp_fixture::PKL_FILE)).unwrap();
+        assert!(
+            find_pkls(dir.path()).is_empty(),
+            "the ASSETMAP's <PackingList>true</PackingList> is not a PKL"
+        );
+    }
+
     // ─── IMF PKL HashAlgorithm (ST 2067-2:2016) ───────────────────────────────
 
     fn imf_pkl(hash_algorithm: &str) -> String {
@@ -1035,7 +1057,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("PKL.xml"), pkl_xml).unwrap();
         let mut notes = Vec::new();
-        validate_pkl_hash_algorithm(dir.path(), &mut notes);
+        validate_pkl_hash_algorithm(&read_pkls(dir.path()), &mut notes);
         notes
     }
 
@@ -1374,50 +1396,6 @@ mod tests {
         );
     }
 
-    /// Write an AS-02 picture track file of `frames` frames of `frame_bytes`
-    /// each, the wrapping an IMP uses for picture essence.
-    fn write_as02_picture(
-        path: &Path,
-        codestream: asdcplib::jp2k::CodestreamHeader,
-        frames: u32,
-        frame_bytes: usize,
-    ) {
-        use asdcplib::jp2k::{
-            COLOR_PRIMARIES_BT709, HdrMetadata, PictureDescriptor, TRANSFER_CHARACTERISTIC_BT709,
-        };
-        use asdcplib::{LabelSet, Rational, WriterInfo};
-
-        let info = WriterInfo {
-            asset_uuid: *uuid::Uuid::new_v4().as_bytes(),
-            context_id: *uuid::Uuid::new_v4().as_bytes(),
-            label_set: LabelSet::Smpte,
-            ..Default::default()
-        };
-        let descriptor = PictureDescriptor {
-            edit_rate: Rational::new(24, 1),
-            sample_rate: Rational::new(24, 1),
-            stored_width: 2048,
-            stored_height: 1080,
-            aspect_ratio: Rational::new(2048, 1080),
-            container_duration: frames,
-            codestream,
-        };
-        let hdr = HdrMetadata {
-            color_primaries: Some(COLOR_PRIMARIES_BT709),
-            transfer_characteristic: Some(TRANSFER_CHARACTERISTIC_BT709),
-            ..Default::default()
-        };
-        let mut writer = asdcplib::as02::jp2k::MxfWriter::new();
-        writer
-            .open_write_hdr(path.to_str().unwrap(), &info, &descriptor, &hdr, 16384)
-            .unwrap();
-        let frame = vec![0u8; frame_bytes];
-        for _ in 0..frames {
-            writer.write_frame(&frame, None, None).unwrap();
-        }
-        writer.finalize().unwrap();
-    }
-
     /// Add the ST 2067-21 namespace that `write_imp`'s CPL leaves out.
     fn declare_app_2e(cpl_path: &Path) {
         let cpl = std::fs::read_to_string(cpl_path).unwrap();
@@ -1439,7 +1417,7 @@ mod tests {
             &[VIDEO_ID, AUDIO_ID],
         );
         declare_app_2e(&imp.path().join("CPL.xml"));
-        write_as02_picture(
+        crate::imp_fixture::write_as02_picture(
             &imp.path().join(format!("{VIDEO_ID}.mxf")),
             crate::codestream_fixtures::cinema_2k(),
             1,
@@ -1464,7 +1442,7 @@ mod tests {
             &[VIDEO_ID, AUDIO_ID],
             &[VIDEO_ID, AUDIO_ID],
         );
-        write_as02_picture(
+        crate::imp_fixture::write_as02_picture(
             &imp.path().join(format!("{VIDEO_ID}.mxf")),
             crate::codestream_fixtures::imf_4k(),
             3,
