@@ -77,12 +77,43 @@ jobs:
         shell: bash
         run: echo "$(dirname "$("${MAMBA_EXE:-micromamba}" run -n ffmpeg which ffmpeg)")" >> "$GITHUB_PATH"
 
+      - name: Install JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache Photon
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/photon-jars
+          key: photon-${{ runner.os }}-${{ hashFiles('scripts/fetch_photon.sh') }}
+
+      - name: Setup Photon
+        shell: bash
+        run: |
+          workspace="$GITHUB_WORKSPACE"
+          if command -v cygpath >/dev/null 2>&1; then
+            workspace=$(cygpath -u "$GITHUB_WORKSPACE")
+          fi
+          bash scripts/fetch_photon.sh "$workspace/photon-jars"
+          ls "$workspace/photon-jars"/*.jar >/dev/null
+          # java is a native process on Windows and cannot read an MSYS path
+          jars="$workspace/photon-jars"
+          if command -v cygpath >/dev/null 2>&1; then
+            jars=$(cygpath -w "$jars")
+          fi
+          echo "PHOTON_DIR=$jars" >> "$GITHUB_ENV"
+
       - name: Check test tools
         shell: bash
         run: |
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
           xmllint --version
+          java -version
+          # a bash test on the value would read a Windows path, which git bash cannot stat
+          test -n "$PHOTON_DIR"
 
       # the patch means local builds never fetch the pinned rev, so nothing else
       # would notice the two drifting apart

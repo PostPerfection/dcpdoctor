@@ -3059,6 +3059,25 @@ mod tests {
         error_note_with(&result, Code::AssetNotFound, imp_fixture::PKL_FILE);
     }
 
+    /// ST 2067-3 requires a TrackFileResource to name its essence descriptor
+    /// before its track file, and Photon is what catches a CPL that does not.
+    #[test]
+    fn an_imp_cpl_photon_rejects_fails_on_photons_own_finding() {
+        let dir = tempfile::tempdir().unwrap();
+        imp_fixture::write_imp_without_source_encoding(dir.path());
+
+        let result = verify_imp(dir.path(), &VerifyOptions::standard());
+        let note = error_note_with(&result, Code::XmlSchemaViolation, "cvc-complex-type");
+        assert!(note.message.starts_with("[Photon]"), "{}", note.message);
+        assert!(note.message.contains("SourceEncoding"), "{}", note.message);
+        assert!(!result.ok());
+        assert!(
+            !result.notes.iter().any(|n| FILE_FINDINGS.contains(&n.code)),
+            "every file still matches the PKL, so only Photon can fail this: {:?}",
+            result.notes
+        );
+    }
+
     #[test]
     fn an_imp_hash_check_is_gated_the_way_the_dcp_one_is() {
         let dir = tempfile::tempdir().unwrap();

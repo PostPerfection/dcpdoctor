@@ -57,6 +57,18 @@ pub(crate) fn write_as02_picture(
 
 // the PKL carries the real size and SHA-1 of the files, so a mutation shows up
 pub(crate) fn write_imp(dir: &Path) {
+    write_imp_with_resource(
+        dir,
+        &format!("<SourceEncoding>urn:uuid:{DESCRIPTOR_ID}</SourceEncoding>"),
+    );
+}
+
+// what imfwizard writes for a sound resource, and what ST 2067-3 forbids
+pub(crate) fn write_imp_without_source_encoding(dir: &Path) {
+    write_imp_with_resource(dir, "");
+}
+
+fn write_imp_with_resource(dir: &Path, source_encoding: &str) {
     write_as02_picture(
         &dir.join(PICTURE_FILE),
         PICTURE_ID.parse().unwrap(),
@@ -95,7 +107,7 @@ pub(crate) fn write_imp(dir: &Path) {
               <EditRate>24 1</EditRate>
               <IntrinsicDuration>2</IntrinsicDuration>
               <SourceDuration>2</SourceDuration>
-              <SourceEncoding>urn:uuid:{DESCRIPTOR_ID}</SourceEncoding>
+              {source_encoding}
               <TrackFileId>urn:uuid:{PICTURE_ID}</TrackFileId>
             </Resource>
           </ResourceList>

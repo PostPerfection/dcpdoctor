@@ -241,7 +241,7 @@ dcpdoctor fix /path/to/dcp && dcpdoctor validate --strict /path/to/dcp
 
 dcpdoctor integrates [Netflix Photon](https://github.com/Netflix/photon) for deep IMF Application 2/2E conformance checks. It runs only when an ST 2067-3 Composition Playlist identifies an IMF package. SMPTE and Interop DCPs skip IMF and Photon validation.
 
-Photon has to be fetched first. dcpdoctor does not build it: Netflix pins Gradle 8.5, which cannot read Java 25 class files. Use imfwizard's `scripts/fetch_photon.sh`, which pulls the jars from Maven Central into `$PHOTON_DIR`. Without jars, validation runs everything else and reports the skipped Photon pass as an INFO note.
+Photon has to be fetched first. dcpdoctor does not build it: Netflix pins Gradle 8.5, which cannot read Java 25 class files. Run `scripts/fetch_photon.sh <dir>`, which pulls the checksum-pinned jars from Maven Central and checks that Photon starts from them. Point `PHOTON_DIR` at the result. Without jars, validation runs everything else and reports the skipped Photon pass as an INFO note.
 
 **Requirements:** Java 11+ and Photon jars.
 

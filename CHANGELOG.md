@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- `scripts/fetch_photon.sh`, imfwizard's checksum-pinned Maven Central fetch, and a CI step that runs it on the Linux, macOS and Windows runners with a JDK and a cache, so `PHOTON_DIR` is set for every test run. Nothing exercised the Photon pass in CI before, which is how a parser that dropped all of Photon's output survived. The test tools step now also demands `java -version`.
+
 ### Fixed
 - `validate` printed PASS for an IMP whose track file was missing, altered or truncated, and for one with no PKL at all: the IMF path ran the CPL checks and Photon only, never the ASSETMAP file-exists, PKL `Size` and PKL `Hash` checks the DCP path runs. Both paths call the same two functions now, so an IMP fails on `asset_not_found`, `pkl_size_mismatch` and `pkl_hash_mismatch` the way a DCP does, `--no-hashes` gates the IMF hashing the same way, and an IMP with no readable `ASSETMAP.xml` says so instead of skipping all three. Two parsing defects fed the same hole: any XML containing the string `PackingList` counted as a PKL, so an ASSETMAP (which carries `<PackingList>true</PackingList>` on its PKL asset) stood in for a deleted PKL, and a CPL `Resource` filled its track file id from whichever of `SourceEncoding` and `TrackFileId` came first, which in ST 2067-3 element order is `SourceEncoding`, the essence descriptor's id, so no ASSETMAP asset matched it and every MXF essence check on that resource was skipped. A PKL is found by its root element now, `SourceEncoding` has its own field, and the EssenceDescriptor cross-reference follows it. A CPL resource `Hash` that disagrees with the PKL's is reported as `cpl_pkl_hash_mismatch`, as on the DCP path.
 
