@@ -1,6 +1,7 @@
 // end-to-end runs of the QC subcommands over synthetic packages and track files
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -159,6 +160,46 @@ fn the_black_threshold_decides_whether_a_dim_run_is_black() {
         "{:?}",
         findings(&output)
     );
+}
+
+#[test]
+fn validate_atmos_names_the_object_count_and_leaves_a_pcm_track_alone() {
+    use dcpdoctor_core::track_fixtures::{SoundStretch, write_atmos_track, write_sound_track};
+
+    let directory = TempDir::new().unwrap();
+    write_atmos_track(&directory.path().join("ATMOS.mxf"), 24, 42);
+
+    cmd()
+        .args([
+            "validate",
+            directory.path().to_str().unwrap(),
+            "--atmos",
+            "--verbose",
+        ])
+        .assert()
+        .stdout(predicates::str::contains(
+            "Dolby Atmos (ST 429-18): 42 objects",
+        ));
+
+    let pcm_only = TempDir::new().unwrap();
+    write_sound_track(
+        &pcm_only.path().join("SOUND.mxf"),
+        &[SoundStretch {
+            seconds: 1.0,
+            amplitude: 0.5,
+        }],
+    );
+
+    cmd()
+        .args([
+            "validate",
+            pcm_only.path().to_str().unwrap(),
+            "--atmos",
+            "--verbose",
+        ])
+        .assert()
+        .stdout(predicates::str::contains("Atmos").not())
+        .stdout(predicates::str::contains("Immersive audio").not());
 }
 
 #[test]

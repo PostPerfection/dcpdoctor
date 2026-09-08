@@ -1926,13 +1926,20 @@ fn run_premium_checks(dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdo
         notes.extend(premium::check_accessibility(dir));
     }
 
-    if flags.hdr || flags.atmos || flags.dolby_vision || flags.prores {
+    // the immersive audio descriptor is read through asdcplib, so it runs without ffprobe
+    if flags.atmos {
+        for mxf in mxf_files(dir) {
+            let a = premium::parse_atmos_iab(&mxf);
+            notes.extend(premium::check_atmos_compliance(&a, &mxf));
+        }
+    }
+
+    if flags.hdr || flags.dolby_vision || flags.prores {
         // every one of these detectors reads its answer out of ffprobe, and
         // without it they all report "nothing detected"
         if !dcpdoctor_core::studio::ffprobe_available() {
             let requested = [
                 (flags.hdr, "HDR metadata"),
-                (flags.atmos, "Dolby Atmos IAB"),
                 (flags.dolby_vision, "Dolby Vision"),
                 (flags.prores, "ProRes essence"),
             ];
@@ -1952,10 +1959,6 @@ fn run_premium_checks(dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdo
             if flags.hdr {
                 let h = premium::detect_hdr_metadata(&mxf);
                 notes.extend(premium::check_hdr_compliance(&h, &mxf));
-            }
-            if flags.atmos {
-                let a = premium::parse_atmos_iab(&mxf);
-                notes.extend(premium::check_atmos_compliance(&a, &mxf));
             }
             if flags.dolby_vision {
                 let dv = premium::parse_dolby_vision(&mxf);

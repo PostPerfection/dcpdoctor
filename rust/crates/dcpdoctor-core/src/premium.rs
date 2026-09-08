@@ -345,158 +345,136 @@ pub fn check_dolby_vision_compliance(dv: &DolbyVisionMetadata, source: &Path) ->
 // 3. Dolby Atmos IAB Deep Inspection
 // ════════════════════════════════════════════════════════════════════════════════
 
-/// Dolby Atmos IAB analysis result.
-#[derive(Debug, Clone, Default)]
-pub struct AtmosIabInfo {
-    pub detected: bool,
-    pub channel_count: u32,
-    pub sample_rate: f64,
-    pub bit_depth: u8,
-    pub frame_count: u32,
-    pub bed_count: u32,
-    pub object_count: u32,
-    pub version: String,
+// which immersive audio wrapping a track file carries, told apart by its essence
+// descriptor: ffprobe lists no stream at all for either one
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImmersiveEssence {
+    #[default]
+    None,
+    // ST 429-18 Dolby Atmos data essence in a DCP
+    DolbyAtmos,
+    // ST 2067-201 IAB essence in an IMP
+    Iab,
 }
 
-/// Parse Atmos IAB from audio MXF.
+#[derive(Debug, Clone, Default)]
+pub struct AtmosIabInfo {
+    pub essence: ImmersiveEssence,
+    // None for IAB, whose descriptor carries no object count
+    pub object_count: Option<u16>,
+    pub channel_count: Option<u16>,
+    pub version: Option<u8>,
+    pub frame_count: u32,
+    // why the descriptor could not be read, empty when it was
+    pub error: String,
+}
+
+impl AtmosIabInfo {
+    pub fn detected(&self) -> bool {
+        self.essence != ImmersiveEssence::None
+    }
+}
+
+// ST 429-18 caps an Atmos track file at 118 objects beside its 10-channel bed
+const MAX_ATMOS_OBJECTS: u16 = 118;
+
 pub fn parse_atmos_iab(mxf_path: &Path) -> AtmosIabInfo {
     let mut info = AtmosIabInfo::default();
 
-    let cmd = format!(
-        "ffprobe -v quiet -select_streams a:0 -show_entries \
-         stream=channels,channel_layout,sample_rate,bits_per_raw_sample,codec_long_name,nb_frames \
-         -show_entries stream_tags=handler_name -of json \"{}\" 2>/dev/null",
-        mxf_path.display()
-    );
-    let output = run_cmd(&cmd);
-
-    let mut channels: u32 = 0;
-    let mut sample_rate: f64 = 0.0;
-    let mut bit_depth: u8 = 0;
-    let mut frame_count: u32 = 0;
-    let mut is_atmos = false;
-
-    if !output.is_empty() {
-        let ch_re = regex_lite::Regex::new(r#""channels"\s*:\s*(\d+)"#).unwrap();
-        if let Some(cap) = ch_re.captures(&output) {
-            channels = cap[1].parse().unwrap_or(0);
-        }
-
-        let sr_re = regex_lite::Regex::new(r#""sample_rate"\s*:\s*"?(\d+)"#).unwrap();
-        if let Some(cap) = sr_re.captures(&output) {
-            sample_rate = cap[1].parse().unwrap_or(0.0);
-        }
-
-        let bd_re = regex_lite::Regex::new(r#""bits_per_raw_sample"\s*:\s*"?(\d+)"#).unwrap();
-        if let Some(cap) = bd_re.captures(&output) {
-            bit_depth = cap[1].parse().unwrap_or(0);
-        }
-
-        let fc_re = regex_lite::Regex::new(r#""nb_frames"\s*:\s*"?(\d+)"#).unwrap();
-        if let Some(cap) = fc_re.captures(&output) {
-            frame_count = cap[1].parse().unwrap_or(0);
-        }
-
-        if output.contains("Atmos") || output.contains("atmos") || output.contains("IAB") {
-            is_atmos = true;
-        }
-        if channels >= 16 {
-            is_atmos = true;
-        }
-    }
-
-    if !is_atmos {
+    let Some(path) = mxf_path.to_str() else {
         return info;
-    }
+    };
+    let essence = match asdcplib::essence_type(path) {
+        Ok(essence) => essence,
+        Err(_) => return info,
+    };
 
-    info.detected = true;
-    info.channel_count = channels;
-    info.sample_rate = sample_rate;
-    info.bit_depth = bit_depth;
-    info.frame_count = frame_count;
-
-    // Decompose beds/objects
-    if channels >= 12 {
-        info.bed_count = 12; // 7.1.4 bed
-        info.object_count = channels - 12;
-    } else if channels >= 10 {
-        info.bed_count = 10; // 7.1.2 bed
-        info.object_count = channels - 10;
-    } else {
-        info.bed_count = channels;
-        info.object_count = 0;
-    }
-
-    // Estimate objects from IAB packet size
-    let pkt_cmd = format!(
-        "ffprobe -v quiet -select_streams a:0 -show_packets -read_intervals '%+#1' \
-         -show_entries packet=size -of csv=p=0 \"{}\" 2>/dev/null",
-        mxf_path.display()
-    );
-    let pkt_out = run_cmd(&pkt_cmd);
-    if let Ok(pkt_size) = pkt_out.trim().parse::<u32>()
-        && pkt_size > 100_000
-        && info.object_count == 0
-    {
-        info.object_count = pkt_size.saturating_sub(2048) / 200;
+    match essence {
+        asdcplib::EssenceType::As02Iab => {
+            info.essence = ImmersiveEssence::Iab;
+        }
+        asdcplib::EssenceType::DcDataDolbyAtmos => {
+            info.essence = ImmersiveEssence::DolbyAtmos;
+            let mut reader = asdcplib::atmos::MxfReader::new();
+            if let Err(e) = reader.open_read(path) {
+                info.error = e.to_string();
+                return info;
+            }
+            match reader.atmos_descriptor() {
+                Ok(descriptor) => {
+                    info.object_count = Some(descriptor.max_object_count);
+                    info.channel_count = Some(descriptor.max_channel_count);
+                    info.version = Some(descriptor.atmos_version);
+                    info.frame_count = descriptor.container_duration;
+                }
+                Err(e) => info.error = e.to_string(),
+            }
+            let _ = reader.close();
+        }
+        _ => {}
     }
 
     info
 }
 
-/// Check Atmos IAB compliance (ST 2098-2).
 pub fn check_atmos_compliance(info: &AtmosIabInfo, source: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
-    if !info.detected {
+    if !info.detected() {
         return notes;
     }
 
     let file = Some(source.to_path_buf());
 
-    notes.push(Note {
-        severity: Severity::Info,
-        code: Code::SoundInvalidChannelCount,
-        message: format!(
-            "Dolby Atmos IAB: {} channels, {} beds, ~{} objects",
-            info.channel_count, info.bed_count, info.object_count
-        ),
-        file: file.clone(),
-        line: 0,
-    });
-
-    if info.sample_rate != 48000.0 && info.sample_rate != 96000.0 {
+    if !info.error.is_empty() {
         notes.push(Note {
             severity: Severity::Warning,
-            code: Code::SoundInvalidSampleRate,
+            code: Code::CheckSkipped,
             message: format!(
-                "Atmos IAB sample rate should be 48kHz or 96kHz, got {}Hz",
-                info.sample_rate as u32
+                "Immersive audio essence detected, its descriptor did not read: {}",
+                info.error
             ),
-            file: file.clone(),
+            file,
             line: 0,
         });
+        return notes;
     }
 
-    if info.bit_depth != 24 {
-        notes.push(Note {
-            severity: Severity::Warning,
-            code: Code::SoundInvalidChannelCount,
-            message: format!(
-                "Atmos IAB typically uses 24-bit audio, got {}-bit",
-                info.bit_depth
-            ),
-            file: file.clone(),
-            line: 0,
-        });
+    match info.essence {
+        ImmersiveEssence::DolbyAtmos => {
+            notes.push(Note {
+                severity: Severity::Info,
+                code: Code::SoundInvalidChannelCount,
+                message: format!(
+                    "Dolby Atmos (ST 429-18): {} objects, {} channels, version {}, {} frames",
+                    info.object_count.unwrap_or(0),
+                    info.channel_count.unwrap_or(0),
+                    info.version.unwrap_or(0),
+                    info.frame_count
+                ),
+                file: file.clone(),
+                line: 0,
+            });
+        }
+        ImmersiveEssence::Iab => {
+            notes.push(Note {
+                severity: Severity::Info,
+                code: Code::SoundInvalidChannelCount,
+                message: "Immersive audio (IAB, ST 2067-201) essence detected, its descriptor carries no object count".into(),
+                file: file.clone(),
+                line: 0,
+            });
+        }
+        ImmersiveEssence::None => {}
     }
 
-    if info.object_count > 118 {
+    if let Some(objects) = info.object_count
+        && objects > MAX_ATMOS_OBJECTS
+    {
         notes.push(Note {
             severity: Severity::Error,
             code: Code::SoundInvalidChannelCount,
             message: format!(
-                "Atmos IAB exceeds maximum object count (118), has {}",
-                info.object_count
+                "Dolby Atmos exceeds the maximum object count ({MAX_ATMOS_OBJECTS}), declares {objects}"
             ),
             file,
             line: 0,
@@ -1156,4 +1134,85 @@ fn parse_ttml_time(time_str: &str) -> f64 {
     }
 
     -1.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::track_fixtures::{
+        SoundStretch, write_atmos_track, write_iab_track, write_sound_track,
+    };
+
+    const FRAMES: u32 = 24;
+
+    fn only_note(notes: &[Note]) -> &Note {
+        assert_eq!(notes.len(), 1, "expected exactly one note, got: {notes:?}");
+        &notes[0]
+    }
+
+    #[test]
+    fn an_atmos_track_file_reports_the_object_count_its_descriptor_declares() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("atmos.mxf");
+        write_atmos_track(&path, FRAMES, 42);
+
+        let info = parse_atmos_iab(&path);
+        assert_eq!(info.essence, ImmersiveEssence::DolbyAtmos);
+        assert_eq!(info.object_count, Some(42));
+        assert_eq!(info.frame_count, FRAMES);
+
+        let notes = check_atmos_compliance(&info, &path);
+        let note = only_note(&notes);
+        assert_eq!(note.severity, Severity::Info);
+        assert!(note.message.contains("42 objects"), "{}", note.message);
+    }
+
+    #[test]
+    fn an_atmos_track_file_past_the_object_limit_is_an_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("atmos.mxf");
+        write_atmos_track(&path, FRAMES, MAX_ATMOS_OBJECTS + 1);
+
+        let notes = check_atmos_compliance(&parse_atmos_iab(&path), &path);
+
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.severity == Severity::Error && n.message.contains("119")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_iab_track_file_is_detected_and_says_it_carries_no_object_count() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("iab.mxf");
+        write_iab_track(&path, FRAMES);
+
+        let info = parse_atmos_iab(&path);
+        assert_eq!(info.essence, ImmersiveEssence::Iab);
+        assert_eq!(info.object_count, None);
+
+        let notes = check_atmos_compliance(&info, &path);
+        let note = only_note(&notes);
+        assert!(note.message.contains("IAB"), "{}", note.message);
+    }
+
+    #[test]
+    fn a_pcm_sound_track_file_is_not_immersive_audio() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sound.mxf");
+        write_sound_track(
+            &path,
+            &[SoundStretch {
+                seconds: 1.0,
+                amplitude: 0.5,
+            }],
+        );
+
+        let info = parse_atmos_iab(&path);
+
+        assert!(!info.detected());
+        assert!(check_atmos_compliance(&info, &path).is_empty());
+    }
 }
