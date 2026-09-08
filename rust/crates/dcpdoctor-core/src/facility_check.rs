@@ -84,7 +84,7 @@ pub fn run_facility_check(opts: &FacilityCheckOptions) -> FacilityCheckResult {
     ));
 
     // Check PKL
-    let pkls = find_xml_containing(&opts.dcp_dir, "PackingList");
+    let pkls = find_xml_rooted_at(&opts.dcp_dir, "PackingList");
     result.items.push(make_item(
         "structure",
         "PKL present",
@@ -98,7 +98,7 @@ pub fn run_facility_check(opts: &FacilityCheckOptions) -> FacilityCheckResult {
     ));
 
     // Check CPL
-    let cpls = find_xml_containing(&opts.dcp_dir, "CompositionPlaylist");
+    let cpls = find_xml_rooted_at(&opts.dcp_dir, "CompositionPlaylist");
     result.items.push(make_item(
         "structure",
         "CPL present",
@@ -158,11 +158,10 @@ pub fn run_facility_check(opts: &FacilityCheckOptions) -> FacilityCheckResult {
             String::new()
         } else {
             format!(
-                "{} hash mismatch(es), {} size mismatch(es), {} missing file(s) of {} asset(s)",
-                checksum.hash_mismatches,
-                checksum.size_mismatches,
-                checksum.missing_files,
-                checksum.total_assets
+                "{} of {} asset(s) failed: {}",
+                checksum.hash_mismatches + checksum.size_mismatches + checksum.missing_files,
+                checksum.total_assets,
+                failed_asset_details(&checksum).join(", ")
             )
         };
         result.items.push(make_item(
@@ -179,6 +178,50 @@ pub fn run_facility_check(opts: &FacilityCheckOptions) -> FacilityCheckResult {
             false,
             "Not checked (--no-hashes)",
             "info",
+        ));
+    }
+
+    // --- Signature and signing certificates ---
+    let mut signature_notes = Vec::new();
+    let mut signed_documents = 0;
+    for document in pkls.iter().chain(cpls.iter()) {
+        let Ok(content) = std::fs::read_to_string(document) else {
+            continue;
+        };
+        if !crate::signature::has_signature(&content) {
+            continue;
+        }
+        signed_documents += 1;
+        signature_notes.extend(crate::signature::verify_signature(document, false));
+    }
+    if signed_documents == 0 {
+        result.items.push(make_item(
+            "security",
+            "Signing certificates",
+            false,
+            "Not checked: no CPL or PKL in the package carries a signature",
+            "info",
+        ));
+    } else {
+        let severity = if signature_notes
+            .iter()
+            .any(|note| note.severity == crate::Severity::Error)
+        {
+            "error"
+        } else {
+            "warning"
+        };
+        let detail = signature_notes
+            .iter()
+            .map(|note| note.message.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        result.items.push(make_item(
+            "security",
+            "Signing certificates",
+            signature_notes.is_empty(),
+            &detail,
+            severity,
         ));
     }
 
@@ -255,12 +298,44 @@ pub fn run_facility_check(opts: &FacilityCheckOptions) -> FacilityCheckResult {
     result
 }
 
+/// One line per asset that failed the checksum pass, naming the file and what
+/// was wrong with it.
+fn failed_asset_details(checksum: &crate::checksum_verify::ChecksumVerifyResult) -> Vec<String> {
+    checksum
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let name = if entry.filename.is_empty() {
+                entry.asset_id.clone()
+            } else {
+                entry.filename.clone()
+            };
+            if !entry.file_exists {
+                return Some(format!("{name} is missing"));
+            }
+            if !entry.hash_match {
+                return Some(format!("{name} hash mismatch"));
+            }
+            if !entry.size_match {
+                return Some(format!(
+                    "{name} is {} bytes, the PKL declares {}",
+                    entry.actual_size, entry.expected_size
+                ));
+            }
+            None
+        })
+        .collect()
+}
+
 /// Serialize facility check result to JSON.
 pub fn facility_check_to_json(result: &FacilityCheckResult) -> String {
     serde_json::to_string_pretty(result).unwrap_or_default()
 }
 
-fn find_xml_containing(dir: &Path, needle: &str) -> Vec<PathBuf> {
+/// Package XML documents whose root element carries `root_name`. An ASSETMAP
+/// holds a `<PackingList>` flag element of its own, so a substring search finds
+/// it in place of a PKL that was never delivered.
+fn find_xml_rooted_at(dir: &Path, root_name: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return found;
@@ -271,10 +346,11 @@ fn find_xml_containing(dir: &Path, needle: &str) -> Vec<PathBuf> {
             continue;
         }
         if let Ok(content) = std::fs::read_to_string(&path)
-            && content[..content.len().min(2048)].contains(needle)
+            && crate::schema::root_element(&content).is_some_and(|(root, _)| root == root_name)
         {
             found.push(path);
         }
     }
+    found.sort();
     found
 }

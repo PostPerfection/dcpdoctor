@@ -114,22 +114,48 @@ pub fn verify_signature(xml_file: &Path, strict: bool) -> Vec<Note> {
     notes
 }
 
-/// Extract base64 X509Certificate blobs from ds:KeyInfo, with the count of
-/// elements whose base64 would not decode. Without that count a chain with a
+/// Extract base64 X509Certificate blobs from the signature's KeyInfo, with the
+/// count of elements whose base64 would not decode. Resolved by namespace: the
+/// ISDCF reference DCPs and DCP-o-matic bind the signature namespace to `dsig:`,
+/// and a prefix nothing recognised left every certificate rule unrun. Without that count a chain with a
 /// corrupt certificate in it passes every chain rule.
 pub(crate) fn extract_certs(content: &str) -> (Vec<Vec<u8>>, usize) {
-    let re =
-        regex_lite::Regex::new(r"(?s)<(?:ds:)?X509Certificate>(.*?)</(?:ds:)?X509Certificate>")
-            .unwrap();
+    use quick_xml::events::Event;
+    use quick_xml::name::ResolveResult;
+
+    let mut reader = quick_xml::NsReader::from_str(content);
     let mut out = Vec::new();
     let mut undecodable = 0;
-    for cap in re.captures_iter(content) {
-        let cleaned: String = cap[1].chars().filter(|c| !c.is_whitespace()).collect();
-        match base64::engine::general_purpose::STANDARD.decode(&cleaned) {
-            Ok(der) => out.push(der),
-            Err(_) => undecodable += 1,
+    let mut inside = false;
+    let mut base64_text = String::new();
+
+    loop {
+        match reader.read_resolved_event() {
+            Ok((namespace, Event::Start(element)))
+                if element.local_name().as_ref() == b"X509Certificate" =>
+            {
+                inside = matches!(namespace, ResolveResult::Bound(ns) if ns.0 == DSIG_NAMESPACE);
+                base64_text.clear();
+            }
+            Ok((_, Event::Text(text))) if inside => {
+                base64_text.push_str(&String::from_utf8_lossy(text.as_ref()));
+            }
+            Ok((_, Event::End(element))) if element.local_name().as_ref() == b"X509Certificate" => {
+                if inside {
+                    let cleaned: String =
+                        base64_text.chars().filter(|c| !c.is_whitespace()).collect();
+                    match base64::engine::general_purpose::STANDARD.decode(&cleaned) {
+                        Ok(der) => out.push(der),
+                        Err(_) => undecodable += 1,
+                    }
+                }
+                inside = false;
+            }
+            Ok((_, Event::Eof)) | Err(_) => break,
+            Ok(_) => {}
         }
     }
+
     (out, undecodable)
 }
 
