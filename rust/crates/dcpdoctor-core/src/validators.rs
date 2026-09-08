@@ -5160,9 +5160,14 @@ mod tests {
     /// A KDM handed to the run counts as much as one lying in the package.
     #[test]
     fn a_supplied_kdm_satisfies_the_kdm_required_check() {
+        // the package directory is scanned for a file named like a KDM, so it
+        // has to be one this test owns rather than the shared temp directory
+        let package = tempfile::tempdir().unwrap();
         let cpl = encryption_cpl(true, true);
-        let dir = cpl.path().parent().unwrap().to_path_buf();
-        let paths = vec![cpl.path().to_path_buf()];
+        let cpl_path = package.path().join("CPL.xml");
+        std::fs::copy(cpl.path(), &cpl_path).unwrap();
+        let dir = package.path().to_path_buf();
+        let paths = vec![cpl_path];
         let without = check_encryption(&dir, &paths, false);
         assert!(
             without.iter().any(|n| n.code == Code::KdmRequired),

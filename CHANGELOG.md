@@ -26,6 +26,8 @@
 
 - `--hdr` reported no MaxCLL or MaxFALL for any DCP or IMP, and so checked neither: it looked for them in the picture MXF, where they are not. ST 2067-21 clause 7.5 puts them in the CPL's ExtensionProperties, which is where postkit's IMF writer puts them, and no MXF essence descriptor asdcplib reads or writes has an item for either. They are read from the CPL now and reported beside the transfer as `hdr_metadata_summary`. Three checks fire on them, all `hdr_metadata_invalid`: a MaxFALL above its MaxCLL is an error, since no frame average can be brighter than the brightest pixel; a MaxCLL above the mastering display maximum is a warning; and light levels on an HLG composition are a warning, clause 7.5 defining them for the PQ colour systems only. The HDR notes carried `picture_invalid_resolution` before, which would have read as a resolution defect.
 
+- `a_supplied_kdm_satisfies_the_kdm_required_check` handed `check_encryption` the system temp directory as the package, and that check reports a KDM as present when any file there is named like one. The test passed or failed on whatever else was in `/tmp`. It builds its own package directory now.
+
 ### Changed
 - Leq(m) is measured on the ISO 21727 reference through postkit 13b5b33: the M weighting curve replaces the CCIR 468 one and the B-chain offset moves from 105.0 to 108.01 dB, so every `leq_m_db` the CLI and the QC report print is about 2.6 dB lower than 1.2.0 printed for the same track. dcpdoctor thresholds nothing on it, so no verdict changes.
 
