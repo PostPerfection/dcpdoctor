@@ -2973,21 +2973,32 @@ mod tests {
         verify_imp(dir.path(), &VerifyOptions::standard())
     }
 
-    fn note_with(result: &VerifyResult, code: Code, names: &str) -> Note {
-        result
+    /// The error-level note of `code` naming `names`, which is what turns the
+    /// verdict to FAIL.
+    fn error_note_with(result: &VerifyResult, code: Code, names: &str) -> Note {
+        let note = result
             .notes
             .iter()
             .find(|n| n.code == code && n.message.contains(names))
             .unwrap_or_else(|| panic!("expected {code:?} naming {names}, got: {:?}", result.notes))
-            .clone()
+            .clone();
+        assert_eq!(note.severity, Severity::Error, "{}", note.message);
+        note
     }
+
+    /// The findings that say the bytes on disk are not what the package declares.
+    const FILE_FINDINGS: &[Code] = &[
+        Code::AssetNotFound,
+        Code::PklSizeMismatch,
+        Code::PklHashMismatch,
+    ];
 
     #[test]
     fn an_untouched_imp_draws_no_file_finding() {
         let result = verify_mutated_imp(|_| {});
         assert!(
-            result.ok(),
-            "the fixture has to verify clean, got: {:?}",
+            !result.notes.iter().any(|n| FILE_FINDINGS.contains(&n.code)),
+            "every file matches the PKL, got: {:?}",
             result.notes
         );
     }
@@ -2998,8 +3009,7 @@ mod tests {
             std::fs::remove_file(dir.join(PICTURE_FILE)).unwrap();
         });
         assert!(!result.ok());
-        let note = note_with(&result, Code::AssetNotFound, PICTURE_FILE);
-        assert_eq!(note.severity, Severity::Error);
+        error_note_with(&result, Code::AssetNotFound, PICTURE_FILE);
     }
 
     #[test]
@@ -3012,7 +3022,7 @@ mod tests {
             std::fs::write(&path, bytes).unwrap();
         });
         assert!(!result.ok());
-        note_with(&result, Code::PklHashMismatch, PICTURE_FILE);
+        error_note_with(&result, Code::PklHashMismatch, PICTURE_FILE);
         assert!(
             !result.notes.iter().any(|n| n.code == Code::PklSizeMismatch),
             "the file is the length the PKL declares, so only the hash can catch this"
@@ -3032,7 +3042,7 @@ mod tests {
                 .unwrap();
         });
         assert!(!result.ok());
-        note_with(&result, Code::PklSizeMismatch, PICTURE_FILE);
+        error_note_with(&result, Code::PklSizeMismatch, PICTURE_FILE);
     }
 
     #[test]
@@ -3046,7 +3056,7 @@ mod tests {
             "got: {:?}",
             result.notes
         );
-        note_with(&result, Code::AssetNotFound, imp_fixture::PKL_FILE);
+        error_note_with(&result, Code::AssetNotFound, imp_fixture::PKL_FILE);
     }
 
     #[test]

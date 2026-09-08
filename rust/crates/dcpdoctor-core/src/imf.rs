@@ -1419,6 +1419,7 @@ mod tests {
         declare_app_2e(&imp.path().join("CPL.xml"));
         crate::imp_fixture::write_as02_picture(
             &imp.path().join(format!("{VIDEO_ID}.mxf")),
+            VIDEO_ID.parse().unwrap(),
             crate::codestream_fixtures::cinema_2k(),
             1,
             500_000,
@@ -1444,6 +1445,7 @@ mod tests {
         );
         crate::imp_fixture::write_as02_picture(
             &imp.path().join(format!("{VIDEO_ID}.mxf")),
+            VIDEO_ID.parse().unwrap(),
             crate::codestream_fixtures::imf_4k(),
             3,
             500_000,

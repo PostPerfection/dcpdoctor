@@ -138,7 +138,26 @@ pub fn run_photon(imp_dir: &Path) -> Result<Vec<Note>, PhotonError> {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     let combined = format!("{}\n{}", stdout, stderr);
-    Ok(parse_photon_output(&combined, imp_dir))
+    let mut notes = parse_photon_output(&combined, imp_dir);
+    if !output.status.success() {
+        notes.push(incomplete_run_note(&combined, imp_dir));
+    }
+    Ok(notes)
+}
+
+/// Photon exits non-zero when the analysis threw instead of finishing, and the
+/// documents it had not reached yet were never checked.
+fn incomplete_run_note(output: &str, imp_dir: &Path) -> Note {
+    let cause = output
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("Exception in thread"))
+        .unwrap_or("Photon printed no cause");
+    Note::warning(
+        Code::CheckSkipped,
+        format!("[Photon] deep IMF checks did not finish: {cause}"),
+    )
+    .with_file(imp_dir)
 }
 
 /// Note for a Photon pass that could not run. A Photon that was never fetched is
@@ -161,15 +180,63 @@ pub fn unavailable_note(error: &PhotonError) -> Note {
     }
 }
 
+/// Split a Photon 5 log line, `[main] ERROR com.netflix.imflibrary.app.IMPAnalyzer
+/// - <payload>`, into its level and payload. `None` for a line slf4j did not write.
+fn split_log_line(line: &str) -> Option<(&str, &str)> {
+    let after_thread = line.strip_prefix('[')?.split_once("] ")?.1;
+    let (level, rest) = after_thread.split_once(' ')?;
+    let (logger, payload) = rest.split_once(" - ")?;
+    (!logger.contains(' ')).then_some((level, payload))
+}
+
+/// The document a `<name> has N errors and M warnings` line is about, which is
+/// the one the findings printed under it belong to.
+fn analysed_document(payload: &str) -> Option<&str> {
+    let (name, counts) = payload.split_once(" has ")?;
+    let is_count = counts.starts_with("no errors") || counts.contains(" errors and ");
+    (is_count && !name.contains(' ')).then_some(name)
+}
+
+/// The severity a line reports at, from the prefix Photon puts on the finding
+/// itself or, failing that, the level it logged at.
+fn finding<'a>(payload: &'a str, level: Option<&str>) -> Option<(Severity, &'a str)> {
+    const FINDING_PREFIXES: &[(&str, Severity)] = &[
+        ("ERROR:", Severity::Error),
+        ("FATAL:", Severity::Error),
+        ("WARNING:", Severity::Warning),
+        ("ERROR-", Severity::Error),
+        ("FATAL-", Severity::Error),
+        ("WARNING-", Severity::Warning),
+    ];
+    for (prefix, severity) in FINDING_PREFIXES {
+        if let Some(rest) = payload.strip_prefix(prefix) {
+            return Some((*severity, rest.trim()));
+        }
+    }
+    match level? {
+        "ERROR" | "FATAL" => Some((Severity::Error, payload)),
+        "WARN" | "WARNING" => Some((Severity::Warning, payload)),
+        _ => None,
+    }
+}
+
+/// Photon closes every finding with `[Photon version: 5.0.1]`.
+fn without_version_suffix(message: &str) -> &str {
+    match message.rfind(" [Photon version:") {
+        Some(index) if message.ends_with(']') => message[..index].trim_end(),
+        _ => message,
+    }
+}
+
 /// Parse Photon's text output into dcpdoctor Notes.
 ///
-/// Photon output format (simplified):
-/// ```text
-/// ERROR: <message> (file: <path>, line: <n>)
-/// WARNING: <message>
-/// ```
+/// Photon 5 logs through slf4j-simple, so a finding reads
+/// `[main] ERROR com.netflix.imflibrary.app.IMPAnalyzer - ERROR-<message> [Photon
+/// version: 5.0.1]` under an INFO line naming the document. The bare
+/// `ERROR: <message> (file: <path>, line: <n>)` form is read as well.
 fn parse_photon_output(output: &str, imp_dir: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
+    let mut analysed: Option<PathBuf> = None;
 
     for line in output.lines() {
         let trimmed = line.trim();
@@ -177,15 +244,20 @@ fn parse_photon_output(output: &str, imp_dir: &Path) -> Vec<Note> {
             continue;
         }
 
-        let (severity, rest) = if let Some(rest) = trimmed.strip_prefix("ERROR:") {
-            (Severity::Error, rest.trim())
-        } else if let Some(rest) = trimmed.strip_prefix("FATAL:") {
-            (Severity::Error, rest.trim())
-        } else if let Some(rest) = trimmed.strip_prefix("WARNING:") {
-            (Severity::Warning, rest.trim())
-        } else {
+        let (level, payload) = match split_log_line(trimmed) {
+            Some((level, payload)) => (Some(level), payload.trim()),
+            None => (None, trimmed),
+        };
+
+        if let Some(name) = analysed_document(payload) {
+            analysed = Some(imp_dir.join(name));
+            continue;
+        }
+
+        let Some((severity, rest)) = finding(payload, level) else {
             continue;
         };
+        let rest = without_version_suffix(rest);
 
         // Try to extract file path from the message
         let (message, file) = if let Some(idx) = rest.find("(file:") {
@@ -206,7 +278,7 @@ fn parse_photon_output(output: &str, imp_dir: &Path) -> Vec<Note> {
             };
             (msg, Some(file_path))
         } else {
-            (rest.to_string(), None)
+            (rest.to_string(), analysed.clone())
         };
 
         notes.push(Note {
@@ -228,6 +300,8 @@ fn classify_photon_error(message: &str) -> Code {
         Code::MxfHashMismatch
     } else if lower.contains("schema") || lower.contains("xsd") {
         Code::XmlSchemaViolation
+    } else if lower.contains("cannot find asset") {
+        Code::AssetNotFound
     } else if lower.contains("uuid") {
         Code::InvalidUuid
     } else if lower.contains("duration") {
@@ -278,6 +352,89 @@ ERROR: Schema validation failed for CPL
         assert_eq!(notes[1].code, Code::CplInvalidEditRate);
         assert_eq!(notes[2].severity, Severity::Error);
         assert_eq!(notes[2].code, Code::XmlSchemaViolation);
+    }
+
+    /// Photon 5.0.1's own stderr for `IMPAnalyzer /tmp/c14nrun/imp`, an IMP whose
+    /// sound Resource carries no SourceEncoding. Every line comes through
+    /// slf4j-simple, so nothing here starts with the bare `ERROR:`.
+    const PHOTON_5_OUTPUT: &str = r#"SLF4J(I): Connected with provider of type [org.slf4j.simple.SimpleServiceProvider]
+[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - ==========================================================================
+[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - Analyzing IMF delivery: /tmp/c14nrun/imp
+[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - AUDIO_033c76d9-321f-4184-ba77-25df3a53c81b.mxf has no errors or warnings
+[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - VIDEO_c7d75d7b-7cec-4974-a665-b91536bec4cd.mxf has no errors or warnings
+[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - CPL_394080ca-5471-40e9-9827-e6e577753400.xml has 1 errors and 0 warnings
+[main] ERROR com.netflix.imflibrary.app.IMPAnalyzer - 		ERROR-Line Number : 105 - cvc-complex-type.2.4.a: Invalid content was found starting with element '{"http://www.smpte-ra.org/schemas/2067-3/2016":TrackFileId}'. One of '{"http://www.smpte-ra.org/schemas/2067-3/2016":RepeatCount, "http://www.smpte-ra.org/schemas/2067-3/2016":SourceEncoding}' is expected. [Photon version: 5.0.1]
+[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - ASSETMAP.xml has no errors or warnings
+[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - PKL_d74e5590-b9fd-4482-8fd3-ddb7fe496e64.xml has no errors or warnings"#;
+
+    #[test]
+    fn a_photon_5_schema_error_is_a_note_on_the_document_it_names() {
+        let notes = parse_photon_output(PHOTON_5_OUTPUT, Path::new("/tmp/c14nrun/imp"));
+        assert_eq!(notes.len(), 1, "got: {notes:?}");
+
+        let note = &notes[0];
+        assert_eq!(note.severity, Severity::Error);
+        assert_eq!(note.code, Code::XmlSchemaViolation);
+        assert_eq!(
+            note.message,
+            "[Photon] Line Number : 105 - cvc-complex-type.2.4.a: Invalid content was found starting with element '{\"http://www.smpte-ra.org/schemas/2067-3/2016\":TrackFileId}'. One of '{\"http://www.smpte-ra.org/schemas/2067-3/2016\":RepeatCount, \"http://www.smpte-ra.org/schemas/2067-3/2016\":SourceEncoding}' is expected."
+        );
+        assert_eq!(
+            note.file.as_deref(),
+            Some(Path::new(
+                "/tmp/c14nrun/imp/CPL_394080ca-5471-40e9-9827-e6e577753400.xml"
+            )),
+            "the INFO line above the finding says which document it is about"
+        );
+    }
+
+    /// The same IMP with its picture track file deleted.
+    const PHOTON_5_MISSING_ASSET: &str = r#"[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - Analyzing IMF delivery: /tmp/impcheck/missing
+[main] ERROR com.netflix.imflibrary.app.IMPAnalyzer - 		ERROR-Cannot find asset with id: urn:uuid:c7d75d7b-7cec-4974-a665-b91536bec4cd (path according to asset map: /tmp/impcheck/missing/VIDEO_c7d75d7b-7cec-4974-a665-b91536bec4cd.mxf) [Photon version: 5.0.1]"#;
+
+    #[test]
+    fn a_photon_5_missing_asset_error_names_the_track_file() {
+        let notes = parse_photon_output(PHOTON_5_MISSING_ASSET, Path::new("/tmp/impcheck/missing"));
+        assert_eq!(notes.len(), 1, "got: {notes:?}");
+        assert_eq!(notes[0].severity, Severity::Error);
+        assert_eq!(notes[0].code, Code::AssetNotFound);
+        assert!(
+            notes[0]
+                .message
+                .contains("Cannot find asset with id: urn:uuid:c7d75d7b"),
+            "{}",
+            notes[0].message
+        );
+        assert!(
+            !notes[0].message.contains("Photon version"),
+            "the version suffix repeats on every finding: {}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn a_photon_progress_line_is_not_a_finding() {
+        let notes = parse_photon_output(
+            "[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - CPL.xml has 3 errors and 1 warnings",
+            Path::new("/tmp/imp"),
+        );
+        assert!(notes.is_empty(), "got: {notes:?}");
+    }
+
+    #[test]
+    fn a_photon_run_that_threw_says_the_checks_did_not_finish() {
+        let output = r#"[main] INFO com.netflix.imflibrary.app.IMPAnalyzer - Analyzing IMF delivery: /tmp/impcheck/truncated
+Exception in thread "main" java.io.IOException: Invalid range request: rangeStart = 1184207958 is not <= 3999999 rangeEnd
+	at com.netflix.imflibrary.utils.FileByteRangeProvider.getByteRangeAsBytes(FileByteRangeProvider.java:152)"#;
+        let note = incomplete_run_note(output, Path::new("/tmp/impcheck/truncated"));
+        assert_eq!(note.severity, Severity::Warning);
+        assert_eq!(note.code, Code::CheckSkipped);
+        assert!(
+            note.message
+                .contains("java.io.IOException: Invalid range request"),
+            "{}",
+            note.message
+        );
     }
 
     #[test]

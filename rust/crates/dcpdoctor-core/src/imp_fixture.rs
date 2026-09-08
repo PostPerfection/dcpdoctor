@@ -14,6 +14,7 @@ pub(crate) const PICTURE_FILE: &str = "VIDEO.mxf";
 // AS-02 is the wrapping an IMP uses for picture essence
 pub(crate) fn write_as02_picture(
     path: &Path,
+    asset_uuid: uuid::Uuid,
     codestream: asdcplib::jp2k::CodestreamHeader,
     frames: u32,
     frame_bytes: usize,
@@ -24,7 +25,7 @@ pub(crate) fn write_as02_picture(
     use asdcplib::{LabelSet, Rational, WriterInfo};
 
     let info = WriterInfo {
-        asset_uuid: *uuid::Uuid::new_v4().as_bytes(),
+        asset_uuid: *asset_uuid.as_bytes(),
         context_id: *uuid::Uuid::new_v4().as_bytes(),
         label_set: LabelSet::Smpte,
         ..Default::default()
@@ -58,6 +59,7 @@ pub(crate) fn write_as02_picture(
 pub(crate) fn write_imp(dir: &Path) {
     write_as02_picture(
         &dir.join(PICTURE_FILE),
+        PICTURE_ID.parse().unwrap(),
         crate::codestream_fixtures::imf_4k(),
         2,
         4096,
