@@ -26,6 +26,70 @@ const IAB_ESSENCE_DESCRIPTOR_UL: [u8; 16] = [
     0x06, 0x0e, 0x2b, 0x34, 0x02, 0x53, 0x01, 0x01, 0x0d, 0x01, 0x01, 0x01, 0x01, 0x01, 0x7b, 0x00,
 ];
 
+pub struct ReelTiming {
+    pub picture_entry: i64,
+    pub picture_duration: i64,
+    pub sound_entry: i64,
+    pub sound_duration: i64,
+}
+
+// a ST 429-7 CPL of picture and sound reels, the timing a server plays them at
+pub fn write_reel_cpl(path: &Path, reels: &[ReelTiming]) {
+    let mut reel_xml = String::new();
+    for reel in reels {
+        reel_xml.push_str(&format!(
+            r#"
+    <Reel>
+      <Id>urn:uuid:{reel_id}</Id>
+      <AssetList>
+        <MainPicture>
+          <Id>urn:uuid:{picture_id}</Id>
+          <EditRate>{FRAME_RATE} 1</EditRate>
+          <IntrinsicDuration>{picture_intrinsic}</IntrinsicDuration>
+          <EntryPoint>{picture_entry}</EntryPoint>
+          <Duration>{picture_duration}</Duration>
+        </MainPicture>
+        <MainSound>
+          <Id>urn:uuid:{sound_id}</Id>
+          <EditRate>{FRAME_RATE} 1</EditRate>
+          <IntrinsicDuration>{sound_intrinsic}</IntrinsicDuration>
+          <EntryPoint>{sound_entry}</EntryPoint>
+          <Duration>{sound_duration}</Duration>
+        </MainSound>
+      </AssetList>
+    </Reel>"#,
+            reel_id = uuid::Uuid::new_v4(),
+            picture_id = uuid::Uuid::new_v4(),
+            sound_id = uuid::Uuid::new_v4(),
+            picture_intrinsic = reel.picture_entry + reel.picture_duration,
+            sound_intrinsic = reel.sound_entry + reel.sound_duration,
+            picture_entry = reel.picture_entry,
+            picture_duration = reel.picture_duration,
+            sound_entry = reel.sound_entry,
+            sound_duration = reel.sound_duration,
+        ));
+    }
+
+    std::fs::write(
+        path,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:{cpl_id}</Id>
+  <IssueDate>2026-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>dcpdoctor tests</Issuer>
+  <ContentTitleText>Sync fixture</ContentTitleText>
+  <ContentKind>feature</ContentKind>
+  <EditRate>{FRAME_RATE} 1</EditRate>
+  <ReelList>{reel_xml}
+  </ReelList>
+</CompositionPlaylist>"#,
+            cpl_id = uuid::Uuid::new_v4(),
+        ),
+    )
+    .unwrap();
+}
+
 fn writer_info() -> WriterInfo {
     WriterInfo {
         asset_uuid: *uuid::Uuid::new_v4().as_bytes(),

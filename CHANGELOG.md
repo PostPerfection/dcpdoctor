@@ -16,6 +16,8 @@
 
 - `auto-qc` named no position for anything it found, printing `Black frames detected: 1 segment(s)`. Every black, freeze and silence run now names the seconds it covers, and a run reaching the end of the file says so. The detectors moved into `dcpdoctor-core::auto_qc`, black and freeze read out of one decode rather than two, and `--json` exits 1 on findings as the text output already did.
 
+- `av-sync` had no notion of a reel or a package: it took one video file and one audio file and subtracted the two container durations ffprobe reported, so the per-reel drift the docs describe could not be measured at all, and a package whose second reel enters its sound twelve frames late looked identical to a clean one. It now takes a DCP or IMP directory and compares each reel's picture and sound as the CPL declares them, reporting the entry-point offset and the duration difference per reel in frames and milliseconds at that reel's edit rate. The file pair form stays for a loose video and WAV. A reel with no sound asset, or one whose duration or entry point is no integer, is listed as not compared rather than counted as in sync.
+
 ### Changed
 - Leq(m) is measured on the ISO 21727 reference through postkit 13b5b33: the M weighting curve replaces the CCIR 468 one and the B-chain offset moves from 105.0 to 108.01 dB, so every `leq_m_db` the CLI and the QC report print is about 2.6 dB lower than 1.2.0 printed for the same track. dcpdoctor thresholds nothing on it, so no verdict changes.
 

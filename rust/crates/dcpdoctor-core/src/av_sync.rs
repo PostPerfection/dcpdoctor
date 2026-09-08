@@ -120,6 +120,166 @@ pub fn detect_av_sync(opts: &AvSyncOptions) -> AvSyncResult {
     result
 }
 
+// how one reel's sound timing compares with its picture, in the reel's own edit units
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ReelSync {
+    pub reel: usize,
+    pub picture_frames: i64,
+    pub sound_frames: i64,
+    // sound entering later than picture plays the reel's sound early
+    pub sound_offset_frames: i64,
+    pub sound_offset_ms: f64,
+    pub duration_difference_frames: i64,
+    pub duration_difference_ms: f64,
+    pub in_sync: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PackageAvSyncResult {
+    pub success: bool,
+    pub error: String,
+    pub reels: Vec<ReelSync>,
+    // reasons a reel could not be compared
+    pub skipped: Vec<String>,
+    pub in_sync: bool,
+}
+
+// the CPL's own timing is what a server plays, so drift is read from the reels
+pub fn detect_package_av_sync(dcp_dir: &Path) -> PackageAvSyncResult {
+    use crate::assetmap::ParseXmlFile;
+
+    let mut result = PackageAvSyncResult::default();
+
+    let Some(cpl_path) = find_cpl(dcp_dir) else {
+        result.error = format!("no CPL found in {}", dcp_dir.display());
+        return result;
+    };
+    let Some(cpl) = crate::cpl::Cpl::parse(&cpl_path) else {
+        result.error = format!("cannot parse {}", cpl_path.display());
+        return result;
+    };
+    if cpl.reels.is_empty() {
+        result.error = format!("{} lists no reels", cpl_path.display());
+        return result;
+    }
+
+    for (index, reel) in cpl.reels.iter().enumerate() {
+        let reel_number = index + 1;
+        if reel.sound.id.is_empty() {
+            result
+                .skipped
+                .push(format!("reel {reel_number} has no sound asset"));
+            continue;
+        }
+        if reel.picture.id.is_empty() {
+            result
+                .skipped
+                .push(format!("reel {reel_number} has no picture asset"));
+            continue;
+        }
+        if reel.picture.duration_unparseable
+            || reel.sound.duration_unparseable
+            || reel.picture.entry_point_unparseable
+            || reel.sound.entry_point_unparseable
+        {
+            result.skipped.push(format!(
+                "reel {reel_number} declares a duration or entry point that is no integer"
+            ));
+            continue;
+        }
+
+        let fps = frames_per_second(&reel.picture.edit_rate)
+            .or_else(|| frames_per_second(&reel.sound.edit_rate))
+            .or_else(|| frames_per_second(&cpl.edit_rate));
+        let Some(fps) = fps else {
+            result.skipped.push(format!(
+                "reel {reel_number} declares no edit rate this can be measured in"
+            ));
+            continue;
+        };
+
+        let sound_offset_frames =
+            reel.sound.entry_point.unwrap_or(0) - reel.picture.entry_point.unwrap_or(0);
+        let duration_difference_frames = reel.sound.duration - reel.picture.duration;
+        let milliseconds = |frames: i64| frames as f64 / fps * 1000.0;
+
+        result.reels.push(ReelSync {
+            reel: reel_number,
+            picture_frames: reel.picture.duration,
+            sound_frames: reel.sound.duration,
+            sound_offset_frames,
+            sound_offset_ms: milliseconds(sound_offset_frames),
+            duration_difference_frames,
+            duration_difference_ms: milliseconds(duration_difference_frames),
+            in_sync: sound_offset_frames == 0 && duration_difference_frames == 0,
+        });
+    }
+
+    result.in_sync = result.reels.iter().all(|reel| reel.in_sync);
+    result.success = true;
+    result
+}
+
+impl ReelSync {
+    pub fn describe(&self) -> String {
+        if self.in_sync {
+            return format!("Reel {}: in sync", self.reel);
+        }
+        let mut parts = Vec::new();
+        if self.sound_offset_frames != 0 {
+            parts.push(format!(
+                "sound enters {} frames ({:.1} ms) {} picture",
+                self.sound_offset_frames.abs(),
+                self.sound_offset_ms.abs(),
+                if self.sound_offset_frames > 0 {
+                    "after"
+                } else {
+                    "before"
+                }
+            ));
+        }
+        if self.duration_difference_frames != 0 {
+            parts.push(format!(
+                "sound runs {} frames ({:.1} ms) {} picture",
+                self.duration_difference_frames.abs(),
+                self.duration_difference_ms.abs(),
+                if self.duration_difference_frames > 0 {
+                    "longer than"
+                } else {
+                    "shorter than"
+                }
+            ));
+        }
+        format!("Reel {}: {}", self.reel, parts.join(", "))
+    }
+}
+
+fn find_cpl(dcp_dir: &Path) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(dcp_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("xml") {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && content.contains("CompositionPlaylist")
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+// a CPL edit rate is "numerator denominator"
+fn frames_per_second(edit_rate: &str) -> Option<f64> {
+    let mut parts = edit_rate.split_whitespace();
+    let numerator: f64 = parts.next()?.parse().ok()?;
+    let denominator: f64 = parts.next().unwrap_or("1").parse().unwrap_or(1.0);
+    if numerator <= 0.0 || denominator <= 0.0 {
+        return None;
+    }
+    Some(numerator / denominator)
+}
+
 /// Fix A/V sync by trimming or padding audio.
 pub fn fix_av_sync(opts: &AvSyncFixOptions) -> AvSyncFixResult {
     let mut result = AvSyncFixResult::default();
@@ -192,4 +352,94 @@ pub fn fix_av_sync(opts: &AvSyncFixOptions) -> AvSyncFixResult {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::track_fixtures::{ReelTiming, write_reel_cpl};
+
+    fn matched(picture_duration: i64) -> ReelTiming {
+        ReelTiming {
+            picture_entry: 0,
+            picture_duration,
+            sound_entry: 0,
+            sound_duration: picture_duration,
+        }
+    }
+
+    fn package(reels: &[ReelTiming]) -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_path_buf();
+        write_reel_cpl(&path.join("CPL.xml"), reels);
+        (directory, path)
+    }
+
+    #[test]
+    fn a_sound_entry_point_past_the_pictures_is_drift_on_that_reel_alone() {
+        let (_directory, path) = package(&[
+            matched(48),
+            ReelTiming {
+                picture_entry: 0,
+                picture_duration: 48,
+                sound_entry: 12,
+                sound_duration: 48,
+            },
+        ]);
+
+        let result = detect_package_av_sync(&path);
+
+        assert!(result.success, "{}", result.error);
+        assert!(!result.in_sync);
+        assert_eq!(result.reels.len(), 2);
+        assert!(result.reels[0].in_sync, "{:?}", result.reels[0]);
+        assert_eq!(result.reels[1].sound_offset_frames, 12);
+        assert_eq!(result.reels[1].sound_offset_ms, 500.0);
+        assert_eq!(
+            result.reels[1].describe(),
+            "Reel 2: sound enters 12 frames (500.0 ms) after picture"
+        );
+    }
+
+    #[test]
+    fn a_sound_track_shorter_than_its_picture_is_drift() {
+        let (_directory, path) = package(&[ReelTiming {
+            picture_entry: 0,
+            picture_duration: 48,
+            sound_entry: 0,
+            sound_duration: 24,
+        }]);
+
+        let result = detect_package_av_sync(&path);
+
+        assert_eq!(result.reels[0].duration_difference_frames, -24);
+        assert_eq!(
+            result.reels[0].describe(),
+            "Reel 1: sound runs 24 frames (1000.0 ms) shorter than picture"
+        );
+    }
+
+    #[test]
+    fn a_reel_whose_picture_and_sound_are_trimmed_alike_is_in_sync() {
+        let (_directory, path) = package(&[ReelTiming {
+            picture_entry: 12,
+            picture_duration: 48,
+            sound_entry: 12,
+            sound_duration: 48,
+        }]);
+
+        let result = detect_package_av_sync(&path);
+
+        assert!(result.in_sync, "{:?}", result.reels);
+    }
+
+    #[test]
+    fn a_directory_with_no_cpl_says_so_instead_of_reporting_no_drift() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let result = detect_package_av_sync(directory.path());
+
+        assert!(!result.success);
+        assert!(result.error.contains("no CPL"), "{}", result.error);
+    }
 }

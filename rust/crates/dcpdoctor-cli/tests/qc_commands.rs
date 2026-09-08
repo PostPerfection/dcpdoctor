@@ -162,6 +162,61 @@ fn the_black_threshold_decides_whether_a_dim_run_is_black() {
 }
 
 #[test]
+fn av_sync_flags_the_reel_whose_sound_is_offset_and_clears_the_others() {
+    use dcpdoctor_core::track_fixtures::{ReelTiming, write_reel_cpl};
+
+    let directory = TempDir::new().unwrap();
+    write_reel_cpl(
+        &directory.path().join("CPL.xml"),
+        &[
+            ReelTiming {
+                picture_entry: 0,
+                picture_duration: 48,
+                sound_entry: 0,
+                sound_duration: 48,
+            },
+            ReelTiming {
+                picture_entry: 0,
+                picture_duration: 48,
+                sound_entry: 12,
+                sound_duration: 48,
+            },
+        ],
+    );
+
+    cmd()
+        .args(["av-sync", directory.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("Reel 1: in sync"))
+        .stdout(predicates::str::contains(
+            "Reel 2: sound enters 12 frames (500.0 ms) after picture",
+        ));
+}
+
+#[test]
+fn av_sync_passes_a_package_whose_reels_line_up() {
+    use dcpdoctor_core::track_fixtures::{ReelTiming, write_reel_cpl};
+
+    let directory = TempDir::new().unwrap();
+    write_reel_cpl(
+        &directory.path().join("CPL.xml"),
+        &[ReelTiming {
+            picture_entry: 0,
+            picture_duration: 48,
+            sound_entry: 0,
+            sound_duration: 48,
+        }],
+    );
+
+    cmd()
+        .args(["av-sync", directory.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Reel 1: in sync"));
+}
+
+#[test]
 fn auto_qc_names_the_silent_stretch_in_a_sound_track_file() {
     use dcpdoctor_core::track_fixtures::{SoundStretch, write_sound_track};
 

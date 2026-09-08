@@ -326,15 +326,17 @@ enum Commands {
         client: Option<String>,
     },
 
-    /// Detect audio/video sync drift
+    /// Detect audio/video sync drift, per reel for a package
     #[command(name = "av-sync")]
     AvSync {
+        /// DCP or IMP directory, compared reel by reel
+        dcp_dir: Option<PathBuf>,
         /// Video file (MXF or image sequence directory)
         #[arg(long)]
-        video: PathBuf,
+        video: Option<PathBuf>,
         /// Audio file (MXF or WAV)
         #[arg(short = 'a', long)]
-        audio: PathBuf,
+        audio: Option<PathBuf>,
         /// Frame rate numerator
         #[arg(long, default_value = "24")]
         fps_num: u32,
@@ -1258,11 +1260,40 @@ fn main() {
             }
         }
         Some(Commands::AvSync {
+            dcp_dir,
             video,
             audio,
             fps_num,
             fps_den,
         }) => {
+            if let Some(dcp_dir) = dcp_dir {
+                let result = dcpdoctor_core::av_sync::detect_package_av_sync(&dcp_dir);
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                } else if !result.success {
+                    eprintln!("A/V sync per reel not measured: {}", result.error);
+                } else {
+                    println!("A/V Sync per reel:");
+                    for reel in &result.reels {
+                        println!("  {}", reel.describe());
+                    }
+                    for reason in &result.skipped {
+                        println!("  not compared: {reason}");
+                    }
+                }
+                if !result.success {
+                    std::process::exit(1);
+                }
+                if !result.in_sync {
+                    std::process::exit(1);
+                }
+                return;
+            }
+
+            let (Some(video), Some(audio)) = (video, audio) else {
+                eprintln!("Give a DCP directory, or both --video and --audio");
+                std::process::exit(1);
+            };
             let opts = dcpdoctor_core::av_sync::AvSyncOptions {
                 video_file: video,
                 audio_file: audio,
