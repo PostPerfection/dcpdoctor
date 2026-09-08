@@ -540,9 +540,15 @@ fn main() {
                         }
                         let distance = dcpdoctor_core::premium::compare_fingerprints(&fa, &fb);
                         let similarity = (1.0 - distance) * 100.0;
+                        let verdict = if distance <= dcpdoctor_core::premium::SAME_PICTURE_DISTANCE
+                        {
+                            "same picture"
+                        } else {
+                            "different picture"
+                        };
                         println!(
-                            "\nPicture fingerprint: {} vs {} ({:.0}% similar)",
-                            fa.hash, fb.hash, similarity
+                            "\nPicture fingerprint: {} vs {} ({similarity:.0}% similar, {verdict})",
+                            fa.hash, fb.hash
                         );
                     }
                     _ => {

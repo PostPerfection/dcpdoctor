@@ -1152,67 +1152,128 @@ pub struct ContentFingerprint {
     pub frame_sampled: u32,
 }
 
+/// Side of the grayscale grid the average hash is built from, so the hash is
+/// 8x8 = 64 bits.
+const HASH_GRID: u32 = 8;
+const HASH_PIXELS: usize = (HASH_GRID * HASH_GRID) as usize;
+
+/// The sampled frame sits this far into the content, past a leader or slate.
+const SAMPLE_FRACTION: u32 = 10;
+
+/// Normalized Hamming distance at or below which two fingerprints are the same
+/// picture. Re-encoding the same frames at another bitrate moves no more than a
+/// few of the 64 bits; unrelated pictures sit far above this.
+pub const SAME_PICTURE_DISTANCE: f64 = 0.1;
+
 /// Generate a perceptual hash fingerprint from a picture MXF.
 pub fn generate_fingerprint(mxf_path: &Path) -> ContentFingerprint {
     let mut fp = ContentFingerprint::default();
-
-    // Get total frames and resolution
-    let dur_cmd = format!(
-        "ffprobe -v quiet -select_streams v:0 -show_entries stream=nb_frames,width,height \
-         -of csv=p=0 \"{}\" 2>/dev/null",
-        mxf_path.display()
-    );
-    let dur_out = run_cmd(&dur_cmd);
-    let parts: Vec<&str> = dur_out.trim().split(',').collect();
-
-    let total_frames: u32 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-    fp.width = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    fp.height = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-
-    // Sample at ~10% into content (skip leader/slate)
-    let sample_frame = if total_frames > 10 {
-        total_frames / 10
+    let stream = probe_picture_stream(mxf_path);
+    fp.width = stream.width;
+    fp.height = stream.height;
+    fp.frame_sampled = if stream.frames > SAMPLE_FRACTION {
+        stream.frames / SAMPLE_FRACTION
     } else {
         0
     };
-    fp.frame_sampled = sample_frame;
 
-    // Extract frame as 8x8 grayscale for a compact 64-bit perceptual hash
-    let cmd = format!(
-        "ffmpeg -v quiet -i \"{}\" -vf \"select=eq(n\\,{}),scale=8:8,format=gray\" \
-         -frames:v 1 -f rawvideo pipe:1 2>/dev/null | xxd -p",
-        mxf_path.display(),
-        sample_frame
-    );
-    let output = run_cmd(&cmd);
-    let hex = output.replace('\n', "");
-
-    if hex.len() < 128 {
-        // Need 64 bytes (8x8) = 128 hex chars
+    let Some(pixels) = sample_gray_grid(mxf_path, fp.frame_sampled) else {
         return fp;
-    }
+    };
 
-    // Parse pixels and compute average hash
-    let mut pixels = [0u8; 64];
-    for (i, pixel) in pixels.iter_mut().enumerate() {
-        let byte_hex = &hex[i * 2..i * 2 + 2];
-        *pixel = u8::from_str_radix(byte_hex, 16).unwrap_or(0);
-    }
-
-    let sum: u64 = pixels.iter().map(|&p| p as u64).sum();
-    let mean = (sum / 64) as u8;
-
-    // Build 64-bit hash: 1 if pixel > mean, 0 otherwise
-    let mut hash_val: u64 = 0;
-    for &pixel in &pixels {
-        hash_val <<= 1;
+    let mean = (pixels.iter().map(|&p| p as u32).sum::<u32>() / HASH_PIXELS as u32) as u8;
+    let mut hash = 0u64;
+    for pixel in pixels {
+        hash <<= 1;
         if pixel > mean {
-            hash_val |= 1;
+            hash |= 1;
         }
     }
 
-    fp.hash = format!("{hash_val:016x}");
+    fp.hash = format!("{hash:016x}");
     fp
+}
+
+/// What the picture stream declares, with the frame count derived from the
+/// duration when the container states none. MXF states none.
+struct PictureStream {
+    width: u32,
+    height: u32,
+    frames: u32,
+}
+
+fn probe_picture_stream(mxf_path: &Path) -> PictureStream {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,nb_frames,duration,r_frame_rate",
+            // ffprobe emits the entries in its own order, so read them by key
+            "-of",
+            "default=noprint_wrappers=1",
+        ])
+        .arg(mxf_path)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+
+    let value = |key: &str| -> Option<String> {
+        output
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix(key)?
+                    .strip_prefix('=')
+                    .map(str::to_string)
+            })
+            .filter(|v| v != "N/A")
+    };
+    let number = |key: &str| value(key).and_then(|v| v.parse::<f64>().ok());
+
+    let frames = number("nb_frames").or_else(|| {
+        let rate = value("r_frame_rate")?;
+        let (numerator, denominator) = rate.split_once('/')?;
+        let numerator = numerator.parse::<f64>().ok()?;
+        let denominator = denominator.parse::<f64>().ok()?;
+        if denominator <= 0.0 {
+            return None;
+        }
+        Some(number("duration")? * numerator / denominator)
+    });
+
+    PictureStream {
+        width: number("width").unwrap_or(0.0) as u32,
+        height: number("height").unwrap_or(0.0) as u32,
+        frames: frames.unwrap_or(0.0) as u32,
+    }
+}
+
+/// One frame decoded to an 8x8 grayscale grid, or None when ffmpeg could not
+/// reach that frame.
+fn sample_gray_grid(mxf_path: &Path, frame: u32) -> Option<[u8; HASH_PIXELS]> {
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-v", "quiet", "-i"])
+        .arg(mxf_path)
+        .args([
+            "-vf",
+            // the comma inside the select expression is escaped for ffmpeg's
+            // own filter parser, not for a shell
+            &format!("select=eq(n\\,{frame}),scale={HASH_GRID}:{HASH_GRID},format=gray"),
+            // without this, dropped frames are made up again at the output rate
+            "-fps_mode",
+            "passthrough",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ])
+        .output()
+        .ok()?;
+
+    output.stdout.get(..HASH_PIXELS)?.try_into().ok()
 }
 
 /// Compare two fingerprints, returns normalized Hamming distance (0.0 = identical).
@@ -1228,7 +1289,7 @@ pub fn compare_fingerprints(a: &ContentFingerprint, b: &ContentFingerprint) -> f
     let hb = u64::from_str_radix(&b.hash, 16).unwrap_or(0);
 
     let distance = (ha ^ hb).count_ones();
-    distance as f64 / 64.0
+    distance as f64 / HASH_PIXELS as f64
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
