@@ -654,7 +654,7 @@ fn guard_bit_violation(codestream: &[u8], width: u32) -> Option<(u8, u8)> {
 }
 
 /// frame index -> SMPTE timecode HH:MM:SS:FF at the given integer frame rate.
-fn frame_to_timecode(frame: u32, fps: u32) -> String {
+pub(crate) fn frame_to_timecode(frame: u32, fps: u32) -> String {
     let fps = fps.max(1);
     let secs = frame / fps;
     format!(
