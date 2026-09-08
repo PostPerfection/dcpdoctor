@@ -337,11 +337,12 @@ REST API endpoints:
 
 `--api-key <key>`, or `DCPDOCTOR_API_KEY` in the environment, requires that key in
 `X-Api-Key` or `Authorization: Bearer` on every request but `GET /health`.
-Without one the server accepts any caller that reaches the port, and the default
-bind address is `0.0.0.0`: set a key, or bind `127.0.0.1`, on any machine others
-can reach. A body over 1 MiB is refused with 413, a body that is not a validation
-request with 400, and a path that does not exist with 404. The response is only
-ever the validation result, never anything read out of the package.
+Without one the server accepts any caller that reaches the port. The default
+bind address is `127.0.0.1`, so only this machine can reach it: set a key before
+binding `--bind 0.0.0.0` or any address others can reach. A body over 1 MiB is
+refused with 413, a body that is not a validation request with 400, and a path
+that does not exist with 404. The response is only ever the validation result,
+never anything read out of the package.
 
 ### Performance Options
 

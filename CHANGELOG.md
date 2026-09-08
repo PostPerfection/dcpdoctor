@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- `serve` binds `127.0.0.1` by default, where it bound `0.0.0.0`: without `--api-key` the endpoint validates any path the process can read, so it is no longer reachable from other hosts unless `--bind` says so.
+
 ### Added
 - `scripts/fetch_photon.sh`, imfwizard's checksum-pinned Maven Central fetch, and a CI step that runs it on the Linux, macOS and Windows runners with a JDK and a cache, so `PHOTON_DIR` is set for every test run. Nothing exercised the Photon pass in CI before, which is how a parser that dropped all of Photon's output survived. The test tools step now also demands `java -version`.
 - CLI tests that build a real SMPTE DCP, ffmpeg-encoded JPEG 2000 picture essence and a PCM tone wrapped by asdcplib, and run `qc-report`, `diff`, `diff --fingerprint`, `frame-compare` and `validate --timeline` over it. CI installs weasyprint on the Linux and macOS runners so the PDF report is written and checked rather than assumed.

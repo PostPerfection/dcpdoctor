@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use postkit::rest_api::{Request, RestServer};
 use serde::Deserialize;
 
-pub const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0";
+pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8080;
 
 // the one path an API key is not required on
