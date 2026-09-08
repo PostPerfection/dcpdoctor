@@ -321,6 +321,11 @@ dcpdoctor serve --port 8080
 dcpdoctor watch /ingest/incoming --interval 5000
 ```
 
+`watch` prints one line per package, `<path>: PASS|FAIL (n errors, m warnings)`. A
+package is validated once every file its `ASSETMAP` names is present and the
+folder has stopped changing between polls, so a copy still in flight is left
+alone, and each package is reported once.
+
 REST API endpoints:
 - `GET /health`: Returns `{"status": "ok"}`
 - `POST /validate`: Body: `{"path": "/path/to/dcp"}`, returns validation result. Add an optional `"ov": "/path/to/ov"` to resolve a supplemental package's cross-package references against the OV.

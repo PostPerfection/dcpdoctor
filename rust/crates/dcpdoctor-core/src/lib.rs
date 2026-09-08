@@ -51,6 +51,7 @@ pub mod timeline;
 pub mod track_fixtures;
 pub mod validate;
 pub mod validators;
+pub mod watch;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

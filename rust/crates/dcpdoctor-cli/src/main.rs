@@ -157,7 +157,7 @@ enum Commands {
         /// Directory to watch
         directory: PathBuf,
         /// Poll interval in ms
-        #[arg(long, default_value = "5000")]
+        #[arg(long, default_value_t = dcpdoctor_core::watch::DEFAULT_POLL_INTERVAL_MILLISECONDS)]
         interval: u32,
     },
 
@@ -586,8 +586,12 @@ fn main() {
             directory,
             interval,
         }) => {
+            if !directory.is_dir() {
+                eprintln!("Not a directory: {}", directory.display());
+                std::process::exit(1);
+            }
             let opts = dcpdoctor_core::VerifyOptions::standard();
-            dcpdoctor_core::server::watch_directory(
+            dcpdoctor_core::watch::watch_directory(
                 &directory,
                 &opts,
                 |path, result| {

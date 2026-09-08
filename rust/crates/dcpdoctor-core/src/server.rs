@@ -1,5 +1,4 @@
-/// REST API server and directory watching for remote validation.
-use std::collections::HashSet;
+/// REST API server for remote validation.
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
@@ -122,52 +121,6 @@ pub fn start_server(bind: &str, port: u16) {
             let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
             let _ = stream.write_all(response.as_bytes());
         }
-    }
-}
-
-/// Watch a directory for new DCPs and auto-validate.
-///
-/// Polls the directory at the given interval and validates any new or modified
-/// DCP subdirectories, invoking the callback with results.
-pub fn watch_directory(
-    dir: &Path,
-    opts: &crate::VerifyOptions,
-    on_result: impl Fn(&Path, &crate::VerifyResult),
-    poll_interval_ms: u32,
-) {
-    let interval = std::time::Duration::from_millis(poll_interval_ms as u64);
-    let mut known: HashSet<std::path::PathBuf> = HashSet::new();
-
-    tracing::info!(
-        "Watching {} for new DCPs (poll {}ms)",
-        dir.display(),
-        poll_interval_ms
-    );
-
-    loop {
-        let entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-
-        for entry in &entries {
-            // Check if this looks like a DCP (has ASSETMAP or ASSETMAP.xml)
-            let is_dcp = entry.join("ASSETMAP").exists() || entry.join("ASSETMAP.xml").exists();
-            if !is_dcp {
-                continue;
-            }
-
-            if known.insert(entry.clone()) {
-                tracing::info!("New DCP detected: {}", entry.display());
-                let result = crate::verify(entry, opts);
-                on_result(entry, &result);
-            }
-        }
-
-        std::thread::sleep(interval);
     }
 }
 
