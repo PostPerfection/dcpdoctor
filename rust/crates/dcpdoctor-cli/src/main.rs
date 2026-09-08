@@ -3,6 +3,10 @@ use std::path::PathBuf;
 
 use dcpdoctor_core::report::ReportFormat;
 
+/// PSNR a `frame-compare` frame has to clear before the difference counts as
+/// visible rather than encode noise.
+const FRAME_COMPARE_THRESHOLD_PSNR: f64 = 30.0;
+
 #[derive(Parser)]
 #[command(name = "dcpdoctor", version, about = "DCP/IMF validator and verifier")]
 struct Cli {
@@ -1409,7 +1413,7 @@ fn main() {
             };
 
             let opts = dcpdoctor_core::frame_compare::CompareOptions {
-                threshold_psnr: 30.0,
+                threshold_psnr: FRAME_COMPARE_THRESHOLD_PSNR,
                 compute_ssim: true,
                 compute_vmaf: vmaf,
             };
@@ -1432,10 +1436,12 @@ fn main() {
                 if vmaf {
                     println!("  VMAF:            {:.2}", result.vmaf_score);
                 }
-                if result.identical {
-                    println!("  Result:          IDENTICAL");
-                } else {
-                    println!("  Diff frames:     {}", result.frames_different);
+                println!("  Result:          {}", result.verdict);
+                if result.verdict != dcpdoctor_core::frame_compare::Verdict::Identical {
+                    println!(
+                        "  Frames below {FRAME_COMPARE_THRESHOLD_PSNR:.0} dB PSNR: {}",
+                        result.frames_different
+                    );
                 }
             }
         }

@@ -34,12 +34,40 @@ impl Default for CompareOptions {
     }
 }
 
+/// PSNR postkit reports for a frame whose components carry no error at all:
+/// ffmpeg prints `inf` and postkit's stats parser substitutes this. No encode
+/// that changes a sample reaches it.
+const LOSSLESS_PSNR: f64 = 100.0;
+
+/// How the two files compared.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    /// Every frame decoded to the same samples.
+    Identical,
+    /// The pictures differ, but no frame fell below the PSNR threshold.
+    WithinThreshold,
+    /// At least one frame fell below the PSNR threshold.
+    #[default]
+    Different,
+}
+
+impl std::fmt::Display for Verdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Verdict::Identical => "IDENTICAL",
+            Verdict::WithinThreshold => "WITHIN THRESHOLD",
+            Verdict::Different => "DIFFERENT",
+        })
+    }
+}
+
 /// Result of a file comparison.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct CompareResult {
     pub success: bool,
     pub error: String,
-    pub identical: bool,
+    pub verdict: Verdict,
     pub frames_compared: u32,
     pub frames_different: u32,
     pub avg_psnr: f64,
@@ -97,7 +125,22 @@ pub fn compare_files(file_a: &Path, file_b: &Path, opts: &CompareOptions) -> Com
         }
     }
 
-    result.identical = result.frames_different == 0;
+    result.verdict = verdict(&cmp.per_frame, result.frames_different);
     result.success = true;
     result
+}
+
+/// A comparison is only identical when every frame came back lossless. Reading
+/// "no frame below the threshold" as identical called a 62 dB re-encode of the
+/// same content an exact match.
+fn verdict(per_frame: &[postkit::frame_compare::FrameMetric], frames_different: u32) -> Verdict {
+    let lossless = !per_frame.is_empty()
+        && per_frame
+            .iter()
+            .all(|m| m.psnr_avg >= LOSSLESS_PSNR && m.ssim_avg >= 1.0);
+    match (lossless, frames_different) {
+        (true, _) => Verdict::Identical,
+        (false, 0) => Verdict::WithinThreshold,
+        (false, _) => Verdict::Different,
+    }
 }
