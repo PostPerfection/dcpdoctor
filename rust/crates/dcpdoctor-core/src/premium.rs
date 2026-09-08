@@ -808,24 +808,65 @@ pub struct NetflixDeliveryResult {
     pub compliant: bool,
     pub app_id: String,
     pub violations: Vec<String>,
-    /// reasons the CPL part of the check could not run
+    /// reasons a rule could not be applied
     pub skipped: Vec<String>,
 }
 
-/// Check Netflix delivery specification for an IMF package.
+// The rules below are the ones Netflix's own IMF validator, Photon, applies to a
+// package's XML, and each names the Photon class that carries it. Netflix's
+// partner-facing delivery page sits behind a studio login, so nothing here is
+// taken from a page that could not be read. The App 2E picture and sound
+// constraints live in the essence descriptors rather than the XML, and the
+// Photon pass is what reads those.
+
+/// Photon requires exactly one file named `ASSETMAP.xml` at the package root.
+/// Source: Netflix Photon, `BasicMapProfileV2MappedFileSet` (`ASSETMAP_FILE_NAME`).
+const ASSETMAP_FILE_NAME: &str = "ASSETMAP.xml";
+const ASSETMAP_RULE_SOURCE: &str = "https://github.com/Netflix/photon/blob/master/src/main/java/com/netflix/imflibrary/st0429_9/BasicMapProfileV2MappedFileSet.java";
+
+/// The CPL namespaces Photon has a schema for. Source: Netflix Photon,
+/// `IMFCompositionPlaylist.supportedCPLSchemas`.
+const SUPPORTED_CPL_NAMESPACES: [&str; 2] = [
+    "http://www.smpte-ra.org/schemas/2067-3/2013",
+    "http://www.smpte-ra.org/schemas/2067-3/2016",
+];
+const CPL_NAMESPACE_RULE_SOURCE: &str = "https://github.com/Netflix/photon/blob/master/src/main/java/com/netflix/imflibrary/st2067_2/IMFCompositionPlaylist.java";
+
+/// The App 2E ApplicationIdentification values Photon maps to core constraints.
+/// Anything else leaves the composition with no App 2E constraints to check.
+/// Source: Netflix Photon, `CoreConstraints.fromApplicationId`.
+const APP_2E_IDENTIFICATIONS: [&str; 4] = [
+    "http://www.smpte-ra.org/schemas/2067-21/2014",
+    "http://www.smpte-ra.org/schemas/2067-21/2016",
+    "http://www.smpte-ra.org/ns/2067-21/2020",
+    "http://www.smpte-ra.org/ns/2067-21/2021",
+];
+const APP_2E_RULE_SOURCE: &str = "https://github.com/Netflix/photon/blob/master/src/main/java/com/netflix/imflibrary/st2067_2/CoreConstraints.java";
+
+/// Every frame rate App 2E allows at some picture format: FPS_HD, FPS_UHD and
+/// FPS_4K taken together. Which of the three sets applies depends on the
+/// picture's size, colour model and bit depth, which the Photon pass resolves
+/// from the essence descriptor. Source: Netflix Photon,
+/// `IMFApp2E2020ConstraintsValidator`.
+const APP_2E_EDIT_RATES: [(u64, u64); 9] = [
+    (24, 1),
+    (24000, 1001),
+    (25, 1),
+    (30, 1),
+    (30000, 1001),
+    (50, 1),
+    (60, 1),
+    (60000, 1001),
+    (120, 1),
+];
+const EDIT_RATE_RULE_SOURCE: &str = "https://github.com/Netflix/photon/blob/master/src/main/java/com/netflix/imflibrary/validation/IMFApp2E2020ConstraintsValidator.java";
+
+/// Check the offline-checkable Netflix IMF delivery rules on an IMF package.
 pub fn check_netflix_delivery(imf_dir: &Path) -> NetflixDeliveryResult {
     let mut result = NetflixDeliveryResult::default();
 
-    // Netflix requires ASSETMAP.xml (not ASSETMAP without extension)
-    if imf_dir.join("ASSETMAP").exists() && !imf_dir.join("ASSETMAP.xml").exists() {
-        result
-            .violations
-            .push("Netflix requires ASSETMAP.xml (not ASSETMAP without extension)".into());
-    }
-
-    // Check CPL for ApplicationIdentification and EditRate
     let entries = match std::fs::read_dir(imf_dir) {
-        Ok(e) => e,
+        Ok(e) => e.flatten().map(|e| e.path()).collect::<Vec<_>>(),
         Err(e) => {
             result
                 .skipped
@@ -834,80 +875,123 @@ pub fn check_netflix_delivery(imf_dir: &Path) -> NetflixDeliveryResult {
         }
     };
 
-    let mut cpl_examined = false;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("xml") {
-            continue;
-        }
-
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                result
-                    .skipped
-                    .push(format!("cannot read {}: {e}", path.display()));
-                continue;
-            }
-        };
-
-        if !content.contains("CompositionPlaylist") {
-            continue;
-        }
-        cpl_examined = true;
-
-        // Check ApplicationIdentification
-        let app_re = regex_lite::Regex::new(
-            r"<ApplicationIdentification>([^<]+)</ApplicationIdentification>",
-        )
-        .unwrap();
-        if let Some(cap) = app_re.captures(&content) {
-            result.app_id = cap[1].to_string();
-            if !result.app_id.contains("2067-21") && !result.app_id.contains("2067-20") {
-                result.violations.push(format!(
-                    "ApplicationIdentification '{}' may not be Netflix-accepted (expected App2E/ST 2067-21)",
-                    result.app_id
-                ));
-            }
-        } else {
-            result
-                .violations
-                .push("CPL missing ApplicationIdentification (Netflix requires App2E)".into());
-        }
-
-        // Check EditRate
-        let rate_re = regex_lite::Regex::new(r"<EditRate>([^<]+)</EditRate>").unwrap();
-        if let Some(cap) = rate_re.captures(&content) {
-            let edit_rate = &cap[1];
-            let accepted_rates = [
-                "24000 1001",
-                "24 1",
-                "25 1",
-                "30000 1001",
-                "50 1",
-                "60000 1001",
-                "48 1",
-            ];
-            let rate_ok = accepted_rates.iter().any(|r| edit_rate.contains(r));
-            if !rate_ok {
-                result.violations.push(format!(
-                    "Edit rate '{edit_rate}' not in Netflix accepted rates"
-                ));
-            }
-        }
-
-        break;
+    let assetmaps = entries
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name == ASSETMAP_FILE_NAME)
+        })
+        .count();
+    if assetmaps != 1 {
+        result.violations.push(format!(
+            "the package root holds {assetmaps} files named {ASSETMAP_FILE_NAME}, and exactly one is allowed ({ASSETMAP_RULE_SOURCE})"
+        ));
     }
 
-    if !cpl_examined {
+    let mut cpls = Vec::new();
+    for path in &entries {
+        if path
+            .extension()
+            .is_none_or(|ext| !ext.eq_ignore_ascii_case("xml"))
+        {
+            continue;
+        }
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                if let Some(namespace) = composition_playlist_namespace(&content) {
+                    cpls.push((path.clone(), content, namespace));
+                }
+            }
+            Err(e) => result
+                .skipped
+                .push(format!("cannot read {}: {e}", path.display())),
+        }
+    }
+
+    if cpls.is_empty() {
         result
             .skipped
             .push(format!("no CPL found in {}", imf_dir.display()));
     }
 
+    for (path, content, namespace) in &cpls {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+
+        if !SUPPORTED_CPL_NAMESPACES.contains(&namespace.as_str()) {
+            result.violations.push(format!(
+                "{name} is a CompositionPlaylist in {namespace}, and the accepted namespaces are {} ({CPL_NAMESPACE_RULE_SOURCE})",
+                SUPPORTED_CPL_NAMESPACES.join(" and ")
+            ));
+        }
+
+        match application_identifications(content) {
+            Some(ids) => {
+                result.app_id = ids.join(" ");
+                if !ids.iter().any(|id| APP_2E_IDENTIFICATIONS.contains(&id.as_str())) {
+                    result.violations.push(format!(
+                        "{name} declares ApplicationIdentification '{}', which is no App 2E identification ({APP_2E_RULE_SOURCE})",
+                        result.app_id
+                    ));
+                }
+            }
+            None => result.violations.push(format!(
+                "{name} carries no ApplicationIdentification, so it declares no App 2E conformance ({APP_2E_RULE_SOURCE})"
+            )),
+        }
+
+        match composition_edit_rate(content) {
+            Some(rate) => {
+                if !APP_2E_EDIT_RATES
+                    .iter()
+                    .any(|(n, d)| n * rate.1 == rate.0 * d)
+                {
+                    result.violations.push(format!(
+                        "{name} declares an EditRate of {} {}, which is no App 2E frame rate ({EDIT_RATE_RULE_SOURCE})",
+                        rate.0, rate.1
+                    ));
+                }
+            }
+            None => result
+                .skipped
+                .push(format!("{name} declares no composition EditRate")),
+        }
+    }
+
     result.compliant = result.violations.is_empty() && result.skipped.is_empty();
     result
+}
+
+/// The namespace of an XML document whose root element is a
+/// `CompositionPlaylist`, resolved rather than read off the prefix.
+fn composition_playlist_namespace(xml: &str) -> Option<String> {
+    let (root, namespace) = crate::schema::root_element(xml)?;
+    (root == "CompositionPlaylist").then_some(namespace)
+}
+
+/// The URIs an `ApplicationIdentification` element lists. ST 2067-2 types it as
+/// a whitespace-separated list, so a CPL may name more than one.
+fn application_identifications(content: &str) -> Option<Vec<String>> {
+    let element = regex_lite::Regex::new(
+        r"<(?:[\w-]+:)?ApplicationIdentification>([^<]*)</(?:[\w-]+:)?ApplicationIdentification>",
+    )
+    .unwrap();
+    let value = element.captures(content)?.get(1)?.as_str();
+    Some(value.split_whitespace().map(str::to_string).collect())
+}
+
+/// The composition's own EditRate, which in ST 2067-3 element order is the first
+/// one in the document, ahead of the segments and their resources.
+fn composition_edit_rate(content: &str) -> Option<(u64, u64)> {
+    let element =
+        regex_lite::Regex::new(r"<(?:[\w-]+:)?EditRate>([^<]*)</(?:[\w-]+:)?EditRate>").unwrap();
+    let value = element.captures(content)?.get(1)?.as_str();
+    let mut parts = value.split_whitespace();
+    let numerator: u64 = parts.next()?.parse().ok()?;
+    let denominator: u64 = match parts.next() {
+        Some(d) => d.parse().ok()?,
+        None => 1,
+    };
+    (denominator > 0).then_some((numerator, denominator))
 }
 
 /// Convert Netflix result to notes.
@@ -925,36 +1009,34 @@ pub fn netflix_to_notes(result: &NetflixDeliveryResult, source: &Path) -> Vec<No
         });
     }
 
-    if result.compliant {
-        notes.push(Note {
-            severity: Severity::Info,
-            code: Code::MissingAssetmap,
-            message: "Netflix delivery spec: PASS".into(),
-            file,
-            line: 0,
-        });
-    } else if !result.violations.is_empty() {
+    for violation in &result.violations {
         notes.push(Note {
             severity: Severity::Warning,
-            code: Code::MissingAssetmap,
-            message: format!(
-                "Netflix delivery spec: {} violation(s)",
-                result.violations.len()
-            ),
+            code: Code::NetflixDeliveryViolation,
+            message: format!("Netflix delivery spec: {violation}"),
             file: file.clone(),
             line: 0,
         });
-
-        for v in &result.violations {
-            notes.push(Note {
-                severity: Severity::Warning,
-                code: Code::MissingAssetmap,
-                message: format!("[Netflix] {v}"),
-                file: file.clone(),
-                line: 0,
-            });
-        }
     }
+
+    if result.compliant {
+        notes.push(Note {
+            severity: Severity::Info,
+            code: Code::NetflixDeliveryViolation,
+            message: "Netflix delivery spec: PASS".into(),
+            file: file.clone(),
+            line: 0,
+        });
+    }
+
+    // the App 2E rules these checks do not reach are the descriptor ones
+    notes.push(Note {
+        severity: Severity::Info,
+        code: Code::NetflixDeliveryViolation,
+        message: "Netflix delivery spec: the App 2E colour model, bit depth, stored size, frame layout and JPEG 2000 profile live in the essence descriptors, which the Photon pass reads".into(),
+        file,
+        line: 0,
+    });
 
     notes
 }
@@ -1530,5 +1612,207 @@ mod tests {
 
         assert!(!info.detected());
         assert!(check_atmos_compliance(&info, &path).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod netflix_tests {
+    use super::*;
+
+    const APP_2E_2020: &str = "http://www.smpte-ra.org/ns/2067-21/2020";
+
+    /// An IMP holding only the documents these rules read.
+    fn write_imp(
+        dir: &Path,
+        assetmap_name: &str,
+        cpl_namespace: &str,
+        application: Option<&str>,
+        edit_rate: &str,
+    ) {
+        std::fs::write(
+            dir.join(assetmap_name),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:2fd93ab2-dab7-481d-bb43-5779ba62384d</Id>
+</AssetMap>"#,
+        )
+        .unwrap();
+
+        let application = match application {
+            Some(id) => format!("<ApplicationIdentification>{id}</ApplicationIdentification>"),
+            None => String::new(),
+        };
+        std::fs::write(
+            dir.join("CPL.xml"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="{cpl_namespace}">
+  <Id>urn:uuid:394080ca-5471-40e9-9827-e6e577753400</Id>
+  <ContentTitle>Netflix rules</ContentTitle>
+  <EditRate>{edit_rate}</EditRate>
+  {application}
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn app_2e_imp(dir: &Path) {
+        write_imp(
+            dir,
+            "ASSETMAP.xml",
+            "http://www.smpte-ra.org/schemas/2067-3/2016",
+            Some(APP_2E_2020),
+            "24 1",
+        );
+    }
+
+    #[test]
+    fn an_app_2e_imp_passes_every_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        app_2e_imp(dir.path());
+
+        let result = check_netflix_delivery(dir.path());
+        assert!(
+            result.compliant,
+            "an App 2E IMP must pass, got: {:?} {:?}",
+            result.violations, result.skipped
+        );
+        assert_eq!(result.app_id, APP_2E_2020);
+    }
+
+    #[test]
+    fn an_assetmap_without_the_xml_extension_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        write_imp(
+            dir.path(),
+            "ASSETMAP",
+            "http://www.smpte-ra.org/schemas/2067-3/2016",
+            Some(APP_2E_2020),
+            "24 1",
+        );
+
+        let result = check_netflix_delivery(dir.path());
+        assert!(
+            result
+                .violations
+                .iter()
+                .any(|v| v.contains("0 files named ASSETMAP.xml")),
+            "got: {:?}",
+            result.violations
+        );
+    }
+
+    #[test]
+    fn a_cpl_that_is_not_st_2067_3_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        write_imp(
+            dir.path(),
+            "ASSETMAP.xml",
+            "http://www.smpte-ra.org/schemas/429-7/2006/CPL",
+            Some(APP_2E_2020),
+            "24 1",
+        );
+
+        let result = check_netflix_delivery(dir.path());
+        assert!(
+            result.violations.iter().any(|v| v
+                .contains("CompositionPlaylist in http://www.smpte-ra.org/schemas/429-7/2006/CPL")),
+            "got: {:?}",
+            result.violations
+        );
+    }
+
+    #[test]
+    fn a_cpl_with_no_application_identification_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        write_imp(
+            dir.path(),
+            "ASSETMAP.xml",
+            "http://www.smpte-ra.org/schemas/2067-3/2016",
+            None,
+            "24 1",
+        );
+
+        let result = check_netflix_delivery(dir.path());
+        assert!(
+            result
+                .violations
+                .iter()
+                .any(|v| v.contains("carries no ApplicationIdentification")),
+            "got: {:?}",
+            result.violations
+        );
+    }
+
+    /// ST 2067-20 is Application 2, not the 2E Netflix takes.
+    #[test]
+    fn an_application_that_is_not_2e_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        write_imp(
+            dir.path(),
+            "ASSETMAP.xml",
+            "http://www.smpte-ra.org/schemas/2067-3/2016",
+            Some("http://www.smpte-ra.org/schemas/2067-20/2013"),
+            "24 1",
+        );
+
+        let result = check_netflix_delivery(dir.path());
+        assert!(
+            result.violations.iter().any(|v| v.contains(
+                "ApplicationIdentification 'http://www.smpte-ra.org/schemas/2067-20/2013'"
+            )),
+            "got: {:?}",
+            result.violations
+        );
+    }
+
+    #[test]
+    fn the_app_2e_frame_rates_are_accepted_and_others_are_not() {
+        for (rate, accepted) in [
+            ("24 1", true),
+            ("24000 1001", true),
+            ("30000 1001", true),
+            ("60000 1001", true),
+            ("120 1", true),
+            ("48 1", false),
+            ("23 1", false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write_imp(
+                dir.path(),
+                "ASSETMAP.xml",
+                "http://www.smpte-ra.org/schemas/2067-3/2016",
+                Some(APP_2E_2020),
+                rate,
+            );
+
+            let result = check_netflix_delivery(dir.path());
+            assert_eq!(
+                !result
+                    .violations
+                    .iter()
+                    .any(|v| v.contains("is no App 2E frame rate")),
+                accepted,
+                "EditRate {rate}, got: {:?}",
+                result.violations
+            );
+        }
+    }
+
+    /// The rules that need the essence descriptors are Photon's, and the notes
+    /// have to say so rather than leave a package looking fully checked.
+    #[test]
+    fn the_notes_name_photon_as_the_descriptor_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        app_2e_imp(dir.path());
+
+        let notes = netflix_to_notes(&check_netflix_delivery(dir.path()), dir.path());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.message.contains("Photon pass reads")),
+            "got: {notes:?}"
+        );
     }
 }

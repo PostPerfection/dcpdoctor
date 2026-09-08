@@ -211,6 +211,9 @@ pub enum Code {
     // ISDCF naming
     IsdcfNamingViolation,
 
+    // Netflix IMF delivery
+    NetflixDeliveryViolation,
+
     // Encryption
     EncryptionDetected,
     KdmRequired,
@@ -357,6 +360,7 @@ impl Code {
             Code::ProjectorFourKStereoSupport => "projector_4k_stereo_support",
             Code::DistributorAudioChannelCount => "distributor_audio_channel_count",
             Code::IsdcfNamingViolation => "isdcf_naming_violation",
+            Code::NetflixDeliveryViolation => "netflix_delivery_violation",
             Code::EncryptionDetected => "encryption_detected",
             Code::KdmRequired => "kdm_required",
             Code::KdmExpired => "kdm_expired",
