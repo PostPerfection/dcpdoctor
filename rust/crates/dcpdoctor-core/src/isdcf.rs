@@ -4,6 +4,21 @@ use std::path::Path;
 
 use crate::{Code, Note, Severity};
 
+/// The base audio configurations of the ISDCF registry, one per audio field,
+/// matched without regard to case since packages write Atmos and Dbox that way.
+/// The registry spells DTS:X as DTSX, and ATMOS is deprecated there in favour of
+/// IAB while still naming real packages.
+const AUDIO_CONFIGURATIONS: [&str; 10] = [
+    "10", "20", "21", "51", "71", "MOS", "IAB", "AURO", "DTSX", "ATMOS",
+];
+
+/// The tracks the registry lists alongside a base configuration: assisted
+/// listening, audio description, sign language and the D-BOX motion stream.
+const SUPPLEMENTARY_AUDIO_TRACKS: [&str; 4] = ["HI", "VI", "SL", "DBOX"];
+
+/// The resolution field's two values.
+const RESOLUTIONS: [&str; 2] = ["2K", "4K"];
+
 /// Check a content title against ISDCF naming conventions.
 pub fn check_isdcf_naming(content_title: &str, cpl_path: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
@@ -120,12 +135,35 @@ pub fn check_isdcf_naming(content_title: &str, cpl_path: &Path) -> Vec<Note> {
         }
     }
 
-    // Check for resolution field (2K/4K)
-    if fields.len() >= 6 && !fields.iter().any(|f| *f == "2K" || *f == "4K") {
+    // Field 6: Audio type. The tokens are the ISDCF registry's audio
+    // configurations: one base configuration, then the supplementary tracks.
+    if fields.len() >= 6 && !fields[5].is_empty() {
+        let mut tokens = fields[5].split('-');
+        let base_ok = tokens
+            .next()
+            .is_some_and(|base| AUDIO_CONFIGURATIONS.contains(&base.to_uppercase().as_str()));
+        let supplementary_ok =
+            tokens.all(|token| SUPPLEMENTARY_AUDIO_TRACKS.contains(&token.to_uppercase().as_str()));
+        if !base_ok || !supplementary_ok {
+            notes.push(Note {
+                severity: Severity::Info,
+                code: Code::IsdcfNamingViolation,
+                message: format!("Non-standard audio field: {}", fields[5]),
+                file: Some(cpl_path.to_path_buf()),
+                line: 0,
+            });
+        }
+    }
+
+    // Field 7: Resolution
+    if fields.len() >= 7 && !RESOLUTIONS.contains(&fields[6]) {
         notes.push(Note {
             severity: Severity::Info,
             code: Code::IsdcfNamingViolation,
-            message: "No resolution field (2K/4K) found in title".into(),
+            message: format!(
+                "Non-standard resolution field: {} (expected 2K or 4K)",
+                fields[6]
+            ),
             file: Some(cpl_path.to_path_buf()),
             line: 0,
         });
@@ -306,6 +344,69 @@ mod tests {
                 "{name} should still be flagged"
             );
         }
+    }
+
+    #[test]
+    fn audio_configurations_from_the_registry_are_accepted() {
+        for audio in [
+            "51",
+            "51-HI-VI",
+            "71-HI-VI-SL-DBOX",
+            "21",
+            "MOS",
+            "IAB",
+            "Atmos",
+        ] {
+            let name = format!("Movie_FTR_F_EN_US_{audio}_2K_ST_20260101_FAC_SMPTE_OV");
+            let notes = check_isdcf_naming(&name, &PathBuf::from("CPL.xml"));
+            assert!(
+                !notes.iter().any(|n| n.message.contains("audio field")),
+                "{audio} is a registry audio configuration, got: {notes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_audio_field_outside_the_registry_is_named() {
+        for audio in ["91", "51-XX", "5.1"] {
+            let name = format!("Movie_FTR_F_EN_US_{audio}_2K_ST_20260101_FAC_SMPTE_OV");
+            let notes = check_isdcf_naming(&name, &PathBuf::from("CPL.xml"));
+            assert!(
+                notes
+                    .iter()
+                    .any(|n| n.message == format!("Non-standard audio field: {audio}")),
+                "{audio} must be named, got: {notes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_resolution_field_is_read_where_the_convention_puts_it() {
+        for (resolution, flagged) in [("2K", false), ("4K", false), ("3K", true), ("HD", true)] {
+            let name = format!("Movie_FTR_F_EN_US_51_{resolution}_ST_20260101_FAC_SMPTE_OV");
+            let notes = check_isdcf_naming(&name, &PathBuf::from("CPL.xml"));
+            assert_eq!(
+                notes.iter().any(|n| n.message
+                    == format!("Non-standard resolution field: {resolution} (expected 2K or 4K)")),
+                flagged,
+                "{resolution} in the resolution field, got: {notes:?}"
+            );
+        }
+    }
+
+    // the field is positional: 2K in the studio field is not the resolution
+    #[test]
+    fn a_resolution_token_in_another_field_does_not_satisfy_the_rule() {
+        let notes = check_isdcf_naming(
+            "Movie_FTR_F_EN_US_51_XX_2K_20260101_FAC_SMPTE_OV",
+            &PathBuf::from("CPL.xml"),
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.message.contains("Non-standard resolution field: XX")),
+            "got: {notes:?}"
+        );
     }
 
     #[test]
