@@ -6,6 +6,9 @@
 - Out-of-gamut sampling, which the site has claimed since before there was any code behind it. `validate --studio --deep` now decodes twelve evenly spaced frames of each picture track, converts every X'Y'Z' code to linear luminance with the ST 428-1 2.6 gamma over the 52.37 cd/m² full scale, matrixes it to linear DCI-P3 with the RP 431-2 primaries at the DCI white, and counts the pixels landing more than three 12-bit code steps below zero or above full scale. An INFO note reports the share and the frames it decoded; over 1% turns into a WARNING. A picture ffprobe does not decode as `xyz12le` gets a skip note naming the format instead. New code `picture_out_of_gamut`. `ColorInfo.xyz_to_p3_checked`, which was set true whether or not anything was checked, is replaced by `ColorInfo.pixel_format`.
 
 ### Added
+- A `frame-compare --vmaf` test: a coarser re-encode scores between 0 and 100 and below what the same picture scores against itself. Nothing ran the flag before. It needs an ffmpeg built with libvmaf, which the macOS CI runner's conda-forge build is not.
+
+### Added
 - A REST test that posts a supplemental package to `/validate` with and without `"ov"`: without it the response carries `SupplementalOvNotProvided`, with it neither that note nor `CrossRefBroken`. Only the field's parsing was covered before.
 
 ### Fixed

@@ -13,12 +13,17 @@ use tempfile::TempDir;
 const LOSSLESS_PSNR: f64 = 100.0;
 
 fn compare(a: &Path, b: &Path) -> serde_json::Value {
+    compare_with(a, b, &[])
+}
+
+fn compare_with(a: &Path, b: &Path, extra: &[&str]) -> serde_json::Value {
     let output = Command::cargo_bin("dcpdoctor")
         .unwrap()
         .args(["--json", "frame-compare", "--imp-a"])
         .arg(a)
         .arg("--imp-b")
         .arg(b)
+        .args(extra)
         .assert()
         .success()
         .get_output()
@@ -67,6 +72,46 @@ fn a_picture_matches_itself_and_a_re_encode_of_it_does_not() {
     assert_ne!(
         degraded["verdict"], "identical",
         "a {psnr:.2} dB re-encode is not an exact match"
+    );
+}
+
+#[test]
+fn vmaf_scores_a_re_encode_below_the_same_picture_scored_against_itself() {
+    let root = TempDir::new().unwrap();
+    let bars = root.path().join("bars");
+    let rebars = root.path().join("rebars");
+    std::fs::create_dir_all(&bars).unwrap();
+    std::fs::create_dir_all(&rebars).unwrap();
+    support::write_package(&bars, &support::PackageSpec::default());
+    support::write_package(
+        &rebars,
+        &support::PackageSpec {
+            picture_quality: 40,
+            ..Default::default()
+        },
+    );
+
+    let same = compare_with(&bars, &bars, &["--vmaf"]);
+    assert!(
+        same["success"].as_bool().unwrap(),
+        "the self-comparison must run: {same:#}"
+    );
+    let self_score = same["vmaf_score"].as_f64().unwrap();
+
+    let degraded = compare_with(&bars, &rebars, &["--vmaf"]);
+    assert!(
+        degraded["success"].as_bool().unwrap(),
+        "the re-encode comparison must run: {degraded:#}"
+    );
+    let score = degraded["vmaf_score"].as_f64().unwrap();
+
+    assert!(
+        score > 0.0 && score < 100.0,
+        "a VMAF score is between 0 and 100, got {score}"
+    );
+    assert!(
+        score < self_score,
+        "a coarser re-encode must score below the {self_score} the picture scores against itself, got {score}"
     );
 }
 
