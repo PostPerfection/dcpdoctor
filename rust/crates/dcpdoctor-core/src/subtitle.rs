@@ -1477,6 +1477,8 @@ pub(crate) mod tests {
             edit_rate: EDIT_RATE_24,
             container_duration: FIXTURE_CONTAINER_DURATION,
             asset_id: resource_id,
+            namespace_uri: String::new(),
+            ucs_encoding: String::new(),
         };
         let mut writer = MxfWriter::new();
         match font {
@@ -1746,6 +1748,8 @@ pub(crate) mod tests {
                     edit_rate: EDIT_RATE_24,
                     container_duration: FIXTURE_CONTAINER_DURATION,
                     asset_id: document_id(&doc).unwrap(),
+                    namespace_uri: String::new(),
+                    ucs_encoding: String::new(),
                 },
                 &[AncillaryResourceInfo {
                     uuid,

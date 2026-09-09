@@ -1153,6 +1153,8 @@ pub(crate) mod decrypt_tests {
             edit_rate: EDIT_RATE_24,
             container_duration: 96,
             asset_id: [6; 16],
+            namespace_uri: String::new(),
+            ucs_encoding: String::new(),
         };
         let mut enc = AesEncContext::new();
         enc.init_key(&content_key).unwrap();

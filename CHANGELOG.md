@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- Bumped asdcplib-rs and postkit so `TimedText Descriptor` carries `namespace_uri` and `ucs_encoding`. The two fields are additive; only the subtitle and kdm test fixtures that build a `TimedTextDescriptor` set them, to the empty strings a DCP subtitle already carried.
+
 ### Removed
 - The DTS:X check under `--studio --deep`. It ran ffprobe for the channel count of the first audio stream and called anything over 8 channels DTS:X immersive audio, so the 16-channel PCM sound track ST 429-2 allows was reported as "DTS:X Immersive Audio detected (16 channels)". Nothing else about the track was read. `detect_dtsx`, `check_dtsx_compliance` and `DtsxInfo` are gone; the ISDCF naming check keeps its `DTSX` audio-format token, which is a different thing.
 
