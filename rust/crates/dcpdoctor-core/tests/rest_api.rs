@@ -154,6 +154,129 @@ fn a_valid_package_passes_and_a_mutated_copy_fails() {
     );
 }
 
+const OV_PICTURE_ID: &str = "aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa";
+const SUPPLEMENTAL_SOUND_ID: &str = "bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb";
+
+/// A SMPTE DCP holding `asset_ids` whose CPL references `picture_id` and
+/// `sound_id`. `supplemental` gives the CPL the OPL marker that makes it a
+/// version file.
+fn write_cross_package_dcp(
+    dir: &Path,
+    cpl_id: &str,
+    asset_ids: &[&str],
+    picture_id: &str,
+    sound_id: &str,
+    supplemental: bool,
+) {
+    let mut assets = format!(
+        r#"<Asset><Id>urn:uuid:{cpl_id}</Id><ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>"#
+    );
+    for id in asset_ids {
+        assets.push_str(&format!(
+            r#"<Asset><Id>urn:uuid:{id}</Id><ChunkList><Chunk><Path>{id}.mxf</Path></Chunk></ChunkList></Asset>"#
+        ));
+    }
+    std::fs::write(
+        dir.join("ASSETMAP.xml"),
+        format!(
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <AssetList>{assets}</AssetList>
+</AssetMap>"#
+        ),
+    )
+    .unwrap();
+
+    let opl = if supplemental {
+        "<OriginalPackagingList>ov</OriginalPackagingList>"
+    } else {
+        ""
+    };
+    std::fs::write(
+        dir.join("cpl.xml"),
+        format!(
+            r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:{cpl_id}</Id>
+  <ContentTitleText>t</ContentTitleText>
+  {opl}
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:{picture_id}</Id><Duration>48</Duration></MainPicture>
+      <MainSound><Id>urn:uuid:{sound_id}</Id><Duration>48</Duration></MainSound>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#
+        ),
+    )
+    .unwrap();
+}
+
+fn note_codes(response: &str) -> Vec<String> {
+    let result: serde_json::Value = serde_json::from_str(body_of(response)).unwrap();
+    result["notes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no notes in {result}"))
+        .iter()
+        .map(|note| note["code"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn ov_in_the_body_resolves_a_supplemental_packages_cross_package_refs() {
+    let address = serve(None);
+
+    let ov = tempfile::TempDir::new().unwrap();
+    write_cross_package_dcp(
+        ov.path(),
+        "0f0f0f0f-0000-0000-0000-000000000000",
+        &[OV_PICTURE_ID],
+        OV_PICTURE_ID,
+        OV_PICTURE_ID,
+        false,
+    );
+    // the supplemental holds only the sound; its picture ref lives in the OV
+    let supplemental = tempfile::TempDir::new().unwrap();
+    write_cross_package_dcp(
+        supplemental.path(),
+        "1a1a1a1a-0000-0000-0000-000000000000",
+        &[SUPPLEMENTAL_SOUND_ID],
+        OV_PICTURE_ID,
+        SUPPLEMENTAL_SOUND_ID,
+        true,
+    );
+
+    let alone = post(
+        address,
+        "/validate",
+        &serde_json::json!({ "path": supplemental.path() }).to_string(),
+        "",
+    );
+    assert_eq!(status_line(&alone), "HTTP/1.1 200 OK", "{alone}");
+    assert!(
+        note_codes(&alone).contains(&"SupplementalOvNotProvided".to_string()),
+        "without an OV the picture ref is unresolved: {alone}"
+    );
+
+    let with_ov = post(
+        address,
+        "/validate",
+        &serde_json::json!({ "path": supplemental.path(), "ov": ov.path() }).to_string(),
+        "",
+    );
+    assert_eq!(status_line(&with_ov), "HTTP/1.1 200 OK", "{with_ov}");
+    let codes = note_codes(&with_ov);
+    assert!(
+        !codes.contains(&"SupplementalOvNotProvided".to_string()),
+        "the OV must satisfy the picture ref: {with_ov}"
+    );
+    assert!(
+        !codes.contains(&"CrossRefBroken".to_string()),
+        "the OV must not turn the ref into a break: {with_ov}"
+    );
+}
+
 #[test]
 fn a_path_that_does_not_exist_is_a_404_naming_it() {
     let address = serve(None);

@@ -5,6 +5,9 @@
 ### Added
 - Out-of-gamut sampling, which the site has claimed since before there was any code behind it. `validate --studio --deep` now decodes twelve evenly spaced frames of each picture track, converts every X'Y'Z' code to linear luminance with the ST 428-1 2.6 gamma over the 52.37 cd/m² full scale, matrixes it to linear DCI-P3 with the RP 431-2 primaries at the DCI white, and counts the pixels landing more than three 12-bit code steps below zero or above full scale. An INFO note reports the share and the frames it decoded; over 1% turns into a WARNING. A picture ffprobe does not decode as `xyz12le` gets a skip note naming the format instead. New code `picture_out_of_gamut`. `ColorInfo.xyz_to_p3_checked`, which was set true whether or not anything was checked, is replaced by `ColorInfo.pixel_format`.
 
+### Added
+- A REST test that posts a supplemental package to `/validate` with and without `"ov"`: without it the response carries `SupplementalOvNotProvided`, with it neither that note nor `CrossRefBroken`. Only the field's parsing was covered before.
+
 ### Fixed
 - `validate --manifest` reported nothing at all for a manifest with no `"assets"` array and skipped any entry naming no filename, so a manifest the caller had the shape of wrong looked like a package that matched. Both now fail naming what was not compared, an entry with no `"size"` says only its presence was checked, and a file that will not stat is an error rather than a size of zero compared against the manifest. A size difference is `manifest_size_mismatch`, where it used to come out as `mxf_hash_mismatch` on assets that are neither MXF nor hashed. First tests to run the flag: a matching manifest is silent, a wrong size and a missing asset each fail naming the asset.
 
