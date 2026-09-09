@@ -1103,9 +1103,10 @@ fn parse_frame_rate(output: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::track_fixtures::{
-        ReelTiming, SoundStretch, assert_the_path_was_not_run, shell_injection_name,
-        write_picture_track, write_reel_cpl, write_sound_track,
+        ReelTiming, SoundStretch, write_picture_track, write_reel_cpl, write_sound_track,
     };
+    #[cfg(unix)]
+    use crate::track_fixtures::{assert_the_path_was_not_run, shell_injection_name};
 
     const TONE_SECONDS: f64 = 2.0;
     const LOUD_AMPLITUDE: f64 = 0.5;
@@ -1210,6 +1211,7 @@ mod tests {
         assert_eq!(durations.frame_rate, CINEMA_FRAME_RATE);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_sound_path_holding_shell_text_is_probed_instead_of_run() {
         let directory = tempfile::tempdir().unwrap();
@@ -1225,6 +1227,7 @@ mod tests {
         assert_eq!(config.channel_count, SOUND_TRACK_CHANNELS);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_picture_path_holding_shell_text_is_probed_instead_of_run() {
         let directory = tempfile::tempdir().unwrap();

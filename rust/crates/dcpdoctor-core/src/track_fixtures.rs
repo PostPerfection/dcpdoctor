@@ -311,14 +311,18 @@ pub fn write_iab_track(path: &Path, frames: u32) {
     std::fs::write(path, bytes).unwrap();
 }
 
+// the shell this guards against is sh, and windows forbids the quote in the name
+#[cfg(unix)]
 const SHELL_INJECTION_MARKER: &str = "dcpdoctor-shell-injection-marker";
 
 // a track file name that runs a command if anything hands the path to a shell
+#[cfg(unix)]
 pub fn shell_injection_name(extension: &str) -> String {
     format!("probe\"$(touch {SHELL_INJECTION_MARKER})\".{extension}")
 }
 
 // a shell would have run the injected touch in the test process working directory
+#[cfg(unix)]
 pub fn assert_the_path_was_not_run() {
     let marker = std::env::current_dir()
         .unwrap()

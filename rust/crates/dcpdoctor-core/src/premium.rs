@@ -1356,10 +1356,11 @@ mod tests {
 
     use super::*;
     use crate::track_fixtures::{
-        SoundStretch, assert_the_path_was_not_run, bt709, hlg_bt2020, pq_bt2020,
-        shell_injection_name, write_atmos_track, write_iab_track, write_picture_track,
-        write_sound_track,
+        SoundStretch, bt709, hlg_bt2020, pq_bt2020, write_atmos_track, write_iab_track,
+        write_picture_track, write_sound_track,
     };
+    #[cfg(unix)]
+    use crate::track_fixtures::{assert_the_path_was_not_run, shell_injection_name};
 
     const FRAMES: u32 = 24;
 
@@ -1607,6 +1608,7 @@ mod tests {
         assert_eq!(info.height, 64);
     }
 
+    #[cfg(unix)]
     #[test]
     fn hdr_from_ffprobe_reads_a_path_holding_shell_text_instead_of_running_it() {
         let directory = tempfile::tempdir().unwrap();
@@ -1619,6 +1621,7 @@ mod tests {
         assert_eq!(hdr.hdr_type, HdrType::Pq);
     }
 
+    #[cfg(unix)]
     #[test]
     fn detect_prores_reads_a_path_holding_shell_text_instead_of_running_it() {
         let directory = tempfile::tempdir().unwrap();
