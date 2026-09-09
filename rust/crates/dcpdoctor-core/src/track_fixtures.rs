@@ -173,18 +173,22 @@ pub struct SoundStretch {
 
 // 48 kHz 24-bit stereo at 24 fps, sample exact so a reported second can be checked
 pub fn write_sound_track(path: &Path, stretches: &[SoundStretch]) {
-    const CHANNELS: u32 = 2;
+    write_sound_track_channels(path, 2, stretches);
+}
+
+// the same tone on every one of `channels` channels
+pub fn write_sound_track_channels(path: &Path, channels: u32, stretches: &[SoundStretch]) {
     const SAMPLES_PER_FRAME: u32 = SAMPLE_RATE / FRAME_RATE;
 
     let total_seconds: f64 = stretches.iter().map(|s| s.seconds).sum();
     let frames = (total_seconds * FRAME_RATE as f64).round() as u32;
-    let block_align = CHANNELS * BYTES_PER_SAMPLE;
+    let block_align = channels * BYTES_PER_SAMPLE;
 
     let descriptor = asdcplib::pcm::AudioDescriptor {
         edit_rate: Rational::new(FRAME_RATE as i32, 1),
         audio_sampling_rate: Rational::new(SAMPLE_RATE as i32, 1),
         locked: true,
-        channel_count: CHANNELS,
+        channel_count: channels,
         quantization_bits: BYTES_PER_SAMPLE * 8,
         block_align,
         avg_bps: SAMPLE_RATE * block_align,
@@ -209,7 +213,7 @@ pub fn write_sound_track(path: &Path, stretches: &[SoundStretch]) {
             let seconds =
                 (frame_index * SAMPLES_PER_FRAME + sample_index) as f64 / SAMPLE_RATE as f64;
             let value = (sample_amplitude(stretches, seconds) * FULL_SCALE_24_BIT) as i32;
-            for _ in 0..CHANNELS {
+            for _ in 0..channels {
                 frame.extend_from_slice(&value.to_le_bytes()[..BYTES_PER_SAMPLE as usize]);
             }
         }

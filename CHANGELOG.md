@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Removed
+- The DTS:X check under `--studio --deep`. It ran ffprobe for the channel count of the first audio stream and called anything over 8 channels DTS:X immersive audio, so the 16-channel PCM sound track ST 429-2 allows was reported as "DTS:X Immersive Audio detected (16 channels)". Nothing else about the track was read. `detect_dtsx`, `check_dtsx_compliance` and `DtsxInfo` are gone; the ISDCF naming check keeps its `DTSX` audio-format token, which is a different thing.
+
+### Fixed
+- `detect_channel_config` labelled any track of more than 8 channels `AtmosIab` on the same channel count, so a 16-channel PCM bed read as immersive audio. It reads `parse_atmos_iab`'s essence descriptor first now, which is what tells Atmos and IAB essence apart from PCM, and a PCM track of 9 to 16 channels is `MultichannelPcm` with no note against it. An Atmos or IAB track file used to fall out of the deep pass as "essence checks did not run, neither probe read this MXF", because ffprobe lists no audio stream for either; it is now identified from its descriptor, and the R128 measurement that has no PCM to read is not attempted.
+
 ### Added
 - Out-of-gamut sampling, which the site has claimed since before there was any code behind it. `validate --studio --deep` now decodes twelve evenly spaced frames of each picture track, converts every X'Y'Z' code to linear luminance with the ST 428-1 2.6 gamma over the 52.37 cd/m² full scale, matrixes it to linear DCI-P3 with the RP 431-2 primaries at the DCI white, and counts the pixels landing more than three 12-bit code steps below zero or above full scale. An INFO note reports the share and the frames it decoded; over 1% turns into a WARNING. A picture ffprobe does not decode as `xyz12le` gets a skip note naming the format instead. New code `picture_out_of_gamut`. `ColorInfo.xyz_to_p3_checked`, which was set true whether or not anything was checked, is replaced by `ColorInfo.pixel_format`.
 

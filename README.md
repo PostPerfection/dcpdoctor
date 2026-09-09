@@ -51,7 +51,6 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Quantization / block align**: 24-bit PCM and block-align check (`--check-mxf`)
 - **MCA labeling**: Multi-Channel Audio label presence check
 - **Audio sync drift**: Detects picture/sound duration mismatches per reel
-- **DTS:X**: Immersive-audio detection under `--studio --deep`
 
 ### Subtitle & Caption Validation
 - **SMPTE ST 429-5** timed text support

@@ -157,8 +157,13 @@ pub enum ChannelLayout {
     Stereo,
     Surround51,
     Surround71,
+    /// A PCM bed of more channels than 7.1, up to the 16 ST 429-2 allows.
+    MultichannelPcm,
     AtmosIab,
 }
+
+/// ST 429-2 caps a DCP sound track file at 16 channels.
+const MAX_PCM_CHANNELS: u32 = 16;
 
 /// Channel configuration info for a PCM MXF.
 #[derive(Debug, Clone, Default)]
@@ -173,6 +178,16 @@ pub struct ChannelConfig {
 /// Detect channel configuration of an audio MXF.
 pub fn detect_channel_config(mxf_path: &Path) -> ChannelConfig {
     let mut config = ChannelConfig::default();
+
+    // ffprobe lists no audio stream for Atmos or IAB essence, so the descriptor
+    // is what tells immersive audio apart from a wide PCM bed
+    let immersive = crate::premium::parse_atmos_iab(mxf_path);
+    if immersive.detected() {
+        config.valid = true;
+        config.layout = ChannelLayout::AtmosIab;
+        config.channel_count = immersive.channel_count.map_or(0, u32::from);
+        return config;
+    }
 
     let probe = match ffprobe_output(
         &[
@@ -220,8 +235,8 @@ pub fn detect_channel_config(mxf_path: &Path) -> ChannelConfig {
             config.layout = ChannelLayout::Surround71;
             config.labels = vec!["L", "R", "C", "LFE", "Lss", "Rss", "Lrs", "Rrs"];
         }
-        n if n > 8 => {
-            config.layout = ChannelLayout::AtmosIab;
+        n if n > 8 && n <= MAX_PCM_CHANNELS => {
+            config.layout = ChannelLayout::MultichannelPcm;
         }
         _ => {}
     }
@@ -1211,6 +1226,10 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
             let ch_config = detect_channel_config(&path);
             if ch_config.valid {
                 notes.extend(check_channel_compliance(&ch_config, &path));
+                // immersive essence carries no PCM samples for R128 to measure
+                if ch_config.layout == ChannelLayout::AtmosIab {
+                    continue;
+                }
                 let loudness = measure_loudness(&path, 1000);
                 if loudness.valid {
                     notes.extend(check_loudness_compliance(&loudness, &path));
@@ -1229,9 +1248,6 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
                         .with_file(&path),
                     );
                 }
-                // immersive-audio (DTS:X) detection has no core equivalent
-                let dtsx = crate::mxf_advanced::detect_dtsx(&path);
-                notes.extend(crate::mxf_advanced::check_dtsx_compliance(&dtsx, &path));
             } else {
                 notes.push(
                     Note::warning(
@@ -1327,7 +1343,8 @@ fn parse_frame_rate(output: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::track_fixtures::{
-        ReelTiming, SoundStretch, write_picture_track, write_reel_cpl, write_sound_track,
+        ReelTiming, SoundStretch, write_iab_track, write_picture_track, write_reel_cpl,
+        write_sound_track, write_sound_track_channels,
     };
     #[cfg(unix)]
     use crate::track_fixtures::{assert_the_path_was_not_run, shell_injection_name};
@@ -1342,6 +1359,8 @@ mod tests {
     const CODESTREAM_SIZE: u32 = 64;
     const CINEMA_BIT_DEPTH: u8 = 12;
     const CINEMA_FRAME_RATE: f64 = 24.0;
+    const SIXTEEN_CHANNEL_BED: u32 = 16;
+    const IAB_FRAMES: u32 = 2;
 
     fn tone_track(path: &Path, amplitude: f64) {
         write_sound_track(
@@ -1412,6 +1431,38 @@ mod tests {
         assert!(resolution.valid, "{resolution:?}");
         assert_eq!(resolution.width, CODESTREAM_SIZE);
         assert_eq!(resolution.height, CODESTREAM_SIZE);
+    }
+
+    #[test]
+    fn a_sixteen_channel_pcm_track_is_a_bed_and_the_iab_track_file_is_iab() {
+        let directory = tempfile::tempdir().unwrap();
+        let bed_path = directory.path().join("bed.mxf");
+        write_sound_track_channels(
+            &bed_path,
+            SIXTEEN_CHANNEL_BED,
+            &[SoundStretch {
+                seconds: TONE_SECONDS,
+                amplitude: LOUD_AMPLITUDE,
+            }],
+        );
+        let iab_path = directory.path().join("iab.mxf");
+        write_iab_track(&iab_path, IAB_FRAMES);
+
+        let bed = detect_channel_config(&bed_path);
+        assert!(bed.valid, "{bed:?}");
+        assert_eq!(bed.channel_count, SIXTEEN_CHANNEL_BED);
+        assert_eq!(bed.layout, ChannelLayout::MultichannelPcm);
+        assert!(
+            check_channel_compliance(&bed, &bed_path).is_empty(),
+            "a 16-channel bed is what ST 429-2 allows: {bed:?}"
+        );
+
+        let iab = detect_channel_config(&iab_path);
+        assert_eq!(
+            iab.layout,
+            ChannelLayout::AtmosIab,
+            "the IAB descriptor must still read as IAB: {iab:?}"
+        );
     }
 
     #[test]
