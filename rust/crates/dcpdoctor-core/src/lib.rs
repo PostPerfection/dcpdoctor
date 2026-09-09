@@ -101,6 +101,7 @@ pub enum Code {
     // PKL
     PklHashMismatch,
     PklSizeMismatch,
+    ManifestSizeMismatch,
     PklMissingAssetReference,
     PklAnnotationTextMismatch,
 
@@ -272,6 +273,7 @@ impl Code {
             Code::MissingRequiredElement => "missing_required_element",
             Code::PklHashMismatch => "pkl_hash_mismatch",
             Code::PklSizeMismatch => "pkl_size_mismatch",
+            Code::ManifestSizeMismatch => "manifest_size_mismatch",
             Code::PklMissingAssetReference => "pkl_missing_asset_reference",
             Code::PklAnnotationTextMismatch => "pkl_annotation_text_mismatch",
             Code::CplInvalidDuration => "cpl_invalid_duration",

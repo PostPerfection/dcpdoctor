@@ -2082,41 +2082,77 @@ fn check_manifest(
         }
     };
 
-    if let Some(assets) = manifest["assets"].as_array() {
-        for asset in assets {
-            let filename = asset["filename"].as_str().unwrap_or("");
-            let expected_size = asset["size"].as_u64();
+    let Some(assets) = manifest["assets"].as_array() else {
+        notes.push(
+            dcpdoctor_core::Note::error(
+                dcpdoctor_core::Code::XmlParseError,
+                "the manifest has no \"assets\" array, so nothing in the package was compared",
+            )
+            .with_file(manifest_path),
+        );
+        return notes;
+    };
 
-            if filename.is_empty() {
-                continue;
-            }
+    for (index, asset) in assets.iter().enumerate() {
+        let filename = asset["filename"].as_str().unwrap_or("");
+        let expected_size = asset["size"].as_u64();
 
-            let full_path = dcp_dir.join(filename);
-            if !full_path.exists() {
+        if filename.is_empty() {
+            notes.push(
+                dcpdoctor_core::Note::error(
+                    dcpdoctor_core::Code::AssetNotFound,
+                    format!("manifest asset {index} names no filename, so it was not compared"),
+                )
+                .with_file(manifest_path),
+            );
+            continue;
+        }
+
+        let full_path = dcp_dir.join(filename);
+        if !full_path.exists() {
+            notes.push(
+                dcpdoctor_core::Note::error(
+                    dcpdoctor_core::Code::AssetNotFound,
+                    format!("Manifest asset missing: {filename}"),
+                )
+                .with_file(&full_path),
+            );
+            continue;
+        }
+
+        let Some(expected) = expected_size else {
+            notes.push(
+                dcpdoctor_core::Note::warning(
+                    dcpdoctor_core::Code::CheckSkipped,
+                    format!(
+                        "manifest asset {filename} names no size, so only its presence was checked"
+                    ),
+                )
+                .with_file(&full_path),
+            );
+            continue;
+        };
+        let actual = match std::fs::metadata(&full_path) {
+            Ok(metadata) => metadata.len(),
+            Err(e) => {
                 notes.push(
                     dcpdoctor_core::Note::error(
                         dcpdoctor_core::Code::AssetNotFound,
-                        format!("Manifest asset missing: {filename}"),
+                        format!("manifest asset {filename} would not stat: {e}"),
                     )
                     .with_file(&full_path),
                 );
                 continue;
             }
-
-            if let Some(expected) = expected_size {
-                let actual = std::fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
-                if actual != expected {
-                    notes.push(
-                        dcpdoctor_core::Note::error(
-                            dcpdoctor_core::Code::MxfHashMismatch,
-                            format!(
-                                "Size mismatch for {filename}: expected {expected}, got {actual}"
-                            ),
-                        )
-                        .with_file(&full_path),
-                    );
-                }
-            }
+        };
+        if actual != expected {
+            notes.push(
+                dcpdoctor_core::Note::error(
+                    dcpdoctor_core::Code::ManifestSizeMismatch,
+                    format!("Size mismatch for {filename}: expected {expected}, got {actual}"),
+                )
+                .with_file(&full_path),
+            );
         }
     }
 
