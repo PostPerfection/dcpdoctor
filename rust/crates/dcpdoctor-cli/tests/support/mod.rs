@@ -42,19 +42,45 @@ const HEADER_BYTES: u32 = 16_384;
 pub enum Picture {
     Bars,
     Flat,
+    /// A solid X', Y', Z' code triple, wrapped in a DCI cinema codestream so the
+    /// picture really carries those codes rather than a conversion of them.
+    Xyz([u16; 3]),
 }
 
 impl Picture {
-    fn lavfi_source(self) -> String {
+    fn lavfi_source(self) -> Option<String> {
         match self {
-            Picture::Bars => {
-                format!("testsrc=size={PICTURE_WIDTH}x{PICTURE_HEIGHT}:rate={EDIT_RATE}:duration=4")
-            }
-            Picture::Flat => format!(
+            Picture::Bars => Some(format!(
+                "testsrc=size={PICTURE_WIDTH}x{PICTURE_HEIGHT}:rate={EDIT_RATE}:duration=4"
+            )),
+            Picture::Flat => Some(format!(
                 "color=c=gray:size={PICTURE_WIDTH}x{PICTURE_HEIGHT}:rate={EDIT_RATE}:duration=4"
-            ),
+            )),
+            Picture::Xyz(_) => None,
         }
     }
+}
+
+/// SIZ carries Rsiz two bytes in, and 3 is the DCI Cinema 2K profile ffmpeg
+/// reads a codestream as X'Y'Z' on the strength of.
+const CINEMA_2K_RSIZ: u16 = 3;
+
+/// One frame of gbrp12le, whose planes ffmpeg's JPEG 2000 encoder writes as
+/// codestream components in R, G, B order.
+fn solid_gbrp12le_frame(xyz: [u16; 3]) -> Vec<u8> {
+    let pixels = (PICTURE_WIDTH * PICTURE_HEIGHT) as usize;
+    let [x, y, z] = xyz;
+    let mut frame = Vec::with_capacity(pixels * 6);
+    for code in [y, z, x] {
+        frame.extend(std::iter::repeat_n(code.to_le_bytes(), pixels).flatten());
+    }
+    frame
+}
+
+fn set_cinema_profile(codestream: &mut [u8]) {
+    assert_eq!(&codestream[0..2], b"\xff\x4f", "no SOC marker");
+    assert_eq!(&codestream[2..4], b"\xff\x51", "no SIZ marker");
+    codestream[6..8].copy_from_slice(&CINEMA_2K_RSIZ.to_be_bytes());
 }
 
 /// A package to write: the picture content, the JPEG 2000 quantizer step ffmpeg
@@ -126,12 +152,41 @@ fn encode_j2c_frames(dir: &Path, picture: Picture, quality: u32) -> Vec<Vec<u8>>
     let scratch = dir.join("j2c");
     std::fs::create_dir_all(&scratch).unwrap();
     let pattern = scratch.join("frame%04d.j2k");
-    let status = Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
-        .arg(picture.lavfi_source())
+    let raw = dir.join("frames.raw");
+    let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg.args(["-v", "error", "-y"]);
+    match picture.lavfi_source() {
+        Some(source) => {
+            ffmpeg.args(["-f", "lavfi", "-i"]).arg(source);
+        }
+        None => {
+            let Picture::Xyz(codes) = picture else {
+                unreachable!("only an Xyz picture has no lavfi source")
+            };
+            let frame = solid_gbrp12le_frame(codes);
+            std::fs::write(&raw, frame.repeat(FRAMES as usize)).unwrap();
+            ffmpeg
+                .args([
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "gbrp12le",
+                    "-s",
+                    &format!("{PICTURE_WIDTH}x{PICTURE_HEIGHT}"),
+                    "-framerate",
+                    &EDIT_RATE.to_string(),
+                    "-i",
+                ])
+                .arg(&raw);
+        }
+    }
+    let status = ffmpeg
         .args([
             "-c:v",
             "jpeg2000",
+            // the 5/3 wavelet, so a solid colour comes back as the codes it went in as
+            "-pred",
+            "1",
             // the encoder writes a JP2 container by default, and asdcplib wraps
             // a bare codestream
             "-format",
@@ -157,7 +212,13 @@ fn encode_j2c_frames(dir: &Path, picture: Picture, quality: u32) -> Vec<Vec<u8>>
         .collect();
     paths.sort();
     assert_eq!(paths.len(), FRAMES as usize, "ffmpeg wrote {paths:?}");
-    let frames: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    let mut frames: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    if matches!(picture, Picture::Xyz(_)) {
+        let _ = std::fs::remove_file(&raw);
+        for frame in &mut frames {
+            set_cinema_profile(frame);
+        }
+    }
     std::fs::remove_dir_all(&scratch).unwrap();
     frames
 }

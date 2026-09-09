@@ -668,7 +668,7 @@ pub(crate) fn frame_to_timecode(frame: u32, fps: u32) -> String {
 
 /// Frame buffer for reading picture essence. DCI caps a frame near 1.3 MB (2K)
 /// and 2.6 MB (4K), so this is headroom for a non-conformant asset too.
-const FRAME_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const FRAME_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 
 /// Distinct findings one asset's scan reports before it stops collecting. A
 /// stream that is wrong in one way is wrong that way on every frame, so this

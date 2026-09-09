@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Out-of-gamut sampling, which the site has claimed since before there was any code behind it. `validate --studio --deep` now decodes twelve evenly spaced frames of each picture track, converts every X'Y'Z' code to linear luminance with the ST 428-1 2.6 gamma over the 52.37 cd/m² full scale, matrixes it to linear DCI-P3 with the RP 431-2 primaries at the DCI white, and counts the pixels landing more than three 12-bit code steps below zero or above full scale. An INFO note reports the share and the frames it decoded; over 1% turns into a WARNING. A picture ffprobe does not decode as `xyz12le` gets a skip note naming the format instead. New code `picture_out_of_gamut`. `ColorInfo.xyz_to_p3_checked`, which was set true whether or not anything was checked, is replaced by `ColorInfo.pixel_format`.
+
 ### Fixed
 - `--hdr` and `--prores` built an `sh -c` command string with the track file path inside double quotes, so a path holding a double quote, a backtick or `$(...)` ran as a command, and `serve` and `watch` take the path from the caller. Both now run ffprobe directly with the path as its own argument. The same string also meant neither check ran at all on Windows, where there is no `sh`, and nothing asserted on either one. Unit tests probe a PQ-tagged HEVC clip and a ProRes clip, and probe both again through a file name carrying `$(touch ...)` to prove the name is read rather than run.
 

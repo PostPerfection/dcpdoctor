@@ -284,7 +284,9 @@ pub struct ColorInfo {
     pub valid: bool,
     pub detected_space: ColorSpace,
     pub bit_depth: u8,
-    pub xyz_to_p3_checked: bool,
+    /// What ffprobe decodes the picture to. Only `xyz12le` hands back the
+    /// codestream's own X'Y'Z' codes; anything else is a converted picture.
+    pub pixel_format: String,
     pub error: Option<String>,
 }
 
@@ -318,6 +320,9 @@ pub fn detect_color_space(mxf_path: &Path) -> ColorInfo {
     }
 
     info.bit_depth = ffprobe_number(&probe, "bits_per_raw_sample").unwrap_or(0);
+    info.pixel_format = ffprobe_entry(&probe, "pix_fmt")
+        .unwrap_or_default()
+        .to_string();
     info.valid = true;
 
     // DCI JP2K uses 12-bit XYZ color space
@@ -329,8 +334,223 @@ pub fn detect_color_space(mxf_path: &Path) -> ColorInfo {
         info.detected_space = ColorSpace::Xyz;
     }
 
-    info.xyz_to_p3_checked = true;
     info
+}
+
+/// What a sample of decoded frames says about the picture's gamut.
+#[derive(Debug, Clone, Default)]
+pub struct GamutSample {
+    pub frames_sampled: u32,
+    pub samples: u64,
+    pub outside_p3: u64,
+    pub error: Option<String>,
+}
+
+impl GamutSample {
+    pub fn share(&self) -> f64 {
+        if self.samples == 0 {
+            return 0.0;
+        }
+        self.outside_p3 as f64 / self.samples as f64
+    }
+}
+
+/// Frames decoded per picture track, evenly spaced over its duration.
+const GAMUT_SAMPLE_FRAMES: u32 = 12;
+/// The pixel format a DCI codestream decodes to, and the only one whose samples
+/// are the codestream's own X'Y'Z' codes rather than a conversion of them.
+const XYZ_PIXEL_FORMAT: &str = "xyz12le";
+const TWELVE_BIT_MAX: f64 = 4095.0;
+/// SMPTE ST 428-1 stores X'Y'Z' with this gamma over a 52.37 cd/m² full scale.
+const DCDM_GAMMA: f64 = 2.6;
+const DCI_PEAK_LUMINANCE_NITS: f64 = 52.37;
+/// Linear CIE XYZ to linear DCI-P3 RGB: the SMPTE RP 431-2 P3 primaries with the
+/// DCI white, inverted.
+const XYZ_TO_DCI_P3: [[f64; 3]; 3] = [
+    [2.725_394_030_5, -1.018_003_006_2, -0.440_163_195_2],
+    [-0.795_168_025_8, 1.689_732_054_8, 0.022_647_190_6],
+    [0.041_241_891_4, -0.087_639_019_2, 1.100_929_378_6],
+];
+/// Three 12-bit code steps at peak white, so requantising alone never reads as
+/// out of gamut.
+const GAMUT_TOLERANCE_NITS: f64 = 0.1;
+/// Share of sampled pixels outside P3 that turns the summary into a warning.
+const OUT_OF_GAMUT_WARN_SHARE: f64 = 0.01;
+
+/// Decode a spread of frames from a picture track and count the pixels whose
+/// X'Y'Z' lands outside DCI-P3.
+pub fn sample_gamut(mxf_path: &Path) -> GamutSample {
+    let mut sample = GamutSample::default();
+
+    let Some(path_text) = mxf_path.to_str() else {
+        sample.error = Some("the track file path is not UTF-8".into());
+        return sample;
+    };
+    let Some(mut reader) =
+        crate::j2k::PictureEssenceReader::open(path_text, crate::j2k::PictureEssenceFamily::Cinema)
+    else {
+        sample.error = Some("asdcplib would not open the file as picture essence".into());
+        return sample;
+    };
+    let duration = match reader.picture_descriptor() {
+        Ok(descriptor) => descriptor.container_duration,
+        Err(e) => {
+            sample.error = Some(format!("the picture descriptor would not read: {e}"));
+            return sample;
+        }
+    };
+    if duration == 0 {
+        sample.error = Some("the picture track holds no frames".into());
+        return sample;
+    }
+
+    let scratch = match tempfile::TempDir::new() {
+        Ok(scratch) => scratch,
+        Err(e) => {
+            sample.error = Some(format!("no scratch directory to decode into: {e}"));
+            return sample;
+        }
+    };
+    let frame_path = scratch.path().join("sample.j2c");
+
+    let luminance = luminance_table();
+    let eye = reader.eyes()[0];
+    let mut buffer = vec![0u8; crate::j2k::FRAME_BUFFER_BYTES];
+    let wanted = duration.min(GAMUT_SAMPLE_FRAMES);
+    for step in 0..wanted {
+        let index = step * duration / wanted;
+        let read = match reader.read_frame(index, eye, &mut buffer, None, None) {
+            Ok(read) => read,
+            Err(e) => {
+                sample.error = Some(format!("frame {index} would not read: {e}"));
+                return sample;
+            }
+        };
+        if let Err(e) = std::fs::write(&frame_path, &buffer[..read]) {
+            sample.error = Some(format!("frame {index} would not write to scratch: {e}"));
+            return sample;
+        }
+        let decoded = match decode_xyz_frame(&frame_path) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                sample.error = Some(format!("frame {index} would not decode: {e}"));
+                return sample;
+            }
+        };
+        let (samples, outside) = count_outside_p3(&decoded, &luminance);
+        sample.frames_sampled += 1;
+        sample.samples += samples;
+        sample.outside_p3 += outside;
+    }
+
+    sample
+}
+
+/// Every 12-bit code as the luminance ST 428-1 decodes it to, so the gamma is
+/// paid 4096 times rather than once per sample.
+fn luminance_table() -> Vec<f64> {
+    (0..=TWELVE_BIT_MAX as u32)
+        .map(|code| DCI_PEAK_LUMINANCE_NITS * (f64::from(code) / TWELVE_BIT_MAX).powf(DCDM_GAMMA))
+        .collect()
+}
+
+// the path goes in as its own argument, so a quote or a $(...) in it stays a filename
+fn decode_xyz_frame(frame_path: &Path) -> Result<Vec<u8>, String> {
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(frame_path)
+        .args(["-pix_fmt", XYZ_PIXEL_FORMAT, "-f", "rawvideo", "-"])
+        .output()
+        .map_err(|e| format!("cannot run ffmpeg: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    if output.stdout.is_empty() {
+        return Err("ffmpeg decoded no samples".into());
+    }
+    Ok(output.stdout)
+}
+
+/// `xyz12le` holds X, Y then Z per pixel, each a little-endian 16-bit word
+/// carrying its 12-bit code in the high bits.
+fn count_outside_p3(frame: &[u8], luminance: &[f64]) -> (u64, u64) {
+    const BYTES_PER_PIXEL: usize = 6;
+    const XYZ12LE_SAMPLE_SHIFT: u32 = 4;
+    let low = -GAMUT_TOLERANCE_NITS;
+    let high = DCI_PEAK_LUMINANCE_NITS + GAMUT_TOLERANCE_NITS;
+
+    let mut samples = 0u64;
+    let mut outside = 0u64;
+    for pixel in frame.as_chunks::<BYTES_PER_PIXEL>().0 {
+        let mut xyz = [0.0f64; 3];
+        for (component, word) in xyz.iter_mut().zip(pixel.as_chunks::<2>().0) {
+            let code = u16::from_le_bytes(*word) >> XYZ12LE_SAMPLE_SHIFT;
+            *component = luminance[usize::from(code).min(luminance.len() - 1)];
+        }
+        samples += 1;
+        if XYZ_TO_DCI_P3.iter().any(|row| {
+            let channel = row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2];
+            channel < low || channel > high
+        }) {
+            outside += 1;
+        }
+    }
+    (samples, outside)
+}
+
+fn check_gamut(info: &ColorInfo, mxf_path: &Path) -> Vec<Note> {
+    if info.pixel_format != XYZ_PIXEL_FORMAT {
+        return vec![
+            Note::warning(
+                Code::CheckSkipped,
+                format!(
+                    "out-of-gamut sampling did not run: the picture decodes as {}, not the {XYZ_PIXEL_FORMAT} an X'Y'Z' codestream decodes to",
+                    if info.pixel_format.is_empty() {
+                        "no pixel format ffprobe would name"
+                    } else {
+                        &info.pixel_format
+                    }
+                ),
+            )
+            .with_file(mxf_path),
+        ];
+    }
+
+    let sample = sample_gamut(mxf_path);
+    if let Some(reason) = sample.error {
+        return vec![
+            Note::warning(
+                Code::CheckSkipped,
+                format!("out-of-gamut sampling did not run: {reason}"),
+            )
+            .with_file(mxf_path),
+        ];
+    }
+
+    let percent = sample.share() * 100.0;
+    let mut notes = vec![Note {
+        severity: Severity::Info,
+        code: Code::PictureOutOfGamut,
+        message: format!(
+            "out-of-gamut sampling: {percent:.3}% of {} samples over {} frames fall outside DCI-P3",
+            sample.samples, sample.frames_sampled
+        ),
+        file: Some(mxf_path.to_path_buf()),
+        line: 0,
+    }];
+    if sample.share() > OUT_OF_GAMUT_WARN_SHARE {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: Code::PictureOutOfGamut,
+            message: format!(
+                "{percent:.3}% of the sampled picture is outside DCI-P3, over the {:.3}% this warns at",
+                OUT_OF_GAMUT_WARN_SHARE * 100.0
+            ),
+            file: Some(mxf_path.to_path_buf()),
+            line: 0,
+        });
+    }
+    notes
 }
 
 /// Check color space compliance against DCI.
@@ -363,6 +583,10 @@ pub fn check_color_compliance(info: &ColorInfo, mxf_path: &Path) -> Vec<Note> {
             file,
             line: 0,
         });
+    }
+
+    if info.detected_space == ColorSpace::Xyz {
+        notes.extend(check_gamut(info, mxf_path));
     }
 
     notes
@@ -1188,6 +1412,23 @@ mod tests {
         assert!(resolution.valid, "{resolution:?}");
         assert_eq!(resolution.width, CODESTREAM_SIZE);
         assert_eq!(resolution.height, CODESTREAM_SIZE);
+    }
+
+    #[test]
+    fn the_gamut_sample_decodes_every_frame_of_a_real_cinema_track() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("picture.mxf");
+        write_picture_track(&path, PICTURE_FRAMES, None);
+
+        let sample = sample_gamut(&path);
+
+        assert!(sample.error.is_none(), "{sample:?}");
+        assert_eq!(sample.frames_sampled, PICTURE_FRAMES);
+        assert_eq!(
+            sample.samples,
+            u64::from(CODESTREAM_SIZE * CODESTREAM_SIZE * PICTURE_FRAMES)
+        );
+        assert!(sample.share() <= 1.0, "{sample:?}");
     }
 
     #[test]

@@ -17,18 +17,6 @@ unencrypted when ffprobe was absent, a corrupt subtitle MXF passing a default
 verify, a garbage PKL Size disabling the size check). New checks follow the
 policy from the start.
 
-## Out-of-gamut sampling has no implementation (2026-09-09)
-
-docs/index.html line 805 says the colour check runs "with out-of-gamut
-sampling". The code that backed it ran ffmpeg's signalstats under `-v quiet`
-and counted `BRNG` lines, so it reported zero on every package, and had it
-printed anything the count would have been a frame count, since signalstats
-prints one BRNG value per frame whatever the value. It was deleted with the
-shell-string probes in `studio.rs`. A real check on X'Y'Z' picture means
-decoding frames, converting to DCI-P3 and counting samples outside the
-triangle, the same transform the preview already runs on the device. Until
-then the sentence names a check that does not exist.
-
 ## P-HFR gets no bitrate limit of its own
 
 Peak bitrate is read frame by frame for every picture essence dcpdoctor can
