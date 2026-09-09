@@ -310,3 +310,22 @@ pub fn write_iab_track(path: &Path, frames: u32) {
     }
     std::fs::write(path, bytes).unwrap();
 }
+
+const SHELL_INJECTION_MARKER: &str = "dcpdoctor-shell-injection-marker";
+
+// a track file name that runs a command if anything hands the path to a shell
+pub fn shell_injection_name(extension: &str) -> String {
+    format!("probe\"$(touch {SHELL_INJECTION_MARKER})\".{extension}")
+}
+
+// a shell would have run the injected touch in the test process working directory
+pub fn assert_the_path_was_not_run() {
+    let marker = std::env::current_dir()
+        .unwrap()
+        .join(SHELL_INJECTION_MARKER);
+    assert!(
+        !marker.exists(),
+        "the track file path ran as a command: {}",
+        marker.display()
+    );
+}

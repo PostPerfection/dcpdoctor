@@ -1356,8 +1356,9 @@ mod tests {
 
     use super::*;
     use crate::track_fixtures::{
-        SoundStretch, bt709, hlg_bt2020, pq_bt2020, write_atmos_track, write_iab_track,
-        write_picture_track, write_sound_track,
+        SoundStretch, assert_the_path_was_not_run, bt709, hlg_bt2020, pq_bt2020,
+        shell_injection_name, write_atmos_track, write_iab_track, write_picture_track,
+        write_sound_track,
     };
 
     const FRAMES: u32 = 24;
@@ -1534,24 +1535,6 @@ mod tests {
         assert!(!hdr.detected, "{hdr:?}");
         let light = read_cpl_content_light(directory.path());
         assert!(check_hdr_compliance(&hdr, light, &picture).is_empty());
-    }
-
-    const SHELL_INJECTION_MARKER: &str = "dcpdoctor-shell-injection-marker";
-
-    fn shell_injection_name(extension: &str) -> String {
-        format!("probe\"$(touch {SHELL_INJECTION_MARKER})\".{extension}")
-    }
-
-    // a shell would have run the injected touch in the test process working directory
-    fn assert_the_path_was_not_run() {
-        let marker = std::env::current_dir()
-            .unwrap()
-            .join(SHELL_INJECTION_MARKER);
-        assert!(
-            !marker.exists(),
-            "the track file path ran as a command: {}",
-            marker.display()
-        );
     }
 
     fn write_clip(path: &Path, encoder_arguments: &[&str]) {

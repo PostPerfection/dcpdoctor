@@ -26,57 +26,65 @@ pub struct LoudnessResult {
 pub fn measure_loudness(mxf_path: &Path, max_frames: u32) -> LoudnessResult {
     let mut result = LoudnessResult::default();
 
-    let frame_arg = if max_frames > 0 {
-        format!("-frames:a {max_frames}")
-    } else {
-        String::new()
-    };
+    let mut ffmpeg = std::process::Command::new("ffmpeg");
+    ffmpeg.args(["-hide_banner", "-nostats", "-i"]);
+    ffmpeg.arg(mxf_path);
+    let frames = max_frames.to_string();
+    if max_frames > 0 {
+        ffmpeg.args(["-frames:a", &frames]);
+    }
+    ffmpeg.args(["-af", "ebur128=peak=true", "-f", "null", "-"]);
 
-    // Use ffmpeg ebur128 filter for accurate EBU R128 measurement
-    let cmd = format!(
-        "ffmpeg -v quiet -i \"{}\" {} -af ebur128=peak=true -f null - 2>&1 | \
-         grep -E '(Integrated|True peak|LRA|Momentary)' | tail -4",
-        mxf_path.display(),
-        frame_arg
-    );
-
-    let output = run_cmd(&cmd);
-    if output.is_empty() {
+    // the ebur128 numbers are log lines, so they arrive on stderr and -v quiet drops them
+    let Ok(output) = ffmpeg.output() else {
         result.error = Some("Failed to measure loudness via ffmpeg".into());
         return result;
-    }
+    };
+    let report = String::from_utf8_lossy(&output.stderr);
 
-    for line in output.lines() {
-        if line.contains("Integrated loudness") || line.contains("I:") {
-            if let Some(val) = extract_lufs_value(line) {
-                result.integrated_lufs = val;
-            }
-        } else if line.contains("True peak") {
-            if let Some(val) = extract_db_value(line) {
-                result.true_peak_dbtp = val;
-            }
-        } else if line.contains("LRA") {
-            if let Some(val) = extract_lu_value(line) {
-                result.loudness_range_lu = val;
-            }
-        } else if line.contains("Momentary")
-            && let Some(val) = extract_lufs_value(line)
-        {
-            result.momentary_max_lufs = val;
+    result.momentary_max_lufs = report
+        .lines()
+        .filter_map(|line| line.split_once(" M:"))
+        .filter_map(|(_, rest)| first_number(rest))
+        .max_by(f64::total_cmp)
+        .unwrap_or_default();
+
+    let Some((_, summary)) = report.split_once("Summary:") else {
+        result.error = Some("ffmpeg printed no EBU R128 summary".into());
+        return result;
+    };
+
+    for line in summary.lines() {
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let Some(number) = first_number(value) else {
+            continue;
+        };
+        match key {
+            "I" => result.integrated_lufs = number,
+            "LRA" => result.loudness_range_lu = number,
+            "Peak" => result.true_peak_dbtp = number,
+            _ => {}
         }
     }
 
-    // Also try to get channel/sample info from ffprobe
-    let probe_cmd = format!(
-        "ffprobe -v quiet -select_streams a:0 -show_entries stream=channels,sample_rate \
-         -of csv=p=0 \"{}\" 2>/dev/null",
-        mxf_path.display()
-    );
-    let probe_out = run_cmd(&probe_cmd);
-    if let Some((ch, sr)) = parse_channels_samplerate(&probe_out) {
-        result.channels = ch;
-        result.sample_rate = sr;
-    }
+    let probe = ffprobe_output(
+        &[
+            "-v",
+            "quiet",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=channels,sample_rate",
+            "-of",
+            "default=noprint_wrappers=1",
+        ],
+        mxf_path,
+    )
+    .unwrap_or_default();
+    result.channels = ffprobe_number(&probe, "channels").unwrap_or(0);
+    result.sample_rate = ffprobe_number(&probe, "sample_rate").unwrap_or(0);
 
     result.valid = result.integrated_lufs != 0.0 || result.true_peak_dbtp != 0.0;
     result
@@ -166,13 +174,26 @@ pub struct ChannelConfig {
 pub fn detect_channel_config(mxf_path: &Path) -> ChannelConfig {
     let mut config = ChannelConfig::default();
 
-    let cmd = format!(
-        "ffprobe -v quiet -select_streams a:0 -show_entries stream=channels \
-         -of csv=p=0 \"{}\" 2>/dev/null",
-        mxf_path.display()
-    );
-    let output = run_cmd(&cmd);
-    let channels: u32 = output.trim().parse().unwrap_or(0);
+    let probe = match ffprobe_output(
+        &[
+            "-v",
+            "quiet",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=channels",
+            "-of",
+            "default=noprint_wrappers=1",
+        ],
+        mxf_path,
+    ) {
+        Ok(probe) => probe,
+        Err(reason) => {
+            config.error = Some(reason);
+            return config;
+        }
+    };
+    let channels: u32 = ffprobe_number(&probe, "channels").unwrap_or(0);
 
     if channels == 0 {
         config.error = Some("Failed to detect channel count".into());
@@ -263,8 +284,6 @@ pub struct ColorInfo {
     pub valid: bool,
     pub detected_space: ColorSpace,
     pub bit_depth: u8,
-    pub out_of_gamut_detected: bool,
-    pub oog_pixel_count: u32,
     pub xyz_to_p3_checked: bool,
     pub error: Option<String>,
 }
@@ -273,26 +292,32 @@ pub struct ColorInfo {
 pub fn detect_color_space(mxf_path: &Path) -> ColorInfo {
     let mut info = ColorInfo::default();
 
-    let cmd = format!(
-        "ffprobe -v quiet -select_streams v:0 -show_entries \
-         stream=bits_per_raw_sample,codec_tag_string,width,height,pix_fmt \
-         -of csv=p=0 \"{}\" 2>/dev/null",
-        mxf_path.display()
-    );
-    let output = run_cmd(&cmd);
-    if output.is_empty() {
+    let probe = match ffprobe_output(
+        &[
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=bits_per_raw_sample,codec_tag_string,width,height,pix_fmt",
+            // ffprobe emits the entries in its own order, so read them by key
+            "-of",
+            "default=noprint_wrappers=1",
+        ],
+        mxf_path,
+    ) {
+        Ok(probe) => probe,
+        Err(reason) => {
+            info.error = Some(reason);
+            return info;
+        }
+    };
+    if probe.trim().is_empty() {
         info.error = Some("Failed to probe picture MXF".into());
         return info;
     }
 
-    // Parse bit depth from probe output
-    let parts: Vec<&str> = output.trim().split(',').collect();
-    if let Some(bd_str) = parts.first()
-        && let Ok(bd) = bd_str.trim().parse::<u8>()
-    {
-        info.bit_depth = bd;
-    }
-
+    info.bit_depth = ffprobe_number(&probe, "bits_per_raw_sample").unwrap_or(0);
     info.valid = true;
 
     // DCI JP2K uses 12-bit XYZ color space
@@ -302,20 +327,6 @@ pub fn detect_color_space(mxf_path: &Path) -> ColorInfo {
         info.detected_space = ColorSpace::Rec709;
     } else if info.bit_depth >= 10 {
         info.detected_space = ColorSpace::Xyz;
-    }
-
-    // Check for out-of-gamut using ffmpeg signalstats
-    let oog_cmd = format!(
-        "ffmpeg -v quiet -i \"{}\" -vf \"signalstats=stat=brng,metadata=mode=print\" \
-         -f null - 2>&1 | grep -c 'BRNG' 2>/dev/null",
-        mxf_path.display()
-    );
-    let oog_out = run_cmd(&oog_cmd);
-    if let Ok(count) = oog_out.trim().parse::<u32>()
-        && count > 0
-    {
-        info.out_of_gamut_detected = true;
-        info.oog_pixel_count = count;
     }
 
     info.xyz_to_p3_checked = true;
@@ -348,19 +359,6 @@ pub fn check_color_compliance(info: &ColorInfo, mxf_path: &Path) -> Vec<Note> {
             message: format!(
                 "Bit depth {} - DCI standard requires 12-bit XYZ",
                 info.bit_depth
-            ),
-            file: file.clone(),
-            line: 0,
-        });
-    }
-
-    if info.out_of_gamut_detected {
-        notes.push(Note {
-            severity: Severity::Warning,
-            code: Code::J2kInvalidProfile,
-            message: format!(
-                "Out-of-gamut pixels detected: {} pixels exceed DCI-P3 boundary",
-                info.oog_pixel_count
             ),
             file,
             line: 0,
@@ -415,15 +413,17 @@ pub fn check_encryption(dcp_dir: &Path) -> EncryptionInfo {
 
         // an encrypted MXF shows up as a codec_name ffprobe cannot decode or as
         // an error naming the encryption, so both streams are searched
-        let output = ffprobe_output(&[
-            "-v",
-            "error",
-            "-show_entries",
-            "stream=codec_name",
-            "-of",
-            "csv=p=0",
-            &path.to_string_lossy(),
-        ]);
+        let output = ffprobe_output(
+            &[
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "csv=p=0",
+            ],
+            &path,
+        );
         let Ok(output) = output else {
             info.unknown_count += 1;
             continue;
@@ -543,13 +543,21 @@ pub fn analyze_reel_durations(dcp_dir: &Path) -> ReelDurationInfo {
             if path.extension().and_then(|e| e.to_str()) != Some("mxf") {
                 continue;
             }
-            let cmd = format!(
-                "ffprobe -v quiet -select_streams v:0 -show_entries stream=r_frame_rate \
-                 -of csv=p=0 \"{}\" 2>/dev/null",
-                path.display()
-            );
-            let output = run_cmd(&cmd);
-            if let Some(fps) = parse_frame_rate(&output) {
+            let probe = ffprobe_output(
+                &[
+                    "-v",
+                    "quiet",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=r_frame_rate",
+                    "-of",
+                    "default=noprint_wrappers=1",
+                ],
+                &path,
+            )
+            .unwrap_or_default();
+            if let Some(fps) = ffprobe_entry(&probe, "r_frame_rate").and_then(parse_frame_rate) {
                 info.frame_rate = fps;
                 break;
             }
@@ -824,20 +832,33 @@ pub struct ResolutionInfo {
 pub fn detect_resolution(mxf_path: &Path) -> ResolutionInfo {
     let mut info = ResolutionInfo::default();
 
-    let cmd = format!(
-        "ffprobe -v quiet -select_streams v:0 -show_entries stream=width,height \
-         -of csv=p=0 \"{}\" 2>/dev/null",
-        mxf_path.display()
-    );
-    let output = run_cmd(&cmd);
-    let parts: Vec<&str> = output.trim().split(',').collect();
-    if parts.len() < 2 {
+    let probe = match ffprobe_output(
+        &[
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "default=noprint_wrappers=1",
+        ],
+        mxf_path,
+    ) {
+        Ok(probe) => probe,
+        Err(reason) => {
+            info.error = Some(reason);
+            return info;
+        }
+    };
+
+    if probe.trim().is_empty() {
         info.error = Some("Failed to detect resolution".into());
         return info;
     }
 
-    info.width = parts[0].trim().parse().unwrap_or(0);
-    info.height = parts[1].trim().parse().unwrap_or(0);
+    info.width = ffprobe_number(&probe, "width").unwrap_or(0);
+    info.height = ffprobe_number(&probe, "height").unwrap_or(0);
 
     if info.width == 0 || info.height == 0 {
         info.error = Some("Invalid resolution".into());
@@ -1010,14 +1031,6 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
 // Internal helpers
 // ════════════════════════════════════════════════════════════════════════════════
 
-fn run_cmd(cmd: &str) -> String {
-    std::process::Command::new("sh")
-        .args(["-c", cmd])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
-}
-
 /// Is ffprobe on PATH? Every essence-level check here and in the premium
 /// delivery checks needs it, and without it they can only report a skip.
 pub fn ffprobe_available() -> bool {
@@ -1029,14 +1042,33 @@ pub fn ffprobe_available() -> bool {
 }
 
 /// Run ffprobe and return stdout plus stderr, or the reason it could not run.
-fn ffprobe_output(args: &[&str]) -> Result<String, String> {
+// the path goes in as its own argument, so a quote or a $(...) in it stays a filename
+fn ffprobe_output(args: &[&str], path: &Path) -> Result<String, String> {
     let output = std::process::Command::new("ffprobe")
         .args(args)
+        .arg(path)
         .output()
         .map_err(|e| format!("cannot run ffprobe: {e}"))?;
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     Ok(text)
+}
+
+fn ffprobe_entry<'a>(probe: &'a str, key: &str) -> Option<&'a str> {
+    probe.lines().find_map(|line| {
+        let (name, value) = line.split_once('=')?;
+        (name == key).then_some(value.trim())
+    })
+}
+
+fn ffprobe_number<T: std::str::FromStr>(probe: &str, key: &str) -> Option<T> {
+    ffprobe_entry(probe, key)?.parse().ok()
+}
+
+fn first_number(text: &str) -> Option<f64> {
+    text.split_whitespace()
+        .find_map(|token| token.parse::<f64>().ok())
+        .filter(|number| number.is_finite())
 }
 
 fn find_cpl(dcp_dir: &Path) -> Option<PathBuf> {
@@ -1055,32 +1087,6 @@ fn find_cpl(dcp_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn extract_lufs_value(line: &str) -> Option<f64> {
-    let re = regex_lite::Regex::new(r"(-?\d+\.?\d*)\s*LUFS").ok()?;
-    re.captures(line).and_then(|c| c[1].parse::<f64>().ok())
-}
-
-fn extract_db_value(line: &str) -> Option<f64> {
-    let re = regex_lite::Regex::new(r"(-?\d+\.?\d*)\s*dBTP").ok()?;
-    re.captures(line).and_then(|c| c[1].parse::<f64>().ok())
-}
-
-fn extract_lu_value(line: &str) -> Option<f64> {
-    let re = regex_lite::Regex::new(r"(-?\d+\.?\d*)\s*LU").ok()?;
-    re.captures(line).and_then(|c| c[1].parse::<f64>().ok())
-}
-
-fn parse_channels_samplerate(output: &str) -> Option<(u32, u32)> {
-    let parts: Vec<&str> = output.trim().split(',').collect();
-    if parts.len() >= 2 {
-        let ch = parts[0].trim().parse().ok()?;
-        let sr = parts[1].trim().parse().ok()?;
-        Some((ch, sr))
-    } else {
-        None
-    }
-}
-
 fn parse_frame_rate(output: &str) -> Option<f64> {
     let trimmed = output.trim();
     if let Some((num, den)) = trimmed.split_once('/') {
@@ -1091,4 +1097,145 @@ fn parse_frame_rate(output: &str) -> Option<f64> {
         }
     }
     trimmed.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::track_fixtures::{
+        ReelTiming, SoundStretch, assert_the_path_was_not_run, shell_injection_name,
+        write_picture_track, write_reel_cpl, write_sound_track,
+    };
+
+    const TONE_SECONDS: f64 = 2.0;
+    const LOUD_AMPLITUDE: f64 = 0.5;
+    const QUIET_AMPLITUDE: f64 = 0.05;
+    const DECIBELS_BETWEEN_AMPLITUDES: f64 = 20.0;
+    const SOUND_TRACK_CHANNELS: u32 = 2;
+    const SOUND_TRACK_SAMPLE_RATE: u32 = 48_000;
+    const PICTURE_FRAMES: u32 = 2;
+    const CODESTREAM_SIZE: u32 = 64;
+    const CINEMA_BIT_DEPTH: u8 = 12;
+    const CINEMA_FRAME_RATE: f64 = 24.0;
+
+    fn tone_track(path: &Path, amplitude: f64) {
+        write_sound_track(
+            path,
+            &[SoundStretch {
+                seconds: TONE_SECONDS,
+                amplitude,
+            }],
+        );
+    }
+
+    #[test]
+    fn a_tone_ten_times_quieter_measures_twenty_lu_lower() {
+        let directory = tempfile::tempdir().unwrap();
+        let loud_path = directory.path().join("loud.mxf");
+        let quiet_path = directory.path().join("quiet.mxf");
+        tone_track(&loud_path, LOUD_AMPLITUDE);
+        tone_track(&quiet_path, QUIET_AMPLITUDE);
+
+        let loud = measure_loudness(&loud_path, 0);
+        let quiet = measure_loudness(&quiet_path, 0);
+
+        assert!(loud.valid, "{loud:?}");
+        assert!(quiet.valid, "{quiet:?}");
+        let difference = loud.integrated_lufs - quiet.integrated_lufs;
+        assert!(
+            (difference - DECIBELS_BETWEEN_AMPLITUDES).abs() < 1.0,
+            "{} LUFS against {} LUFS",
+            loud.integrated_lufs,
+            quiet.integrated_lufs
+        );
+        // a steady tone never moves, so its momentary maximum is its integrated value
+        assert!(
+            (loud.momentary_max_lufs - loud.integrated_lufs).abs() < 1.0,
+            "{loud:?}"
+        );
+        assert!(loud.true_peak_dbtp < 0.0, "{loud:?}");
+    }
+
+    #[test]
+    fn a_sound_track_reports_its_channel_count_and_not_its_sample_rate() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sound.mxf");
+        tone_track(&path, LOUD_AMPLITUDE);
+
+        let measured = measure_loudness(&path, 0);
+        let config = detect_channel_config(&path);
+
+        assert_eq!(measured.channels, SOUND_TRACK_CHANNELS);
+        assert_eq!(measured.sample_rate, SOUND_TRACK_SAMPLE_RATE);
+        assert!(config.valid, "{config:?}");
+        assert_eq!(config.channel_count, SOUND_TRACK_CHANNELS);
+        assert_eq!(config.layout, ChannelLayout::Stereo);
+    }
+
+    #[test]
+    fn a_cinema_picture_track_reports_twelve_bit_xyz_and_its_stored_size() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("picture.mxf");
+        write_picture_track(&path, PICTURE_FRAMES, None);
+
+        let color = detect_color_space(&path);
+        let resolution = detect_resolution(&path);
+
+        assert!(color.valid, "{color:?}");
+        assert_eq!(color.bit_depth, CINEMA_BIT_DEPTH);
+        assert_eq!(color.detected_space, ColorSpace::Xyz);
+        assert!(resolution.valid, "{resolution:?}");
+        assert_eq!(resolution.width, CODESTREAM_SIZE);
+        assert_eq!(resolution.height, CODESTREAM_SIZE);
+    }
+
+    #[test]
+    fn the_reel_durations_read_their_frame_rate_from_the_picture_track() {
+        let directory = tempfile::tempdir().unwrap();
+        write_picture_track(&directory.path().join("picture.mxf"), PICTURE_FRAMES, None);
+        write_reel_cpl(
+            &directory.path().join("CPL.xml"),
+            &[ReelTiming {
+                picture_entry: 0,
+                picture_duration: 48,
+                sound_entry: 0,
+                sound_duration: 48,
+            }],
+        );
+
+        let durations = analyze_reel_durations(directory.path());
+
+        assert!(durations.valid, "{durations:?}");
+        assert_eq!(durations.reel_count, 1);
+        assert_eq!(durations.frame_rate, CINEMA_FRAME_RATE);
+    }
+
+    #[test]
+    fn a_sound_path_holding_shell_text_is_probed_instead_of_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(shell_injection_name("mxf"));
+        tone_track(&path, LOUD_AMPLITUDE);
+
+        let measured = measure_loudness(&path, 0);
+        let config = detect_channel_config(&path);
+
+        assert_the_path_was_not_run();
+        assert!(measured.valid, "{measured:?}");
+        assert_eq!(measured.channels, SOUND_TRACK_CHANNELS);
+        assert_eq!(config.channel_count, SOUND_TRACK_CHANNELS);
+    }
+
+    #[test]
+    fn a_picture_path_holding_shell_text_is_probed_instead_of_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(shell_injection_name("mxf"));
+        write_picture_track(&path, PICTURE_FRAMES, None);
+
+        let color = detect_color_space(&path);
+        let resolution = detect_resolution(&path);
+
+        assert_the_path_was_not_run();
+        assert_eq!(color.bit_depth, CINEMA_BIT_DEPTH);
+        assert_eq!(resolution.width, CODESTREAM_SIZE);
+    }
 }
