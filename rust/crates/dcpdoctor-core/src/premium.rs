@@ -515,15 +515,21 @@ fn read_imf_hdr_descriptor(path: &str) -> Option<asdcplib::jp2k::HdrMetadata> {
 fn hdr_from_ffprobe(mxf_path: &Path) -> HdrMetadata {
     let mut hdr = HdrMetadata::default();
 
-    let cmd = format!(
-        "ffprobe -v quiet -select_streams v:0 -show_entries \
-         stream=color_transfer,color_primaries,color_space,bits_per_raw_sample \
-         -show_entries \
-         side_data=side_data_type,max_content,max_average,min_luminance,max_luminance \
-         -of json \"{}\" 2>/dev/null",
-        mxf_path.display()
+    let output = run_ffprobe(
+        &[
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=color_transfer,color_primaries,color_space,bits_per_raw_sample",
+            "-show_entries",
+            "side_data=side_data_type,max_content,max_average,min_luminance,max_luminance",
+            "-of",
+            "json",
+        ],
+        mxf_path,
     );
-    let output = run_cmd(&cmd);
 
     if output.is_empty() {
         return hdr;
@@ -978,13 +984,19 @@ pub struct ProResInfo {
 pub fn detect_prores(mxf_path: &Path) -> ProResInfo {
     let mut info = ProResInfo::default();
 
-    let cmd = format!(
-        "ffprobe -v quiet -select_streams v:0 -show_entries \
-         stream=codec_name,codec_long_name,width,height,r_frame_rate \
-         -of json \"{}\" 2>/dev/null",
-        mxf_path.display()
+    let output = run_ffprobe(
+        &[
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name,codec_long_name,width,height,r_frame_rate",
+            "-of",
+            "json",
+        ],
+        mxf_path,
     );
-    let output = run_cmd(&cmd);
 
     if output.contains("prores") || output.contains("ProRes") || output.contains("Apple") {
         info.detected = true;
@@ -1297,9 +1309,11 @@ pub fn compare_fingerprints(a: &ContentFingerprint, b: &ContentFingerprint) -> f
 // Internal helpers
 // ════════════════════════════════════════════════════════════════════════════════
 
-fn run_cmd(cmd: &str) -> String {
-    std::process::Command::new("sh")
-        .args(["-c", cmd])
+// the path goes in as its own argument, so a quote or a $(...) in it stays a filename
+fn run_ffprobe(args: &[&str], path: &Path) -> String {
+    std::process::Command::new("ffprobe")
+        .args(args)
+        .arg(path)
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
@@ -1520,6 +1534,119 @@ mod tests {
         assert!(!hdr.detected, "{hdr:?}");
         let light = read_cpl_content_light(directory.path());
         assert!(check_hdr_compliance(&hdr, light, &picture).is_empty());
+    }
+
+    const SHELL_INJECTION_MARKER: &str = "dcpdoctor-shell-injection-marker";
+
+    fn shell_injection_name(extension: &str) -> String {
+        format!("probe\"$(touch {SHELL_INJECTION_MARKER})\".{extension}")
+    }
+
+    // a shell would have run the injected touch in the test process working directory
+    fn assert_the_path_was_not_run() {
+        let marker = std::env::current_dir()
+            .unwrap()
+            .join(SHELL_INJECTION_MARKER);
+        assert!(
+            !marker.exists(),
+            "the track file path ran as a command: {}",
+            marker.display()
+        );
+    }
+
+    fn write_clip(path: &Path, encoder_arguments: &[&str]) {
+        let output = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=64x64:rate=24:duration=0.5",
+            ])
+            .args(encoder_arguments)
+            .arg(path)
+            .output()
+            .expect("ffmpeg has to be on PATH");
+        assert!(
+            output.status.success(),
+            "ffmpeg failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // ffmpeg's own colour flags never reach the x265 VUI, so ffprobe reads back nothing
+    fn write_pq_clip(path: &Path) {
+        write_clip(
+            path,
+            &[
+                "-c:v",
+                "libx265",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p10le",
+                "-x265-params",
+                "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc",
+            ],
+        );
+    }
+
+    fn write_prores_clip(path: &Path) {
+        write_clip(path, &["-c:v", "prores_ks", "-profile:v", "3"]);
+    }
+
+    #[test]
+    fn a_pq_tagged_clip_reports_pq_and_bt_2020() {
+        let directory = tempfile::tempdir().unwrap();
+        let clip = directory.path().join("pq.mkv");
+        write_pq_clip(&clip);
+
+        let hdr = hdr_from_ffprobe(&clip);
+
+        assert!(hdr.detected, "{hdr:?}");
+        assert_eq!(hdr.hdr_type, HdrType::Pq);
+        assert_eq!(hdr.color_primaries, "BT.2020");
+    }
+
+    #[test]
+    fn a_prores_clip_reports_prores_and_the_width_it_was_encoded_at() {
+        let directory = tempfile::tempdir().unwrap();
+        let clip = directory.path().join("prores.mov");
+        write_prores_clip(&clip);
+
+        let info = detect_prores(&clip);
+
+        assert!(info.detected, "{info:?}");
+        assert_eq!(info.codec_variant, "ProRes");
+        assert_eq!(info.width, 64);
+        assert_eq!(info.height, 64);
+    }
+
+    #[test]
+    fn hdr_from_ffprobe_reads_a_path_holding_shell_text_instead_of_running_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let clip = directory.path().join(shell_injection_name("mkv"));
+        write_pq_clip(&clip);
+
+        let hdr = hdr_from_ffprobe(&clip);
+
+        assert_the_path_was_not_run();
+        assert_eq!(hdr.hdr_type, HdrType::Pq);
+    }
+
+    #[test]
+    fn detect_prores_reads_a_path_holding_shell_text_instead_of_running_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let clip = directory.path().join(shell_injection_name("mov"));
+        write_prores_clip(&clip);
+
+        let info = detect_prores(&clip);
+
+        assert_the_path_was_not_run();
+        assert!(info.detected, "{info:?}");
+        assert_eq!(info.width, 64);
     }
 
     #[test]

@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Fixed
+- `--hdr` and `--prores` built an `sh -c` command string with the track file path inside double quotes, so a path holding a double quote, a backtick or `$(...)` ran as a command, and `serve` and `watch` take the path from the caller. Both now run ffprobe directly with the path as its own argument. The same string also meant neither check ran at all on Windows, where there is no `sh`, and nothing asserted on either one. Unit tests probe a PQ-tagged HEVC clip and a ProRes clip, and probe both again through a file name carrying `$(touch ...)` to prove the name is read rather than run.
+
 - `--dolby-vision` found nothing on any package: it ran ffprobe over each track file and searched the output for `DOVI`, which a JPEG 2000 track file never carries, and the one profile it named called profile 5 dual-layer, where profile 5 is single-layer IPT PQ. The check reads the RPU itself now, through postkit's `read_dolby_vision`, and reports the profile, the frame count and the MaxCLL and MaxFALL the RPU's level 6 block carries, or that it carries no level 6 block. Profile 5 is a warning quoting postkit's reason only the RPU can turn that colour back into RGB. A package whose track files are all JPEG 2000 is told there is no Dolby Vision metadata to check, where it used to print nothing at all. The unit tests read profile 8.1 and profile 5 HEVC fixtures with generated RPUs.
 
 ### Added
