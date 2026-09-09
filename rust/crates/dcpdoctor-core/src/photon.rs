@@ -49,19 +49,16 @@ fn cache_dir() -> PathBuf {
     }
 }
 
-/// Where the Photon classpath can come from. `PHOTON_DIR` may name a single jar
-/// or a directory of jars; the rest are directories.
-pub fn find_photon() -> Option<PhotonClasspath> {
-    if let Ok(path) = std::env::var("PHOTON_DIR") {
-        let configured = PathBuf::from(&path);
-        if configured.is_file() && configured.extension() == Some("jar".as_ref()) {
-            return Some(PhotonClasspath::Jar(configured));
-        }
-        for dir in [configured.clone(), configured.join("build").join("libs")] {
-            if has_photon_jars(&dir) {
-                return Some(PhotonClasspath::Directory(dir));
-            }
-        }
+/// Where the Photon classpath can come from. `explicit` and `PHOTON_DIR` may
+/// name a single jar or a directory of jars; the rest are directories.
+pub fn find_photon(explicit: Option<&Path>) -> Option<PhotonClasspath> {
+    if let Some(classpath) = explicit.and_then(classpath_at) {
+        return Some(classpath);
+    }
+    if let Some(classpath) =
+        std::env::var_os("PHOTON_DIR").and_then(|path| classpath_at(Path::new(&path)))
+    {
+        return Some(classpath);
     }
 
     let candidates = [
@@ -75,6 +72,19 @@ pub fn find_photon() -> Option<PhotonClasspath> {
         .into_iter()
         .find(|dir| has_photon_jars(dir))
         .map(PhotonClasspath::Directory)
+}
+
+fn classpath_at(configured: &Path) -> Option<PhotonClasspath> {
+    if configured.is_file() && configured.extension() == Some("jar".as_ref()) {
+        return Some(PhotonClasspath::Jar(configured.to_path_buf()));
+    }
+    [
+        configured.to_path_buf(),
+        configured.join("build").join("libs"),
+    ]
+    .into_iter()
+    .find(|dir| has_photon_jars(dir))
+    .map(PhotonClasspath::Directory)
 }
 
 /// A Photon classpath entry, ready for `java -cp`.
@@ -116,17 +126,17 @@ pub fn has_java() -> bool {
 }
 
 /// Locate a usable Photon install, or say why there isn't one.
-pub fn ensure_photon() -> Result<PhotonClasspath, PhotonError> {
+pub fn ensure_photon(explicit: Option<&Path>) -> Result<PhotonClasspath, PhotonError> {
     if !has_java() {
         return Err(PhotonError::JavaNotFound);
     }
-    find_photon().ok_or(PhotonError::NotInstalled)
+    find_photon(explicit).ok_or(PhotonError::NotInstalled)
 }
 
 /// Run Photon against an IMP directory and return validation notes. Errors when
 /// Java is missing or no Photon jars were fetched.
-pub fn run_photon(imp_dir: &Path) -> Result<Vec<Note>, PhotonError> {
-    let classpath = ensure_photon()?.argument();
+pub fn run_photon(imp_dir: &Path, explicit: Option<&Path>) -> Result<Vec<Note>, PhotonError> {
+    let classpath = ensure_photon(explicit)?.argument();
 
     let output = Command::new("java")
         .args(["-cp", &classpath, "com.netflix.imflibrary.app.IMPAnalyzer"])
@@ -330,10 +340,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_find_photon_not_installed() {
-        // On most dev machines Photon won't be installed
-        // Just verify the function doesn't panic
-        let _ = find_photon();
+    fn an_explicit_jar_wins_over_the_search_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let jar = dir.path().join("photon.jar");
+        std::fs::write(&jar, b"").unwrap();
+        match find_photon(Some(&jar)) {
+            Some(PhotonClasspath::Jar(found)) => assert_eq!(found, jar),
+            other => panic!("expected the jar itself, got {other:?}"),
+        }
+        match find_photon(Some(dir.path())) {
+            Some(PhotonClasspath::Directory(found)) => assert_eq!(found, dir.path()),
+            other => panic!("expected the directory of jars, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_explicit_path_without_jars_is_not_a_classpath() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(classpath_at(dir.path()).is_none());
+        assert!(classpath_at(&dir.path().join("missing")).is_none());
     }
 
     #[test]

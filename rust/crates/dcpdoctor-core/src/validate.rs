@@ -1354,7 +1354,7 @@ fn verify_imp(imp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     check_imp_files(imp_dir, opts, &mut result);
 
     // Photon adds deep IMF conformance checks.
-    match crate::photon::run_photon(imp_dir) {
+    match crate::photon::run_photon(imp_dir, opts.photon.as_deref()) {
         Ok(photon_notes) => {
             for note in photon_notes {
                 result.add(note);
@@ -3078,6 +3078,31 @@ mod tests {
             !result.notes.iter().any(|n| FILE_FINDINGS.contains(&n.code)),
             "every file still matches the PKL, so only Photon can fail this: {:?}",
             result.notes
+        );
+    }
+
+    #[test]
+    fn an_explicit_photon_path_is_the_one_the_imf_pass_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        imp_fixture::write_imp(dir.path());
+        let jars = tempfile::tempdir().unwrap();
+        std::fs::write(jars.path().join("photon.jar"), b"").unwrap();
+
+        let opts = VerifyOptions {
+            photon: Some(jars.path().to_path_buf()),
+            ..VerifyOptions::standard()
+        };
+        let result = verify_imp(dir.path(), &opts);
+        let note = result
+            .notes
+            .iter()
+            .find(|n| n.code == Code::CheckSkipped)
+            .unwrap_or_else(|| panic!("an empty jar ran to completion: {:?}", result.notes));
+        assert!(
+            note.message
+                .starts_with("[Photon] deep IMF checks did not finish"),
+            "{}",
+            note.message
         );
     }
 

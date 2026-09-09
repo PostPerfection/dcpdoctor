@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- `VerifyOptions.photon` names the Photon jar or directory of jars the IMF pass runs, ahead of `PHOTON_DIR` and the cache directories, so a caller that already resolved Photon its own way (imfwizard reads `PHOTON_JAR` and `--photon-jar`) no longer needs a second variable set for the pass to run. The field is not read from the REST body, since it is a classpath the server would execute.
+
 ### Changed
 - `serve` binds `127.0.0.1` by default, where it bound `0.0.0.0`: without `--api-key` the endpoint validates any path the process can read, so it is no longer reachable from other hosts unless `--bind` says so.
 

@@ -1687,6 +1687,7 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
         ov: flags.ov.clone(),
         kdm: flags.kdm.clone(),
         recipient_key: flags.recipient_key.clone(),
+        photon: None,
     };
 
     let mut any_failed = false;

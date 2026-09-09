@@ -461,6 +461,11 @@ pub struct VerifyOptions {
     /// Recipient RSA private key (PEM) matching the KDM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipient_key: Option<PathBuf>,
+    /// Photon jar or directory of jars for the IMF pass, else `PHOTON_DIR` and
+    /// the cache directories. Not settable over the REST body: it is a
+    /// classpath the server would run.
+    #[serde(skip)]
+    pub photon: Option<PathBuf>,
 }
 
 impl VerifyOptions {
@@ -474,6 +479,7 @@ impl VerifyOptions {
             ov: None,
             kdm: None,
             recipient_key: None,
+            photon: None,
         }
     }
 
@@ -487,6 +493,7 @@ impl VerifyOptions {
             ov: None,
             kdm: None,
             recipient_key: None,
+            photon: None,
         }
     }
 }
