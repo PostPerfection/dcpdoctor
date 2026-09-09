@@ -67,7 +67,9 @@ fn measure(package: &Path) -> Option<Measurement> {
 
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(&directory).ok()?.flatten() {
-            let Ok(metadata) = entry.metadata() else {
+            // the directory listing's size and mtime go stale on windows while
+            // a file is still open for writing
+            let Ok(metadata) = std::fs::metadata(entry.path()) else {
                 return None;
             };
             if metadata.is_dir() {
