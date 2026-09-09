@@ -2001,10 +2001,26 @@ fn run_premium_checks(dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdo
             return notes;
         }
 
+        let mut dolby_vision_reported = false;
         for mxf in mxf_files(dir) {
             if flags.dolby_vision {
-                let dv = premium::parse_dolby_vision(&mxf);
-                notes.extend(premium::check_dolby_vision_compliance(&dv, &mxf));
+                match premium::parse_dolby_vision(&mxf) {
+                    Ok(Some(dv)) => {
+                        dolby_vision_reported = true;
+                        notes.extend(premium::check_dolby_vision_compliance(&dv, &mxf));
+                    }
+                    Ok(None) => {}
+                    Err(reason) => {
+                        dolby_vision_reported = true;
+                        notes.push(
+                            dcpdoctor_core::Note::warning(
+                                dcpdoctor_core::Code::CheckSkipped,
+                                format!("Dolby Vision check did not run: {reason}"),
+                            )
+                            .with_file(&mxf),
+                        );
+                    }
+                }
             }
             if flags.prores {
                 let p = premium::detect_prores(&mxf);
@@ -2021,6 +2037,16 @@ fn run_premium_checks(dir: &std::path::Path, flags: &ValidateFlags) -> Vec<dcpdo
                     });
                 }
             }
+        }
+
+        if flags.dolby_vision && !dolby_vision_reported {
+            notes.push(
+                dcpdoctor_core::Note::info(
+                    dcpdoctor_core::Code::HdrMetadataSummary,
+                    "JPEG 2000 track files carry no Dolby Vision RPU, so this package has no Dolby Vision metadata to check",
+                )
+                .with_file(dir),
+            );
         }
     }
 

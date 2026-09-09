@@ -598,6 +598,7 @@ dependencies = [
  "base64",
  "dcpdoctor-imf",
  "dcpdoctor-parse",
+ "dolby_vision",
  "language-tags",
  "postkit",
  "quick-xml 0.41.0",

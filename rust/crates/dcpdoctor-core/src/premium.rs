@@ -186,159 +186,78 @@ pub fn check_imsc_compliance(info: &TtmlInfo, ttml_path: &Path) -> Vec<Note> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 2. Dolby Vision 4.0 Metadata
+// 2. Dolby Vision RPU Metadata
 // ════════════════════════════════════════════════════════════════════════════════
 
-/// Dolby Vision metadata detected from MXF.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DolbyVisionMetadata {
-    pub detected: bool,
     pub profile: u8,
-    pub level: u8,
-    pub bl_present_flag: u8,
-    pub el_present_flag: u8,
-    pub rpu_present_flag: u8,
-    pub is_tunnel: bool,
-    pub is_mef: bool,
-    pub rpu_count: u32,
+    pub frames: usize,
+    pub max_content_light_level_nits: Option<f32>,
+    pub max_frame_average_light_level_nits: Option<f32>,
+    pub peak_luminance_nits: f32,
+    // postkit's reason this RPU cannot be decoded back to RGB, profile 5 only
+    pub undecodable_reason: Option<String>,
 }
 
-/// Parse Dolby Vision metadata from an MXF file.
-pub fn parse_dolby_vision(mxf_path: &Path) -> DolbyVisionMetadata {
-    let mut dv = DolbyVisionMetadata::default();
+pub fn parse_dolby_vision(track_file: &Path) -> Result<Option<DolbyVisionMetadata>, String> {
+    let Some(summary) = postkit::dolby_vision::read_dolby_vision(track_file)? else {
+        return Ok(None);
+    };
 
-    // Use ffprobe to detect Dolby Vision configuration
-    let cmd = format!(
-        "ffprobe -v quiet -select_streams v:0 -show_entries \
-         stream_side_data=side_data_type,dv_profile,dv_level,dv_bl_present_flag,\
-         dv_el_present_flag,dv_rpu_present_flag -of csv=p=0 \"{}\" 2>/dev/null",
-        mxf_path.display()
-    );
-    let mut output = run_cmd(&cmd);
-
-    // Also try JSON format if CSV didn't find DOVI
-    if !output.contains("DOVI") && !output.contains("dovi") && !output.contains("dolby_vision") {
-        let json_cmd = format!(
-            "ffprobe -v quiet -select_streams v:0 -show_streams -of json \"{}\" 2>/dev/null",
-            mxf_path.display()
-        );
-        output = run_cmd(&json_cmd);
-    }
-
-    if output.contains("DOVI")
-        || output.contains("dovi")
-        || output.contains("dolby_vision")
-        || output.contains("Dolby Vision")
-    {
-        dv.detected = true;
-
-        let profile_re = regex_lite::Regex::new(r#""?dv_profile"?\s*[:=]\s*(\d+)"#).unwrap();
-        if let Some(cap) = profile_re.captures(&output) {
-            dv.profile = cap[1].parse().unwrap_or(0);
-        }
-
-        let level_re = regex_lite::Regex::new(r#""?dv_level"?\s*[:=]\s*(\d+)"#).unwrap();
-        if let Some(cap) = level_re.captures(&output) {
-            dv.level = cap[1].parse().unwrap_or(0);
-        }
-
-        let bl_re = regex_lite::Regex::new(r#""?dv_bl_present_flag"?\s*[:=]\s*(\d+)"#).unwrap();
-        if let Some(cap) = bl_re.captures(&output) {
-            dv.bl_present_flag = cap[1].parse().unwrap_or(0);
-        }
-
-        let el_re = regex_lite::Regex::new(r#""?dv_el_present_flag"?\s*[:=]\s*(\d+)"#).unwrap();
-        if let Some(cap) = el_re.captures(&output) {
-            dv.el_present_flag = cap[1].parse().unwrap_or(0);
-        }
-
-        let rpu_re = regex_lite::Regex::new(r#""?dv_rpu_present_flag"?\s*[:=]\s*(\d+)"#).unwrap();
-        if let Some(cap) = rpu_re.captures(&output) {
-            dv.rpu_present_flag = cap[1].parse().unwrap_or(0);
-        }
-
-        dv.is_tunnel = dv.profile == 5 || dv.el_present_flag > 0;
-        dv.is_mef = dv.profile == 5 && dv.el_present_flag > 0;
-
-        if dv.profile == 0 {
-            dv.profile = 8; // Default to single-layer
-            dv.bl_present_flag = 1;
-        }
-    }
-
-    // Count RPU frames if detected
-    if dv.detected && dv.rpu_present_flag > 0 {
-        let count_cmd = format!(
-            "ffprobe -v quiet -select_streams v:0 -count_packets -show_entries \
-             stream=nb_read_packets -of csv=p=0 \"{}\" 2>/dev/null",
-            mxf_path.display()
-        );
-        let count_out = run_cmd(&count_cmd);
-        if let Ok(count) = count_out.trim().parse::<u32>() {
-            dv.rpu_count = count;
-        }
-    }
-
-    dv
+    Ok(Some(DolbyVisionMetadata {
+        profile: summary.profile,
+        frames: summary.frames,
+        max_content_light_level_nits: summary.max_content_light_level_nits,
+        max_frame_average_light_level_nits: summary.max_frame_average_light_level_nits,
+        peak_luminance_nits: summary.peak_luminance_nits,
+        undecodable_reason: postkit::dolby_vision::refuse_undecodable_dolby_vision(&summary).err(),
+    }))
 }
 
-/// Check Dolby Vision compliance for DCI theatrical.
 pub fn check_dolby_vision_compliance(dv: &DolbyVisionMetadata, source: &Path) -> Vec<Note> {
-    let mut notes = Vec::new();
-    if !dv.detected {
-        return notes;
-    }
-
     let file = Some(source.to_path_buf());
+    let light_levels = match (
+        dv.max_content_light_level_nits,
+        dv.max_frame_average_light_level_nits,
+    ) {
+        (None, None) => "no level 6 block, so no MaxCLL or MaxFALL".to_string(),
+        (max_cll, max_fall) => format!(
+            "MaxCLL {}, MaxFALL {}",
+            light_level_nits(max_cll),
+            light_level_nits(max_fall)
+        ),
+    };
 
-    notes.push(Note {
+    let mut notes = vec![Note {
         severity: Severity::Info,
-        code: Code::MxfInvalidStructure,
+        code: Code::HdrMetadataSummary,
         message: format!(
-            "Dolby Vision detected: Profile {} ({})",
-            dv.profile,
-            if dv.is_tunnel {
-                "dual-layer tunnel"
-            } else {
-                "single-layer"
-            }
+            "Dolby Vision RPU: profile {}, {} frames, {light_levels}, peak {:.0} nits",
+            dv.profile, dv.frames, dv.peak_luminance_nits
         ),
         file: file.clone(),
         line: 0,
-    });
+    }];
 
-    if dv.is_mef {
-        notes.push(Note {
-            severity: Severity::Info,
-            code: Code::MxfInvalidStructure,
-            message: "Dolby Vision 4.0 MEF (Multi-resolution Enhancement) detected".into(),
-            file: file.clone(),
-            line: 0,
-        });
-    }
-
-    if dv.profile == 5 {
+    if let Some(reason) = &dv.undecodable_reason {
         notes.push(Note {
             severity: Severity::Warning,
-            code: Code::MxfInvalidStructure,
-            message: "Dolby Vision Profile 5 (dual-layer) may not be supported by all servers"
-                .into(),
-            file: file.clone(),
-            line: 0,
-        });
-    }
-
-    if dv.rpu_present_flag > 0 && dv.rpu_count == 0 {
-        notes.push(Note {
-            severity: Severity::Info,
-            code: Code::MxfInvalidStructure,
-            message: "Dolby Vision RPU flagged but frame count not available from metadata".into(),
+            code: Code::HdrMetadataInvalid,
+            message: format!("Dolby Vision profile {}: {reason}", dv.profile),
             file,
             line: 0,
         });
     }
 
     notes
+}
+
+fn light_level_nits(value: Option<f32>) -> String {
+    match value {
+        Some(nits) => format!("{nits:.0} nits"),
+        None => "unset".to_string(),
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1414,6 +1333,13 @@ fn parse_ttml_time(time_str: &str) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use dolby_vision::rpu::extension_metadata::blocks::ExtMetadataBlockLevel6;
+    use postkit::dolby_vision::{
+        DOLBY_VISION_FIXTURE_FRAMES, DolbyVisionFixtureProfile, write_dolby_vision_fixture,
+    };
+
     use super::*;
     use crate::track_fixtures::{
         SoundStretch, bt709, hlg_bt2020, pq_bt2020, write_atmos_track, write_iab_track,
@@ -1612,6 +1538,91 @@ mod tests {
 
         assert!(!info.detected());
         assert!(check_atmos_compliance(&info, &path).is_empty());
+    }
+
+    fn dolby_vision_fixture(
+        directory: &Path,
+        profile: DolbyVisionFixtureProfile,
+        level6: Option<ExtMetadataBlockLevel6>,
+    ) -> PathBuf {
+        write_dolby_vision_fixture(directory, "dolby_vision.hevc", profile, level6, None).unwrap()
+    }
+
+    #[test]
+    fn a_profile_81_rpu_reports_its_profile_frames_and_level_6_light_levels() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = dolby_vision_fixture(
+            directory.path(),
+            DolbyVisionFixtureProfile::Profile81,
+            Some(ExtMetadataBlockLevel6 {
+                max_display_mastering_luminance: 1000,
+                min_display_mastering_luminance: 1,
+                max_content_light_level: 993,
+                max_frame_average_light_level: 362,
+            }),
+        );
+
+        let dv = parse_dolby_vision(&path)
+            .unwrap()
+            .expect("an RPU is present");
+
+        assert_eq!(dv.profile, 8);
+        assert_eq!(dv.frames, DOLBY_VISION_FIXTURE_FRAMES);
+        assert_eq!(dv.max_content_light_level_nits, Some(993.0));
+        assert_eq!(dv.max_frame_average_light_level_nits, Some(362.0));
+        assert!(dv.undecodable_reason.is_none(), "{dv:?}");
+
+        let notes = check_dolby_vision_compliance(&dv, &path);
+        let note = only_note(&notes);
+        assert_eq!(note.severity, Severity::Info);
+        assert_eq!(note.code, Code::HdrMetadataSummary);
+        assert!(
+            note.message.contains("profile 8")
+                && note.message.contains("6 frames")
+                && note.message.contains("MaxCLL 993 nits")
+                && note.message.contains("MaxFALL 362 nits"),
+            "{}",
+            note.message
+        );
+    }
+
+    #[test]
+    fn a_profile_5_rpu_warns_that_only_the_rpu_can_turn_it_back_into_rgb() {
+        let directory = tempfile::tempdir().unwrap();
+        let path =
+            dolby_vision_fixture(directory.path(), DolbyVisionFixtureProfile::Profile5, None);
+
+        let dv = parse_dolby_vision(&path)
+            .unwrap()
+            .expect("an RPU is present");
+
+        assert_eq!(dv.profile, 5);
+
+        let notes = check_dolby_vision_compliance(&dv, &path);
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[0].message.contains("no level 6 block"),
+            "{}",
+            notes[0].message
+        );
+        assert_eq!(notes[1].severity, Severity::Warning);
+        assert_eq!(notes[1].code, Code::HdrMetadataInvalid);
+        assert!(
+            notes[1].message.contains("profile 5")
+                && notes[1].message.contains("IPT PQ c2")
+                && notes[1].message.contains("profile 8.1"),
+            "{}",
+            notes[1].message
+        );
+    }
+
+    #[test]
+    fn a_jpeg_2000_track_file_carries_no_dolby_vision_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let picture = directory.path().join("PICTURE.mxf");
+        write_picture_track(&picture, 2, None);
+
+        assert_eq!(parse_dolby_vision(&picture).unwrap(), None);
     }
 }
 

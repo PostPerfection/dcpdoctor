@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- `--dolby-vision` found nothing on any package: it ran ffprobe over each track file and searched the output for `DOVI`, which a JPEG 2000 track file never carries, and the one profile it named called profile 5 dual-layer, where profile 5 is single-layer IPT PQ. The check reads the RPU itself now, through postkit's `read_dolby_vision`, and reports the profile, the frame count and the MaxCLL and MaxFALL the RPU's level 6 block carries, or that it carries no level 6 block. Profile 5 is a warning quoting postkit's reason only the RPU can turn that colour back into RGB. A package whose track files are all JPEG 2000 is told there is no Dolby Vision metadata to check, where it used to print nothing at all. The unit tests read profile 8.1 and profile 5 HEVC fixtures with generated RPUs.
+
 ### Added
 - `VerifyOptions.photon` names the Photon jar or directory of jars the IMF pass runs, ahead of `PHOTON_DIR` and the cache directories, so a caller that already resolved Photon its own way (imfwizard reads `PHOTON_JAR` and `--photon-jar`) no longer needs a second variable set for the pass to run. The field is not read from the REST body, since it is a classpath the server would execute.
 
