@@ -41,7 +41,7 @@ pub fn analyze_audio(audio_path: &Path) -> Result<AudioAnalysis, String> {
     // Use ffmpeg astats filter for per-channel peak and RMS
     let output = std::process::Command::new("ffmpeg")
         .arg("-i")
-        .arg(audio_path)
+        .arg(crate::studio::ffmpeg_path_argument(audio_path))
         .arg("-af")
         .arg("astats=metadata=1:reset=0")
         .arg("-f")
@@ -142,7 +142,7 @@ fn parse_astats_channels(stderr: &str) -> Vec<ChannelInfo> {
 fn analyze_audio_volumedetect(audio_path: &Path) -> Result<AudioAnalysis, String> {
     let output = std::process::Command::new("ffmpeg")
         .arg("-i")
-        .arg(audio_path)
+        .arg(crate::studio::ffmpeg_path_argument(audio_path))
         .arg("-af")
         .arg("volumedetect")
         .arg("-f")
@@ -210,7 +210,7 @@ pub fn measure_loudness(audio_path: &Path) -> Result<LoudnessResult, String> {
 
     let output = std::process::Command::new("ffmpeg")
         .arg("-i")
-        .arg(audio_path)
+        .arg(crate::studio::ffmpeg_path_argument(audio_path))
         .arg("-af")
         .arg("ebur128=peak=true")
         .arg("-f")

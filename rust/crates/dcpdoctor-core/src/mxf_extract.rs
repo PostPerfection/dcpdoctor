@@ -45,7 +45,9 @@ pub fn extract_mxf(opts: &MxfExtractOptions) -> MxfExtractResult {
         let mut args: Vec<String> = vec![
             "-y".into(),
             "-i".into(),
-            opts.input.to_string_lossy().into(),
+            crate::studio::ffmpeg_path_argument(&opts.input)
+                .to_string_lossy()
+                .into(),
         ];
 
         if opts.start_frame > 0 {
@@ -65,7 +67,9 @@ pub fn extract_mxf(opts: &MxfExtractOptions) -> MxfExtractResult {
             "0:v".into(),
             "-c".into(),
             "copy".into(),
-            out_path.to_string_lossy().into(),
+            crate::studio::ffmpeg_path_argument(&out_path)
+                .to_string_lossy()
+                .into(),
         ]);
 
         let status = Command::new("ffmpeg").args(&args).status();
@@ -81,12 +85,12 @@ pub fn extract_mxf(opts: &MxfExtractOptions) -> MxfExtractResult {
             .args([
                 "-y",
                 "-i",
-                &opts.input.to_string_lossy(),
+                &crate::studio::ffmpeg_path_argument(&opts.input).to_string_lossy(),
                 "-map",
                 "0:a",
                 "-c",
                 "pcm_s24le",
-                &out_path.to_string_lossy(),
+                &crate::studio::ffmpeg_path_argument(&out_path).to_string_lossy(),
             ])
             .status();
 

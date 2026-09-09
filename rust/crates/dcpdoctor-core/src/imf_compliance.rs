@@ -174,8 +174,8 @@ fn check_resolution(
                 "stream=width,height",
                 "-of",
                 "csv=p=0",
-                &video_path.to_string_lossy(),
             ])
+            .arg(crate::studio::ffmpeg_path_argument(video_path))
             .output();
 
         if let Ok(o) = output {
@@ -216,8 +216,8 @@ fn check_framerate(result: &mut ImfComplianceResult, video: Option<&Path>, allow
                 "stream=r_frame_rate",
                 "-of",
                 "csv=p=0",
-                &video_path.to_string_lossy(),
             ])
+            .arg(crate::studio::ffmpeg_path_argument(video_path))
             .output();
 
         if let Ok(o) = output {

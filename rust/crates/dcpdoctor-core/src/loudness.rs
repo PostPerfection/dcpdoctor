@@ -49,12 +49,14 @@ pub fn normalize_loudness(opts: &NormalizeOptions) -> NormalizeResult {
         opts.target_lufs, opts.true_peak_limit
     );
 
-    let out_str = opts.output_file.to_string_lossy();
+    let output_argument = crate::studio::ffmpeg_path_argument(&opts.output_file);
+    let out_str = output_argument.to_string_lossy();
+    let input_argument = crate::studio::ffmpeg_path_argument(&opts.input_file);
     let status = Command::new("ffmpeg")
         .args([
             "-y",
             "-i",
-            &opts.input_file.to_string_lossy(),
+            &input_argument.to_string_lossy(),
             "-af",
             &filter,
             out_str.as_ref(),

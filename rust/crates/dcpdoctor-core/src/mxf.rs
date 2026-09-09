@@ -289,7 +289,7 @@ pub fn read_mxf_info(path: &Path) -> MxfInfo {
             "-show_streams",
             "-show_format",
         ])
-        .arg(path)
+        .arg(crate::studio::ffmpeg_path_argument(path))
         .output();
 
     let mut stream_probe_error = String::new();

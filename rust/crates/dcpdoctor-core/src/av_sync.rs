@@ -53,8 +53,8 @@ fn probe_duration(file: &Path) -> Option<f64> {
             "format=duration",
             "-of",
             "csv=p=0",
-            &file.to_string_lossy(),
         ])
+        .arg(crate::studio::ffmpeg_path_argument(file))
         .output()
         .ok()?;
     let s = String::from_utf8_lossy(&output.stdout);
@@ -301,14 +301,17 @@ pub fn fix_av_sync(opts: &AvSyncFixOptions) -> AvSyncFixResult {
         return result;
     }
 
-    let out_str = opts.output_file.to_string_lossy();
+    let output_argument = crate::studio::ffmpeg_path_argument(&opts.output_file);
+    let out_str = output_argument.to_string_lossy();
+    let audio_argument = crate::studio::ffmpeg_path_argument(&opts.audio_file);
+    let audio_str = audio_argument.to_string_lossy();
     let status = if opts.trim_samples > 0 {
         let trim_seconds = opts.trim_samples as f64 / opts.sample_rate as f64;
         Command::new("ffmpeg")
             .args([
                 "-y",
                 "-i",
-                &opts.audio_file.to_string_lossy(),
+                audio_str.as_ref(),
                 "-ss",
                 &format!("{trim_seconds}"),
                 "-c:a",
@@ -330,7 +333,7 @@ pub fn fix_av_sync(opts: &AvSyncFixOptions) -> AvSyncFixResult {
                 "-i",
                 &format!("anullsrc=r={}", opts.sample_rate),
                 "-i",
-                &opts.audio_file.to_string_lossy(),
+                audio_str.as_ref(),
                 "-filter_complex",
                 "[0:a][1:a]concat=n=2:v=0:a=1",
                 "-c:a",

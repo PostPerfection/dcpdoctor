@@ -178,7 +178,7 @@ fn value_after(line: &str, key: &str) -> Option<f64> {
 fn run_filter(input: &Path, filter_args: &[&str]) -> Result<String, String> {
     let output = std::process::Command::new("ffmpeg")
         .arg("-i")
-        .arg(input)
+        .arg(crate::studio::ffmpeg_path_argument(input))
         .args(filter_args)
         .args(["-f", "null", "-"])
         .output()

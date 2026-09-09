@@ -128,7 +128,9 @@ pub fn validate_hdr_metadata(opts: &HdrValidateOptions) -> HdrValidateResult {
         return result;
     }
 
-    let path_str = opts.video_path.to_string_lossy().to_string();
+    let path_str = crate::studio::ffmpeg_path_argument(&opts.video_path)
+        .to_string_lossy()
+        .to_string();
 
     // Probe stream-level metadata
     let stream_output = match run_ffprobe(&[

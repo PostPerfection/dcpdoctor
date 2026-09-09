@@ -1228,7 +1228,7 @@ fn probe_picture_stream(mxf_path: &Path) -> PictureStream {
             "-of",
             "default=noprint_wrappers=1",
         ])
-        .arg(mxf_path)
+        .arg(crate::studio::ffmpeg_path_argument(mxf_path))
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
@@ -1268,7 +1268,7 @@ fn probe_picture_stream(mxf_path: &Path) -> PictureStream {
 fn sample_gray_grid(mxf_path: &Path, frame: u32) -> Option<[u8; HASH_PIXELS]> {
     let output = std::process::Command::new("ffmpeg")
         .args(["-v", "quiet", "-i"])
-        .arg(mxf_path)
+        .arg(crate::studio::ffmpeg_path_argument(mxf_path))
         .args([
             "-vf",
             // the comma inside the select expression is escaped for ffmpeg's
@@ -1313,7 +1313,7 @@ pub fn compare_fingerprints(a: &ContentFingerprint, b: &ContentFingerprint) -> f
 fn run_ffprobe(args: &[&str], path: &Path) -> String {
     std::process::Command::new("ffprobe")
         .args(args)
-        .arg(path)
+        .arg(crate::studio::ffmpeg_path_argument(path))
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()

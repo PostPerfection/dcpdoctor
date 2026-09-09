@@ -28,7 +28,7 @@ pub fn measure_loudness(mxf_path: &Path, max_frames: u32) -> LoudnessResult {
 
     let mut ffmpeg = std::process::Command::new("ffmpeg");
     ffmpeg.args(["-hide_banner", "-nostats", "-i"]);
-    ffmpeg.arg(mxf_path);
+    ffmpeg.arg(ffmpeg_path_argument(mxf_path));
     let frames = max_frames.to_string();
     if max_frames > 0 {
         ffmpeg.args(["-frames:a", &frames]);
@@ -473,7 +473,7 @@ fn luminance_table() -> Vec<f64> {
 fn decode_xyz_frame(frame_path: &Path) -> Result<Vec<u8>, String> {
     let output = std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
-        .arg(frame_path)
+        .arg(ffmpeg_path_argument(frame_path))
         .args(["-pix_fmt", XYZ_PIXEL_FORMAT, "-f", "rawvideo", "-"])
         .output()
         .map_err(|e| format!("cannot run ffmpeg: {e}"))?;
@@ -1281,12 +1281,17 @@ pub fn ffprobe_available() -> bool {
         .unwrap_or(false)
 }
 
+// ffmpeg and ffprobe read a leading dash as an option, and an absolute path never starts with one
+pub(crate) fn ffmpeg_path_argument(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// Run ffprobe and return stdout plus stderr, or the reason it could not run.
 // the path goes in as its own argument, so a quote or a $(...) in it stays a filename
 fn ffprobe_output(args: &[&str], path: &Path) -> Result<String, String> {
     let output = std::process::Command::new("ffprobe")
         .args(args)
-        .arg(path)
+        .arg(ffmpeg_path_argument(path))
         .output()
         .map_err(|e| format!("cannot run ffprobe: {e}"))?;
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -1532,5 +1537,27 @@ mod tests {
         assert_the_path_was_not_run();
         assert_eq!(color.bit_depth, CINEMA_BIT_DEPTH);
         assert_eq!(resolution.width, CODESTREAM_SIZE);
+    }
+
+    #[test]
+    fn a_sound_path_starting_with_a_dash_is_probed_as_a_file_not_an_option() {
+        let directory = tempfile::tempdir().unwrap();
+        let plain_path = directory.path().join("sound.mxf");
+        tone_track(&plain_path, LOUD_AMPLITUDE);
+
+        // only a name relative to the working directory can start with the dash
+        let dash_file = tempfile::Builder::new()
+            .prefix("-dash")
+            .suffix(".mxf")
+            .tempfile_in(".")
+            .unwrap();
+        std::fs::copy(&plain_path, dash_file.path()).unwrap();
+        let dash_path = Path::new(dash_file.path().file_name().unwrap());
+
+        let dash_config = detect_channel_config(dash_path);
+        let plain_config = detect_channel_config(&plain_path);
+
+        assert_eq!(dash_config.channel_count, plain_config.channel_count);
+        assert_eq!(dash_config.channel_count, SOUND_TRACK_CHANNELS);
     }
 }

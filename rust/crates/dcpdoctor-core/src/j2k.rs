@@ -167,7 +167,7 @@ fn analyze_j2k_from_mxf_ffprobe(path: &Path) -> Result<J2kCodestreamInfo, String
             "-show_streams",
             "-show_format",
         ])
-        .arg(path)
+        .arg(crate::studio::ffmpeg_path_argument(path))
         .output()
         .map_err(|e| format!("Failed to run ffprobe: {e}"))?;
 
