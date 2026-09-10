@@ -25,9 +25,9 @@ pub const PICTURE_HEIGHT: u32 = 144;
 /// integrated loudness rather than -inf.
 pub const FRAMES: u32 = 48;
 
-const SAMPLE_RATE: u32 = 48_000;
-const CHANNELS: u32 = 2;
-const BYTES_PER_SAMPLE: u32 = 3;
+pub const SAMPLE_RATE: u32 = 48_000;
+pub const CHANNELS: u32 = 2;
+pub const BYTES_PER_SAMPLE: u32 = 3;
 
 /// -20 dBFS, well inside the R128 gate and clear of clipping.
 const TONE_AMPLITUDE: f64 = 0.1;
