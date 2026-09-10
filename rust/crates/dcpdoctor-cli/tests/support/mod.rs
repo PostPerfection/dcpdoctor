@@ -45,6 +45,7 @@ pub enum Picture {
     /// A solid X', Y', Z' code triple, wrapped in a DCI cinema codestream so the
     /// picture really carries those codes rather than a conversion of them.
     Xyz([u16; 3]),
+    ImfSolid([u16; 3]),
 }
 
 impl Picture {
@@ -56,7 +57,22 @@ impl Picture {
             Picture::Flat => Some(format!(
                 "color=c=gray:size={PICTURE_WIDTH}x{PICTURE_HEIGHT}:rate={EDIT_RATE}:duration=4"
             )),
-            Picture::Xyz(_) => None,
+            Picture::Xyz(_) | Picture::ImfSolid(_) => None,
+        }
+    }
+
+    fn solid_codes(self) -> Option<[u16; 3]> {
+        match self {
+            Picture::Xyz(codes) | Picture::ImfSolid(codes) => Some(codes),
+            Picture::Bars | Picture::Flat => None,
+        }
+    }
+
+    fn rsiz(self) -> Option<u16> {
+        match self {
+            Picture::Xyz(_) => Some(CINEMA_2K_RSIZ),
+            Picture::ImfSolid(_) => Some(IMF_2K_RSIZ),
+            Picture::Bars | Picture::Flat => None,
         }
     }
 }
@@ -64,6 +80,8 @@ impl Picture {
 /// SIZ carries Rsiz two bytes in, and 3 is the DCI Cinema 2K profile ffmpeg
 /// reads a codestream as X'Y'Z' on the strength of.
 const CINEMA_2K_RSIZ: u16 = 3;
+const IMF_2K_RSIZ: u16 = 0x0436;
+const RSIZ_OFFSET: usize = 6;
 
 /// One frame of gbrp12le, whose planes ffmpeg's JPEG 2000 encoder writes as
 /// codestream components in R, G, B order.
@@ -77,10 +95,10 @@ fn solid_gbrp12le_frame(xyz: [u16; 3]) -> Vec<u8> {
     frame
 }
 
-fn set_cinema_profile(codestream: &mut [u8]) {
+fn set_profile(codestream: &mut [u8], rsiz: u16) {
     assert_eq!(&codestream[0..2], b"\xff\x4f", "no SOC marker");
     assert_eq!(&codestream[2..4], b"\xff\x51", "no SIZ marker");
-    codestream[6..8].copy_from_slice(&CINEMA_2K_RSIZ.to_be_bytes());
+    codestream[RSIZ_OFFSET..RSIZ_OFFSET + 2].copy_from_slice(&rsiz.to_be_bytes());
 }
 
 /// A package to write: the picture content, the JPEG 2000 quantizer step ffmpeg
@@ -118,6 +136,95 @@ pub fn write_package(dir: &Path, spec: &PackageSpec) {
     write_picture_mxf(&dir.join(PICTURE_FILE), &frames);
     write_sound_mxf(&dir.join(SOUND_FILE));
     write_xml(dir, spec);
+}
+
+pub const IMP_FRAMES: u32 = 12;
+
+const IMP_CPL_ID: &str = "1a1a1a1a-1111-1111-1111-111111111111";
+const IMP_PKL_ID: &str = "dddddddd-1111-1111-1111-111111111111";
+const IMP_ASSETMAP_ID: &str = "cccccccc-1111-1111-1111-111111111111";
+
+const APP_2E_NAMESPACE: &str = "http://www.smpte-ra.org/ns/2067-21/2021";
+
+pub fn imp_picture_file() -> String {
+    format!("{PICTURE_ID}.mxf")
+}
+
+pub fn write_app2e_imp(dir: &Path, picture: Picture) {
+    let frames = encode_j2c_frames(dir, picture, 2);
+    let codestream =
+        asdcplib::jp2k::CodestreamHeader::parse(&frames[0]).expect("parse the ffmpeg codestream");
+    dcpdoctor_core::app2e_fixtures::write_picture(
+        &dir.join(imp_picture_file()),
+        codestream,
+        &frames[0],
+        IMP_FRAMES,
+        Some(dcpdoctor_core::app2e_fixtures::bt709()),
+    );
+
+    let picture_file = imp_picture_file();
+    std::fs::write(
+        dir.join("ASSETMAP.xml"),
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:{IMP_ASSETMAP_ID}</Id>
+  <Creator>dcpdoctor tests</Creator>
+  <VolumeCount>1</VolumeCount>
+  <IssueDate>2026-01-01T00:00:00+00:00</IssueDate>
+  <Issuer>dcpdoctor tests</Issuer>
+  <AssetList>
+    <Asset><Id>urn:uuid:{IMP_PKL_ID}</Id><PackingList>true</PackingList><ChunkList><Chunk><Path>PKL.xml</Path></Chunk></ChunkList></Asset>
+    <Asset><Id>urn:uuid:{IMP_CPL_ID}</Id><ChunkList><Chunk><Path>CPL.xml</Path></Chunk></ChunkList></Asset>
+    <Asset><Id>urn:uuid:{PICTURE_ID}</Id><ChunkList><Chunk><Path>{picture_file}</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#
+        ),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.join("PKL.xml"),
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<PackingList xmlns="http://www.smpte-ra.org/schemas/2067-2/2016/PKL">
+  <Id>urn:uuid:{IMP_PKL_ID}</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:{IMP_CPL_ID}</Id><Type>text/xml</Type></Asset>
+    <Asset><Id>urn:uuid:{PICTURE_ID}</Id><Type>application/mxf</Type></Asset>
+  </AssetList>
+</PackingList>"#
+        ),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.join("CPL.xml"),
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016"
+                     xmlns:cc="http://www.smpte-ra.org/schemas/2067-2/2016"
+                     xmlns:app="{APP_2E_NAMESPACE}">
+  <Id>urn:uuid:{IMP_CPL_ID}</Id>
+  <ContentTitle>App 2E sample fixture</ContentTitle>
+  <EditRate>{EDIT_RATE} 1</EditRate>
+  <SegmentList>
+    <Segment>
+      <MainImageSequence>
+        <Id>urn:uuid:eeeeeeee-1111-1111-1111-111111111111</Id>
+        <ResourceList><Resource>
+          <Id>urn:uuid:11110000-1111-1111-1111-111111111111</Id>
+          <TrackFileId>urn:uuid:{PICTURE_ID}</TrackFileId>
+          <EditRate>{EDIT_RATE} 1</EditRate><IntrinsicDuration>{IMP_FRAMES}</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint><SourceDuration>{IMP_FRAMES}</SourceDuration>
+        </Resource></ResourceList>
+      </MainImageSequence>
+    </Segment>
+  </SegmentList>
+</CompositionPlaylist>"#
+        ),
+    )
+    .unwrap();
 }
 
 /// Copy a written package, so the two differ only where a test changes them.
@@ -160,9 +267,9 @@ fn encode_j2c_frames(dir: &Path, picture: Picture, quality: u32) -> Vec<Vec<u8>>
             ffmpeg.args(["-f", "lavfi", "-i"]).arg(source);
         }
         None => {
-            let Picture::Xyz(codes) = picture else {
-                unreachable!("only an Xyz picture has no lavfi source")
-            };
+            let codes = picture
+                .solid_codes()
+                .expect("only a solid picture has no lavfi source");
             let frame = solid_gbrp12le_frame(codes);
             std::fs::write(&raw, frame.repeat(FRAMES as usize)).unwrap();
             ffmpeg
@@ -213,10 +320,10 @@ fn encode_j2c_frames(dir: &Path, picture: Picture, quality: u32) -> Vec<Vec<u8>>
     paths.sort();
     assert_eq!(paths.len(), FRAMES as usize, "ffmpeg wrote {paths:?}");
     let mut frames: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
-    if matches!(picture, Picture::Xyz(_)) {
+    if let Some(rsiz) = picture.rsiz() {
         let _ = std::fs::remove_file(&raw);
         for frame in &mut frames {
-            set_cinema_profile(frame);
+            set_profile(frame, rsiz);
         }
     }
     std::fs::remove_dir_all(&scratch).unwrap();

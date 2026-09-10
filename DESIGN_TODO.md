@@ -28,16 +28,6 @@ citing no source, stricter than the document defining it. Neither is normative,
 and either would need the essence coding UL, which dcpdoctor does not read. Same
 note in postkit's DESIGN_TODO.
 
-## App 2E picture is not decoded
-
-The four descriptor checks (Rsiz is an IMF profile, ColorPrimaries and
-TransferCharacteristic present, coding label matches the Rsiz, pixel layout
-matches the codestream) read the AS-02 header and are in `app2e_picture`. The
-fifth check, a decoded saturated patch coming back RGB rather than X'Y'Z', needs
-a decoder and dcpdoctor does not link grok, so it stays out until there is
-somewhere to decode a frame. A codestream whose Rsiz and label say IMF but
-whose samples are X'Y'Z' would still pass.
-
 ## Photon has to be fetched, not built
 
 `bootstrap_photon` is gone (see Done, 2026-08-12). dcpdoctor now runs Photon only

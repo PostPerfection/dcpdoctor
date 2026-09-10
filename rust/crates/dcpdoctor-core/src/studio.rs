@@ -371,10 +371,10 @@ impl GamutSample {
 }
 
 /// Frames decoded per picture track, evenly spaced over its duration.
-const GAMUT_SAMPLE_FRAMES: u32 = 12;
+const SAMPLED_FRAMES_PER_TRACK: u32 = 12;
 /// The pixel format a DCI codestream decodes to, and the only one whose samples
 /// are the codestream's own X'Y'Z' codes rather than a conversion of them.
-const XYZ_PIXEL_FORMAT: &str = "xyz12le";
+pub(crate) const XYZ_PIXEL_FORMAT: &str = "xyz12le";
 const TWELVE_BIT_MAX: f64 = 4095.0;
 /// SMPTE ST 428-1 stores X'Y'Z' with this gamma over a 52.37 cd/m² full scale.
 const DCDM_GAMMA: f64 = 2.6;
@@ -396,69 +396,62 @@ const OUT_OF_GAMUT_WARN_SHARE: f64 = 0.01;
 /// X'Y'Z' lands outside DCI-P3.
 pub fn sample_gamut(mxf_path: &Path) -> GamutSample {
     let mut sample = GamutSample::default();
+    let luminance = luminance_table();
+    let walk = walk_sampled_frames(
+        mxf_path,
+        crate::j2k::PictureEssenceFamily::Cinema,
+        |index, frame_path| {
+            // a reduced decode lowpasses the extremes this counts into their neighbours
+            let decoded = decode_frame(frame_path, XYZ_PIXEL_FORMAT, FULL_RESOLUTION)
+                .map_err(|e| format!("frame {index} would not decode: {e}"))?;
+            let (samples, outside) = count_outside_p3(&decoded, &luminance);
+            sample.samples += samples;
+            sample.outside_p3 += outside;
+            Ok(())
+        },
+    );
+    match walk {
+        Ok(frames) => sample.frames_sampled = frames,
+        Err(reason) => sample.error = Some(reason),
+    }
+    sample
+}
 
-    let Some(path_text) = mxf_path.to_str() else {
-        sample.error = Some("the track file path is not UTF-8".into());
-        return sample;
-    };
-    let Some(mut reader) =
-        crate::j2k::PictureEssenceReader::open(path_text, crate::j2k::PictureEssenceFamily::Cinema)
-    else {
-        sample.error = Some("asdcplib would not open the file as picture essence".into());
-        return sample;
-    };
-    let duration = match reader.picture_descriptor() {
-        Ok(descriptor) => descriptor.container_duration,
-        Err(e) => {
-            sample.error = Some(format!("the picture descriptor would not read: {e}"));
-            return sample;
-        }
-    };
+pub(crate) fn walk_sampled_frames(
+    mxf_path: &Path,
+    family: crate::j2k::PictureEssenceFamily,
+    mut visit: impl FnMut(u32, &Path) -> Result<(), String>,
+) -> Result<u32, String> {
+    let path_text = mxf_path
+        .to_str()
+        .ok_or_else(|| "the track file path is not UTF-8".to_string())?;
+    let mut reader = crate::j2k::PictureEssenceReader::open(path_text, family)
+        .ok_or_else(|| "asdcplib would not open the file as picture essence".to_string())?;
+    let duration = reader
+        .picture_descriptor()
+        .map_err(|e| format!("the picture descriptor would not read: {e}"))?
+        .container_duration;
     if duration == 0 {
-        sample.error = Some("the picture track holds no frames".into());
-        return sample;
+        return Err("the picture track holds no frames".into());
     }
 
-    let scratch = match tempfile::TempDir::new() {
-        Ok(scratch) => scratch,
-        Err(e) => {
-            sample.error = Some(format!("no scratch directory to decode into: {e}"));
-            return sample;
-        }
-    };
+    let scratch = tempfile::TempDir::new()
+        .map_err(|e| format!("no scratch directory to decode into: {e}"))?;
     let frame_path = scratch.path().join("sample.j2c");
 
-    let luminance = luminance_table();
     let eye = reader.eyes()[0];
     let mut buffer = vec![0u8; crate::j2k::FRAME_BUFFER_BYTES];
-    let wanted = duration.min(GAMUT_SAMPLE_FRAMES);
+    let wanted = duration.min(SAMPLED_FRAMES_PER_TRACK);
     for step in 0..wanted {
         let index = step * duration / wanted;
-        let read = match reader.read_frame(index, eye, &mut buffer, None, None) {
-            Ok(read) => read,
-            Err(e) => {
-                sample.error = Some(format!("frame {index} would not read: {e}"));
-                return sample;
-            }
-        };
-        if let Err(e) = std::fs::write(&frame_path, &buffer[..read]) {
-            sample.error = Some(format!("frame {index} would not write to scratch: {e}"));
-            return sample;
-        }
-        let decoded = match decode_xyz_frame(&frame_path) {
-            Ok(decoded) => decoded,
-            Err(e) => {
-                sample.error = Some(format!("frame {index} would not decode: {e}"));
-                return sample;
-            }
-        };
-        let (samples, outside) = count_outside_p3(&decoded, &luminance);
-        sample.frames_sampled += 1;
-        sample.samples += samples;
-        sample.outside_p3 += outside;
+        let read = reader
+            .read_frame(index, eye, &mut buffer, None, None)
+            .map_err(|e| format!("frame {index} would not read: {e}"))?;
+        std::fs::write(&frame_path, &buffer[..read])
+            .map_err(|e| format!("frame {index} would not write to scratch: {e}"))?;
+        visit(index, &frame_path)?;
     }
-
-    sample
+    Ok(wanted)
 }
 
 /// Every 12-bit code as the luminance ST 428-1 decodes it to, so the gamma is
@@ -469,12 +462,25 @@ fn luminance_table() -> Vec<f64> {
         .collect()
 }
 
+pub(crate) const FULL_RESOLUTION: u8 = 0;
+
 // the path goes in as its own argument, so a quote or a $(...) in it stays a filename
-fn decode_xyz_frame(frame_path: &Path) -> Result<Vec<u8>, String> {
-    let output = std::process::Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
+pub(crate) fn decode_frame(
+    frame_path: &Path,
+    pixel_format: &str,
+    dropped_wavelet_levels: u8,
+) -> Result<Vec<u8>, String> {
+    let mut ffmpeg = std::process::Command::new("ffmpeg");
+    ffmpeg.args(["-v", "error"]);
+    let levels = dropped_wavelet_levels.to_string();
+    if dropped_wavelet_levels > FULL_RESOLUTION {
+        // -lowres only takes effect ahead of the input
+        ffmpeg.args(["-lowres", &levels]);
+    }
+    let output = ffmpeg
+        .arg("-i")
         .arg(ffmpeg_path_argument(frame_path))
-        .args(["-pix_fmt", XYZ_PIXEL_FORMAT, "-f", "rawvideo", "-"])
+        .args(["-pix_fmt", pixel_format, "-f", "rawvideo", "-"])
         .output()
         .map_err(|e| format!("cannot run ffmpeg: {e}"))?;
     if !output.status.success() {
@@ -484,6 +490,25 @@ fn decode_xyz_frame(frame_path: &Path) -> Result<Vec<u8>, String> {
         return Err("ffmpeg decoded no samples".into());
     }
     Ok(output.stdout)
+}
+
+pub(crate) fn probe_pixel_format(frame_path: &Path) -> Result<String, String> {
+    let probe = ffprobe_output(
+        &[
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=pix_fmt",
+            "-of",
+            "default=noprint_wrappers=1",
+        ],
+        frame_path,
+    )?;
+    ffprobe_entry(&probe, "pix_fmt")
+        .map(str::to_string)
+        .ok_or_else(|| "ffprobe named no pixel format".to_string())
 }
 
 /// `xyz12le` holds X, Y then Z per pixel, each a little-endian 16-bit word

@@ -456,7 +456,15 @@ fn validate_picture_essence(
 
     // read through asdcplib as well, so it does not wait on the ffprobe descriptor
     if cpl.application == ImfApplication::App2e {
-        notes.extend(crate::app2e_picture::check_descriptor(mxf_path));
+        let descriptor_notes = crate::app2e_picture::check_descriptor(mxf_path);
+        // a cinema Rsiz is already the X'Y'Z' finding
+        let profile_is_imf = !descriptor_notes
+            .iter()
+            .any(|note| note.code == Code::PictureNotImfProfile);
+        notes.extend(descriptor_notes);
+        if profile_is_imf {
+            notes.extend(crate::app2e_picture::check_samples(mxf_path));
+        }
     }
 
     let pic = match &mxf.picture {
