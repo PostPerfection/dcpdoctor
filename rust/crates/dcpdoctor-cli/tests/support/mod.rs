@@ -150,6 +150,10 @@ pub fn imp_picture_file() -> String {
     format!("{PICTURE_ID}.mxf")
 }
 
+pub fn imp_sound_file() -> String {
+    format!("{SOUND_ID}.mxf")
+}
+
 pub fn write_app2e_imp(dir: &Path, picture: Picture) {
     let frames = encode_j2c_frames(dir, picture, 2);
     let codestream =
@@ -161,8 +165,10 @@ pub fn write_app2e_imp(dir: &Path, picture: Picture) {
         IMP_FRAMES,
         Some(dcpdoctor_core::app2e_fixtures::bt709()),
     );
+    write_as02_sound_mxf(&dir.join(imp_sound_file()));
 
     let picture_file = imp_picture_file();
+    let sound_file = imp_sound_file();
     std::fs::write(
         dir.join("ASSETMAP.xml"),
         format!(
@@ -177,6 +183,7 @@ pub fn write_app2e_imp(dir: &Path, picture: Picture) {
     <Asset><Id>urn:uuid:{IMP_PKL_ID}</Id><PackingList>true</PackingList><ChunkList><Chunk><Path>PKL.xml</Path></Chunk></ChunkList></Asset>
     <Asset><Id>urn:uuid:{IMP_CPL_ID}</Id><ChunkList><Chunk><Path>CPL.xml</Path></Chunk></ChunkList></Asset>
     <Asset><Id>urn:uuid:{PICTURE_ID}</Id><ChunkList><Chunk><Path>{picture_file}</Path></Chunk></ChunkList></Asset>
+    <Asset><Id>urn:uuid:{SOUND_ID}</Id><ChunkList><Chunk><Path>{sound_file}</Path></Chunk></ChunkList></Asset>
   </AssetList>
 </AssetMap>"#
         ),
@@ -192,6 +199,7 @@ pub fn write_app2e_imp(dir: &Path, picture: Picture) {
   <AssetList>
     <Asset><Id>urn:uuid:{IMP_CPL_ID}</Id><Type>text/xml</Type></Asset>
     <Asset><Id>urn:uuid:{PICTURE_ID}</Id><Type>application/mxf</Type></Asset>
+    <Asset><Id>urn:uuid:{SOUND_ID}</Id><Type>application/mxf</Type></Asset>
   </AssetList>
 </PackingList>"#
         ),
@@ -219,6 +227,15 @@ pub fn write_app2e_imp(dir: &Path, picture: Picture) {
           <EntryPoint>0</EntryPoint><SourceDuration>{IMP_FRAMES}</SourceDuration>
         </Resource></ResourceList>
       </MainImageSequence>
+      <MainAudioSequence>
+        <Id>urn:uuid:eeeeeeee-2222-2222-2222-222222222222</Id>
+        <ResourceList><Resource>
+          <Id>urn:uuid:22220000-1111-1111-1111-111111111111</Id>
+          <TrackFileId>urn:uuid:{SOUND_ID}</TrackFileId>
+          <EditRate>{EDIT_RATE} 1</EditRate><IntrinsicDuration>{IMP_FRAMES}</IntrinsicDuration>
+          <EntryPoint>0</EntryPoint><SourceDuration>{IMP_FRAMES}</SourceDuration>
+        </Resource></ResourceList>
+      </MainAudioSequence>
     </Segment>
   </SegmentList>
 </CompositionPlaylist>"#
@@ -384,23 +401,63 @@ fn write_sound_mxf(path: &Path) {
     writer
         .open_write(path.to_str().unwrap(), &info, &descriptor, HEADER_BYTES)
         .unwrap();
-    let frames_per_edit_unit = SAMPLE_RATE / EDIT_RATE;
-    let mut sample_index = 0u32;
-    for _ in 0..FRAMES {
-        let mut frame = Vec::with_capacity((frames_per_edit_unit * block_align) as usize);
-        for _ in 0..frames_per_edit_unit {
-            let value = TONE_AMPLITUDE
-                * (std::f64::consts::TAU * TONE_HZ * sample_index as f64 / SAMPLE_RATE as f64)
-                    .sin();
-            let quantized = (value * 8_388_607.0) as i32;
-            for _ in 0..CHANNELS {
-                frame.extend_from_slice(&quantized.to_le_bytes()[..BYTES_PER_SAMPLE as usize]);
-            }
-            sample_index += 1;
-        }
-        writer.write_frame(&frame, None, None).unwrap();
+    for edit_unit in 0..FRAMES {
+        writer
+            .write_frame(&tone_frame(edit_unit), None, None)
+            .unwrap();
     }
     writer.finalize().unwrap();
+}
+
+// the same tone, in the AS-02 clip wrapping an IMP sound track file uses
+fn write_as02_sound_mxf(path: &Path) {
+    use asdcplib::pcm::{AudioDescriptor, ChannelFormat};
+    use asdcplib::{LabelSet, Rational, WriterInfo};
+
+    let block_align = CHANNELS * BYTES_PER_SAMPLE;
+    let descriptor = AudioDescriptor {
+        edit_rate: Rational::new(EDIT_RATE as i32, 1),
+        audio_sampling_rate: Rational::new(SAMPLE_RATE as i32, 1),
+        locked: true,
+        channel_count: CHANNELS,
+        quantization_bits: BYTES_PER_SAMPLE * 8,
+        block_align,
+        avg_bps: SAMPLE_RATE * block_align,
+        linked_track_id: 0,
+        container_duration: IMP_FRAMES,
+        channel_format: ChannelFormat::None,
+    };
+    let info = WriterInfo {
+        asset_uuid: *uuid(SOUND_ID).as_bytes(),
+        label_set: LabelSet::Smpte,
+        ..Default::default()
+    };
+    let mut writer = asdcplib::as02::pcm::MxfWriter::new();
+    writer
+        .open_write(path.to_str().unwrap(), &info, &descriptor, HEADER_BYTES)
+        .unwrap();
+    for edit_unit in 0..IMP_FRAMES {
+        writer
+            .write_frame(&tone_frame(edit_unit), None, None)
+            .unwrap();
+    }
+    writer.finalize().unwrap();
+}
+
+fn tone_frame(edit_unit: u32) -> Vec<u8> {
+    let block_align = CHANNELS * BYTES_PER_SAMPLE;
+    let samples_per_edit_unit = SAMPLE_RATE / EDIT_RATE;
+    let mut frame = Vec::with_capacity((samples_per_edit_unit * block_align) as usize);
+    for offset in 0..samples_per_edit_unit {
+        let sample_index = edit_unit * samples_per_edit_unit + offset;
+        let value = TONE_AMPLITUDE
+            * (std::f64::consts::TAU * TONE_HZ * sample_index as f64 / SAMPLE_RATE as f64).sin();
+        let quantized = (value * 8_388_607.0) as i32;
+        for _ in 0..CHANNELS {
+            frame.extend_from_slice(&quantized.to_le_bytes()[..BYTES_PER_SAMPLE as usize]);
+        }
+    }
+    frame
 }
 
 fn uuid(text: &str) -> uuid::Uuid {

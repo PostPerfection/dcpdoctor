@@ -1471,36 +1471,37 @@ fn main() {
             }
         }
         Some(Commands::ImpInfo { imp_dir }) => {
-            let opts = dcpdoctor_core::VerifyOptions {
-                check_hashes: false,
-                check_signatures: false,
-                check_picture_details: false,
-                strict_smpte: false,
-                ..Default::default()
-            };
-            let result = dcpdoctor_core::verify(&imp_dir, &opts);
-            if cli.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "directory": imp_dir,
-                        "errors": result.error_count,
-                        "warnings": result.warning_count,
-                        "notes": result.notes,
-                    }))
-                    .unwrap()
+            if !dcpdoctor_core::imf::is_imf_package(&imp_dir) {
+                eprintln!(
+                    "{} holds no IMF Composition Playlist. Use `dcpdoctor info` for a DCP.",
+                    imp_dir.display()
                 );
-            } else if let Some(info) = dcpdoctor_core::info::get_dcp_info(&imp_dir) {
-                println!("IMP Info: {}", imp_dir.display());
-                println!("  Title:    {}", info.title);
-                println!("  Standard: {}", info.standard);
-                println!("  Assets:   {}", info.asset_count);
-                println!("  CPLs:     {}", info.cpl_count);
-                println!("  PKLs:     {}", info.pkl_count);
-                println!("  Duration: {} frames", info.total_duration_frames);
-            } else {
+                std::process::exit(1);
+            }
+            let Some(info) = dcpdoctor_core::imp_info::get_imp_info(&imp_dir) else {
                 eprintln!("Failed to read IMP at {}", imp_dir.display());
                 std::process::exit(1);
+            };
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&info).unwrap());
+            } else {
+                println!("IMP Info: {}", imp_dir.display());
+                println!("  Title:     {}", info.title);
+                println!("  Standard:  {}", info.standard);
+                println!("  Edit rate: {}", info.edit_rate);
+                println!("  Assets:    {}", info.asset_count);
+                println!("  CPLs:      {}", info.cpl_count);
+                println!("  PKLs:      {}", info.pkl_count);
+                println!("  Duration:  {} frames", info.total_duration_frames);
+                println!("  Tracks:");
+                for track in &info.tracks {
+                    println!(
+                        "    {} {} {}",
+                        track.kind,
+                        track.file,
+                        describe_essence(&track.essence)
+                    );
+                }
             }
         }
         Some(Commands::FacilityCheck {
@@ -1910,6 +1911,22 @@ fn run_deep_j2k(dcp_dir: &std::path::Path) -> Vec<dcpdoctor_core::Note> {
 /// Prefers the MainPicture asset referenced by a CPL; falls back to the largest
 /// MXF (the picture track is far larger than audio) so we never hand ffmpeg a
 /// directory.
+fn describe_essence(essence: &dcpdoctor_core::imp_info::TrackEssence) -> String {
+    use dcpdoctor_core::imp_info::TrackEssence;
+    match essence {
+        TrackEssence::Picture {
+            width,
+            height,
+            frames,
+        } => format!("{width}x{height}, {frames} frames"),
+        TrackEssence::Sound {
+            channels,
+            sample_rate,
+        } => format!("{channels} channels at {sample_rate} Hz"),
+        TrackEssence::Unread => "descriptor not read".to_string(),
+    }
+}
+
 fn resolve_imp_video(imp_dir: &std::path::Path) -> Option<PathBuf> {
     if let Ok(dcp) = dcpdoctor_core::dcp::open_dcp(imp_dir) {
         let id_to_path: std::collections::HashMap<&str, &str> = dcp

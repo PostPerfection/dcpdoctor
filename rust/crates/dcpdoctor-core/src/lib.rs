@@ -25,6 +25,7 @@ pub mod imf;
 pub mod imf_compliance;
 #[cfg(test)]
 mod imp_fixture;
+pub mod imp_info;
 pub mod info;
 pub mod isdcf;
 pub mod j2k;

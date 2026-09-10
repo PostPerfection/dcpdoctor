@@ -103,6 +103,57 @@ fn extracting_a_picture_track_yields_one_jpeg_2000_codestream_per_frame() {
             codestream.display()
         );
     }
+
+    assert_eq!(
+        result["frames_extracted"].as_u64().unwrap(),
+        support::FRAMES as u64,
+        "the report must count the frames the extraction wrote: {result:#}"
+    );
+}
+
+#[test]
+fn a_picture_track_extracts_its_own_essence_with_no_flag_to_say_so() {
+    let root = TempDir::new().unwrap();
+    let dcp = root.path().join("dcp");
+    std::fs::create_dir_all(&dcp).unwrap();
+    support::write_package(&dcp, &support::PackageSpec::default());
+    let into = root.path().join("extracted");
+
+    let output = Command::cargo_bin("dcpdoctor")
+        .unwrap()
+        .arg("mxf-extract")
+        .arg(dcp.join(support::PICTURE_FILE))
+        .arg("-o")
+        .arg(&into)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "mxf-extract failed on a picture track: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "",
+        "a successful extraction must say nothing on stderr"
+    );
+
+    let stem = Path::new(support::PICTURE_FILE)
+        .file_stem()
+        .unwrap()
+        .to_string_lossy();
+    let mut written: Vec<String> = std::fs::read_dir(&into)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    written.sort();
+    assert_eq!(
+        written,
+        vec![format!("{stem}_video.mxf")],
+        "a picture track has no sound to extract"
+    );
 }
 
 #[test]
