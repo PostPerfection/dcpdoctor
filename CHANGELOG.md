@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.3.0] - 2026-09-12
 
 ### Changed
 - Bumped asdcplib-rs and postkit so `TimedText Descriptor` carries `namespace_uri` and `ucs_encoding`. The two fields are additive; only the subtitle and kdm test fixtures that build a `TimedTextDescriptor` set them, to the empty strings a DCP subtitle already carried.
