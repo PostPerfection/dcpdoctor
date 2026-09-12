@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -145,6 +146,7 @@ jobs:
 
   release:
     needs: [build, deb]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

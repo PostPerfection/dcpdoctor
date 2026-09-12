@@ -3,6 +3,7 @@ name: GUI Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -115,8 +116,10 @@ jobs:
           OPENSSL_STATIC: "1"
         with:
           projectPath: gui
-          tagName: ${{ github.ref_name }}
-          releaseName: "DCP Doctor ${{ github.ref_name }}"
+          # a dispatch run builds the bundles as workflow artifacts and publishes nothing
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: ${{ github.ref_type == 'tag' && format('DCP Doctor {0}', github.ref_name) || '' }}
+          uploadWorkflowArtifacts: ${{ github.ref_type != 'tag' }}
           releaseBody: "See the release notes for details."
           releaseDraft: false
           prerelease: false
