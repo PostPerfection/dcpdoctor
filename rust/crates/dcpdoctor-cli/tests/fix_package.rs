@@ -94,7 +94,13 @@ fn fix_repairs_the_package_so_validate_passes() {
     let package = broken_package();
 
     dcpdoctor()
-        .args(["validate", package.path().to_str().unwrap()])
+        .args([
+            "validate",
+            "--no-mxf",
+            "--no-deep-j2k",
+            "--no-studio",
+            package.path().to_str().unwrap(),
+        ])
         .assert()
         .failure();
 
@@ -119,7 +125,13 @@ fn fix_repairs_the_package_so_validate_passes() {
     );
 
     dcpdoctor()
-        .args(["validate", package.path().to_str().unwrap()])
+        .args([
+            "validate",
+            "--no-mxf",
+            "--no-deep-j2k",
+            "--no-studio",
+            package.path().to_str().unwrap(),
+        ])
         .assert()
         .success();
 }

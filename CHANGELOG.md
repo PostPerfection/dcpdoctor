@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Native `validate` (CLI, GUI, watch, REST) runs MXF essence inspection, per-frame JPEG 2000 forensics, and studio/deep checks by default. `--no-mxf`, `--no-deep-j2k`, `--no-studio` and `--no-deep` turn each one off. The browser WASM checker stays the lighter pass.
+
+### Added
+- ISDCF naming warns on a missing audio language tag (field 4) and a missing audio field (field 6).
+- Colour detection reads ColorPrimaries from the picture descriptor (Rec.709, DCI-P3) and `xyz` pixel format (CIE XYZ), instead of guessing from bit depth.
+- ISO 21727 Leq(m) is checked against the content kind: 82 dB advertisement, 85 dB trailer. Features have no limit.
+
 ## [1.3.0] - 2026-09-12
 
 ### Changed

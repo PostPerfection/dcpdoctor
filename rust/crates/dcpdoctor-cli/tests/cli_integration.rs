@@ -66,6 +66,8 @@ fn validate_help() {
         .stdout(predicate::str::contains("--no-hashes"))
         .stdout(predicate::str::contains("--no-signatures"))
         .stdout(predicate::str::contains("--check-mxf"))
+        .stdout(predicate::str::contains("--no-mxf"))
+        .stdout(predicate::str::contains("--no-deep-j2k"))
         .stdout(predicate::str::contains("--strict"));
 }
 

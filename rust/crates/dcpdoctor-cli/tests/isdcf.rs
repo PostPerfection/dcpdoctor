@@ -37,6 +37,44 @@ fn title_with(field: usize, value: &str) -> String {
 }
 
 #[test]
+fn default_validate_scans_picture_essence() {
+    let dir = TempDir::new().unwrap();
+    write_dcp(dir.path(), &DcpSpec::default());
+    let stdout = Command::cargo_bin("dcpdoctor")
+        .unwrap()
+        .args(["validate", "--json", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let body = String::from_utf8_lossy(&stdout.stdout).into_owned();
+    assert!(
+        body.contains("J2kCodestreamSummary") || body.contains("PictureBitrateMeasured"),
+        "default validate must read picture essence, got: {body}"
+    );
+}
+
+#[test]
+fn no_mxf_skips_the_picture_essence_scan() {
+    let dir = TempDir::new().unwrap();
+    write_dcp(dir.path(), &DcpSpec::default());
+    let stdout = Command::cargo_bin("dcpdoctor")
+        .unwrap()
+        .args([
+            "validate",
+            "--json",
+            "--no-mxf",
+            "--no-deep-j2k",
+            dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let body = String::from_utf8_lossy(&stdout.stdout).into_owned();
+    assert!(
+        !body.contains("J2kCodestreamSummary") && !body.contains("PictureBitrateMeasured"),
+        "--no-mxf --no-deep-j2k must skip the picture essence scan, got: {body}"
+    );
+}
+
+#[test]
 fn a_valid_isdcf_title_draws_no_naming_note() {
     let stdout = validate_stdout(ISDCF_TITLE);
     assert!(

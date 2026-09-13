@@ -3069,7 +3069,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         imp_fixture::write_imp_without_source_encoding(dir.path());
 
-        let result = verify_imp(dir.path(), &VerifyOptions::standard());
+        let result = verify_imp(
+            dir.path(),
+            &VerifyOptions {
+                check_picture_details: false,
+                scan_every_frame: false,
+                ..VerifyOptions::standard()
+            },
+        );
         let note = error_note_with(&result, Code::XmlSchemaViolation, "cvc-complex-type");
         assert!(note.message.starts_with("[Photon]"), "{}", note.message);
         assert!(note.message.contains("SourceEncoding"), "{}", note.message);
@@ -3090,6 +3097,8 @@ mod tests {
 
         let opts = VerifyOptions {
             photon: Some(jars.path().to_path_buf()),
+            check_picture_details: false,
+            scan_every_frame: false,
             ..VerifyOptions::standard()
         };
         let result = verify_imp(dir.path(), &opts);

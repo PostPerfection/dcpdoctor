@@ -37,13 +37,31 @@ struct Cli {
     #[arg(long, global = true)]
     html: bool,
 
-    /// Run studio-specific checks (loudness, color, resolution, encryption, subtitles)
+    /// Run studio-specific checks (loudness, color, resolution, encryption, subtitles).
+    /// On by default; `--no-studio` skips them.
     #[arg(long, global = true)]
     studio: bool,
 
-    /// Deep per-MXF studio analysis (color space, bit depth, resolution per file)
+    /// Skip studio-specific checks
+    #[arg(long, global = true)]
+    no_studio: bool,
+
+    /// Deep per-MXF studio analysis (color space, bit depth, resolution per file).
+    /// On by default; `--no-deep` skips it.
     #[arg(long, global = true)]
     deep: bool,
+
+    /// Skip per-MXF studio analysis
+    #[arg(long, global = true)]
+    no_deep: bool,
+
+    /// Skip MXF essence inspection (bitrate, partitions, sound, resolution)
+    #[arg(long, global = true)]
+    no_mxf: bool,
+
+    /// Skip per-frame JPEG 2000 forensics
+    #[arg(long, global = true)]
+    no_deep_j2k: bool,
 
     /// Netflix IMF delivery spec check
     #[arg(long, global = true)]
@@ -95,7 +113,7 @@ enum Commands {
         #[arg(long)]
         no_signatures: bool,
 
-        /// Inspect MXF essence metadata
+        /// Inspect MXF essence metadata (the default; `--no-mxf` skips it)
         #[arg(long)]
         check_mxf: bool,
 
@@ -107,7 +125,7 @@ enum Commands {
         #[arg(long)]
         bv21: bool,
 
-        /// Deep J2K codestream validation
+        /// Deep J2K codestream validation (the default; `--no-deep-j2k` skips it)
         #[arg(long)]
         deep_j2k: bool,
 
@@ -496,12 +514,12 @@ fn main() {
             let flags = ValidateFlags {
                 no_hashes,
                 no_signatures,
-                check_mxf,
+                check_mxf: !cli.no_mxf || check_mxf,
                 strict: strict || bv21,
                 bv21,
-                deep_j2k,
-                studio: cli.studio,
-                deep: cli.deep,
+                deep_j2k: !cli.no_deep_j2k || deep_j2k,
+                studio: !cli.no_studio || cli.studio,
+                deep: !cli.no_deep || cli.deep,
                 netflix: cli.netflix,
                 hdr: cli.hdr,
                 atmos: cli.atmos,
@@ -599,7 +617,11 @@ fn main() {
                 eprintln!("Not a directory: {}", directory.display());
                 std::process::exit(1);
             }
-            let opts = dcpdoctor_core::VerifyOptions::standard();
+            let opts = dcpdoctor_core::VerifyOptions {
+                check_picture_details: !cli.no_mxf,
+                scan_every_frame: !cli.no_deep_j2k,
+                ..dcpdoctor_core::VerifyOptions::standard()
+            };
             dcpdoctor_core::watch::watch_directory(
                 &directory,
                 &opts,
@@ -1600,8 +1622,10 @@ fn main() {
                 std::process::exit(1);
             }
             let flags = ValidateFlags {
-                studio: cli.studio,
-                deep: cli.deep,
+                check_mxf: !cli.no_mxf,
+                deep_j2k: !cli.no_deep_j2k,
+                studio: !cli.no_studio || cli.studio,
+                deep: !cli.no_deep || cli.deep,
                 netflix: cli.netflix,
                 hdr: cli.hdr,
                 atmos: cli.atmos,
@@ -1617,7 +1641,6 @@ fn main() {
     }
 }
 
-#[derive(Default)]
 struct ValidateFlags {
     no_hashes: bool,
     no_signatures: bool,
@@ -1641,6 +1664,35 @@ struct ValidateFlags {
     report_to_folder: bool,
     kdm: Option<PathBuf>,
     recipient_key: Option<PathBuf>,
+}
+
+impl Default for ValidateFlags {
+    fn default() -> Self {
+        Self {
+            no_hashes: false,
+            no_signatures: false,
+            check_mxf: true,
+            strict: false,
+            bv21: false,
+            deep_j2k: true,
+            studio: true,
+            deep: true,
+            netflix: false,
+            hdr: false,
+            atmos: false,
+            dolby_vision: false,
+            prores: false,
+            accessibility: false,
+            imf: false,
+            ov: None,
+            timeline: None,
+            manifest: None,
+            output: None,
+            report_to_folder: false,
+            kdm: None,
+            recipient_key: None,
+        }
+    }
 }
 
 /// The --studio ffprobe checks re-cover a finding the core path already reports

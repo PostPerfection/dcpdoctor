@@ -33,11 +33,11 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **ISDCF Naming**: Content title naming convention validation
 
 ### Picture Validation
-- **J2K bitrate analysis**: Per-frame bitrate statistics (min/max/avg), AS-DCP and AS-02 essence (`--check-mxf`)
+- **J2K bitrate analysis**: Per-frame bitrate statistics (min/max/avg), AS-DCP and AS-02 essence (default; `--no-mxf` skips)
 - **DCI bitrate limit**: 250 Mbps at every resolution. IMF has no such limit, so an IMP's measured peak is reported as an info note
-- **4K frame rate (ST 429-2 Table 1)**: 4K picture essence must run at 24/1, 25/1 or 30/1 (`--check-mxf`)
+- **4K frame rate (ST 429-2 Table 1)**: 4K picture essence must run at 24/1, 25/1 or 30/1 (default; `--no-mxf` skips)
 - **Deep J2K codestream**: Profile (RSIZ), decomposition levels, code-block sizes, wavelet type, component validation
-- **Codestream forensics** (`--deep-j2k`): one pass over every frame reports the track's codestream parameters, the fattest frame against the DCI per-frame byte cap, and any parameter that changes partway through (`j2k_parameters_vary`); also a section in `qc-report`. An IMP's AS-02 picture tracks are scanned the same way, minus the cinema-profile checks and the DCI cap, which IMF has no equivalent of
+- **Codestream forensics** (default; `--no-deep-j2k` skips): one pass over every frame reports the track's codestream parameters, the fattest frame against the DCI per-frame byte cap, and any parameter that changes partway through (`j2k_parameters_vary`); also a section in `qc-report`. An IMP's AS-02 picture tracks are scanned the same way, minus the cinema-profile checks and the DCI cap, which IMF has no equivalent of
 - **IMF App 2E picture checks**: Confirms every MainImage track uses an IMF JPEG 2000 profile, carries the matching picture coding label, matches the descriptor's pixel layout to the codestream component count and depth, and declares its color primaries and transfer characteristic
 - **4K/2K detection**: Resolution and aspect ratio verification
 - **Large MXF handling**: Partition validation reads the header, Random Index Pack, and a bounded tail window instead of loading a feature-length track file into memory
@@ -48,7 +48,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Silence detection**: Warns on channels below -80 dBFS
 - **Channel count**: Validates channel configuration
 - **MainSoundConfiguration (ST 429-16)**: Presence, the `<soundfield>/<channels>` grammar of section 4.4.2.10 (each channel `-` or one to six alphanumerics), and channel count matched against the sound MXF (flags garbage like `None`). A well-formed label outside the ST 428-12 and ISDCF set warns rather than failing the package
-- **Quantization / block align**: 24-bit PCM and block-align check (`--check-mxf`)
+- **Quantization / block align**: 24-bit PCM and block-align check (default; `--no-mxf` skips)
 - **MCA labeling**: Multi-Channel Audio label presence check
 - **Audio sync drift**: Detects picture/sound duration mismatches per reel
 
@@ -193,11 +193,11 @@ dcpdoctor validate --bv21 /path/to/dcp
 # Strict SMPTE compliance
 dcpdoctor validate --strict /path/to/dcp
 
-# Deep J2K codestream validation
-dcpdoctor validate --deep-j2k /path/to/dcp
+# Skip the per-frame JPEG 2000 pass
+dcpdoctor validate --no-deep-j2k /path/to/dcp
 
-# MXF essence inspection (bitrate, audio levels)
-dcpdoctor validate --check-mxf /path/to/dcp
+# Skip MXF essence inspection (bitrate, audio levels)
+dcpdoctor validate --no-mxf /path/to/dcp
 ```
 
 ### Reports & Output
@@ -512,11 +512,11 @@ GitHub Actions runs these Rust checks on Linux, macOS, and Windows. It also buil
 ### Studio Validation
 
 ```bash
-# Studio-level checks (loudness, color, resolution, encryption, reel duration)
-dcpdoctor --studio /path/to/dcp
+# Studio-level checks (loudness, color, resolution, encryption, reel duration) are on by default
+dcpdoctor /path/to/dcp
 
-# Deep per-MXF analysis (color space, bit depth, resolution per file)
-dcpdoctor --studio --deep /path/to/dcp
+# Skip studio checks
+dcpdoctor --no-studio /path/to/dcp
 
 # Netflix IMF delivery spec check
 dcpdoctor --netflix /path/to/imf

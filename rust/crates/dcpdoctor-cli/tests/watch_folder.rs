@@ -62,6 +62,8 @@ impl Watcher {
                 directory.to_str().unwrap(),
                 "--interval",
                 POLL_INTERVAL_MILLISECONDS,
+                "--no-mxf",
+                "--no-deep-j2k",
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

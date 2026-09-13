@@ -119,8 +119,16 @@ pub fn check_isdcf_naming(content_title: &str, cpl_path: &Path) -> Vec<Note> {
         }
     }
 
-    // Field 4: Language (2-3 uppercase letters, optionally hyphenated)
-    if fields.len() >= 4 && !fields[3].is_empty() {
+    // Field 4: first tag is the main-program (audio) language.
+    if fields.len() < 4 || fields[3].is_empty() {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: Code::IsdcfNamingViolation,
+            message: "missing audio language tag".into(),
+            file: Some(cpl_path.to_path_buf()),
+            line: 0,
+        });
+    } else {
         let valid_lang = fields[3].split('-').all(|part| {
             part.len() >= 2 && part.len() <= 3 && part.chars().all(|c| c.is_ascii_uppercase())
         });
@@ -137,7 +145,15 @@ pub fn check_isdcf_naming(content_title: &str, cpl_path: &Path) -> Vec<Note> {
 
     // Field 6: Audio type. The tokens are the ISDCF registry's audio
     // configurations: one base configuration, then the supplementary tracks.
-    if fields.len() >= 6 && !fields[5].is_empty() {
+    if fields.len() < 6 || fields[5].is_empty() {
+        notes.push(Note {
+            severity: Severity::Warning,
+            code: Code::IsdcfNamingViolation,
+            message: "missing audio field".into(),
+            file: Some(cpl_path.to_path_buf()),
+            line: 0,
+        });
+    } else {
         let mut tokens = fields[5].split('-');
         let base_ok = tokens
             .next()
@@ -406,6 +422,35 @@ mod tests {
                 .iter()
                 .any(|n| n.message.contains("Non-standard resolution field: XX")),
             "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_title_missing_the_language_field_is_named() {
+        let notes = check_isdcf_naming("Movie_FTR_S", &PathBuf::from("CPL.xml"));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.severity == Severity::Warning
+                    && n.message == "missing audio language tag"),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_title_missing_the_audio_field_is_named() {
+        let notes = check_isdcf_naming("Movie_FTR_S_EN_US", &PathBuf::from("CPL.xml"));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.severity == Severity::Warning && n.message == "missing audio field"),
+            "got: {notes:?}"
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.message == "missing audio language tag"),
+            "EN is present, got: {notes:?}"
         );
     }
 

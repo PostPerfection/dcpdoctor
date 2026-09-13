@@ -144,6 +144,32 @@ pub fn check_loudness_compliance(result: &LoudnessResult, mxf_path: &Path) -> Ve
     notes
 }
 
+const LEQ_M_ADVERTISEMENT_DB: f64 = 82.0;
+const LEQ_M_TRAILER_DB: f64 = 85.0;
+
+pub fn check_leq_m_limit(leq_m_db: f64, content_type: ContentType, mxf_path: &Path) -> Vec<Note> {
+    let limit = match content_type {
+        ContentType::Advertisement => LEQ_M_ADVERTISEMENT_DB,
+        ContentType::Trailer => LEQ_M_TRAILER_DB,
+        _ => return Vec::new(),
+    };
+    if leq_m_db <= limit {
+        return Vec::new();
+    }
+    let kind = match content_type {
+        ContentType::Advertisement => "advertisement",
+        ContentType::Trailer => "trailer",
+        _ => unreachable!(),
+    };
+    vec![Note {
+        severity: Severity::Error,
+        code: Code::LoudnessExceedsLimit,
+        message: format!("Leq(m) {leq_m_db:.1} dB exceeds the {limit:.0} dB {kind} limit"),
+        file: Some(mxf_path.to_path_buf()),
+        line: 0,
+    }]
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // 2. Audio Channel Configuration
 // ════════════════════════════════════════════════════════════════════════════════
@@ -339,17 +365,57 @@ pub fn detect_color_space(mxf_path: &Path) -> ColorInfo {
         .unwrap_or_default()
         .to_string();
     info.valid = true;
-
-    // DCI JP2K uses 12-bit XYZ color space
-    if info.bit_depth == 12 {
-        info.detected_space = ColorSpace::Xyz;
-    } else if info.bit_depth == 8 {
-        info.detected_space = ColorSpace::Rec709;
-    } else if info.bit_depth >= 10 {
-        info.detected_space = ColorSpace::Xyz;
-    }
+    info.detected_space = color_space_from_picture(&info.pixel_format, mxf_path, info.bit_depth);
 
     info
+}
+
+fn color_space_from_picture(pixel_format: &str, mxf_path: &Path, bit_depth: u8) -> ColorSpace {
+    if let Some(primaries) = picture_color_primaries(mxf_path) {
+        if primaries == asdcplib::jp2k::COLOR_PRIMARIES_BT709 {
+            return ColorSpace::Rec709;
+        }
+        if primaries == asdcplib::jp2k::COLOR_PRIMARIES_P3D65 {
+            return ColorSpace::P3;
+        }
+    }
+    if pixel_format.starts_with("xyz") {
+        return ColorSpace::Xyz;
+    }
+    if bit_depth == 8 {
+        ColorSpace::Rec709
+    } else if bit_depth >= 10 {
+        ColorSpace::Xyz
+    } else {
+        ColorSpace::Unknown
+    }
+}
+
+fn picture_color_primaries(mxf_path: &Path) -> Option<[u8; 16]> {
+    let path = mxf_path.to_str()?;
+    dcp_picture_primaries(path).or_else(|| as02_picture_primaries(path))
+}
+
+fn dcp_picture_primaries(path: &str) -> Option<[u8; 16]> {
+    let mut reader = asdcplib::jp2k::MxfReader::new();
+    reader.open_read(path).ok()?;
+    let primaries = reader
+        .hdr_metadata()
+        .ok()
+        .and_then(|hdr| hdr.color_primaries);
+    let _ = reader.close();
+    primaries
+}
+
+fn as02_picture_primaries(path: &str) -> Option<[u8; 16]> {
+    let mut reader = asdcplib::as02::jp2k::MxfReader::new();
+    reader.open_read(path).ok()?;
+    let primaries = reader
+        .hdr_metadata()
+        .ok()
+        .and_then(|hdr| hdr.color_primaries);
+    let _ = reader.close();
+    primaries
 }
 
 /// What a sample of decoded frames says about the picture's gamut.
@@ -601,8 +667,27 @@ pub fn check_color_compliance(info: &ColorInfo, mxf_path: &Path) -> Vec<Note> {
     }
 
     let file = Some(mxf_path.to_path_buf());
+    let space = match info.detected_space {
+        ColorSpace::Xyz => "CIE XYZ",
+        ColorSpace::P3 => "DCI-P3",
+        ColorSpace::Rec709 => "Rec.709",
+        ColorSpace::Unknown => "",
+    };
+    if !space.is_empty() {
+        notes.push(Note {
+            severity: Severity::Info,
+            code: Code::J2kInvalidProfile,
+            message: format!("Colour space: {space}"),
+            file: file.clone(),
+            line: 0,
+        });
+    }
 
-    if info.detected_space != ColorSpace::Xyz && info.detected_space != ColorSpace::Unknown {
+    let cinema_xyz = info.pixel_format.starts_with("xyz");
+    if cinema_xyz
+        && info.detected_space != ColorSpace::Xyz
+        && info.detected_space != ColorSpace::Unknown
+    {
         notes.push(Note {
             severity: Severity::Error,
             code: Code::J2kInvalidProfile,
@@ -612,15 +697,15 @@ pub fn check_color_compliance(info: &ColorInfo, mxf_path: &Path) -> Vec<Note> {
         });
     }
 
-    if info.bit_depth != 12 && info.detected_space == ColorSpace::Xyz {
+    if info.bit_depth != 12 && info.detected_space != ColorSpace::Unknown {
         notes.push(Note {
             severity: Severity::Warning,
             code: Code::J2kInvalidProfile,
             message: format!(
-                "Bit depth {} - DCI standard requires 12-bit XYZ",
-                info.bit_depth
+                "Bit depth {} - DCI standard requires 12-bit {}",
+                info.bit_depth, space
             ),
-            file,
+            file: file.clone(),
             line: 0,
         });
     }
@@ -1273,6 +1358,29 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
                         .with_file(&path),
                     );
                 }
+                let leq = crate::loudness::measure_leq_m(&path);
+                if leq.success {
+                    notes.extend(check_leq_m_limit(
+                        leq.leq_m_db,
+                        content_type.detected_type,
+                        &path,
+                    ));
+                } else {
+                    notes.push(
+                        Note::warning(
+                            Code::CheckSkipped,
+                            format!(
+                                "Leq(m) check did not run: {}",
+                                if leq.error.is_empty() {
+                                    "no measurement returned"
+                                } else {
+                                    leq.error.as_str()
+                                }
+                            ),
+                        )
+                        .with_file(&path),
+                    );
+                }
             } else {
                 notes.push(
                     Note::warning(
@@ -1461,6 +1569,87 @@ mod tests {
         assert!(resolution.valid, "{resolution:?}");
         assert_eq!(resolution.width, CODESTREAM_SIZE);
         assert_eq!(resolution.height, CODESTREAM_SIZE);
+    }
+
+    #[test]
+    fn an_app2e_track_with_bt709_primaries_is_rec709() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("picture.mxf");
+        crate::app2e_fixtures::write_picture(
+            &path,
+            crate::codestream_fixtures::imf_4k(),
+            &crate::codestream_fixtures::imf_4k_bytes(),
+            PICTURE_FRAMES,
+            Some(crate::app2e_fixtures::bt709()),
+        );
+
+        let color = detect_color_space(&path);
+        assert_eq!(color.detected_space, ColorSpace::Rec709, "{color:?}");
+        let notes = check_color_compliance(&color, &path);
+        assert!(
+            notes.iter().any(|n| n.message == "Colour space: Rec.709"),
+            "got: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.message.contains("Non-XYZ")),
+            "Rec.709 is legal for App 2E, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_app2e_track_with_p3_primaries_is_p3() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("picture.mxf");
+        crate::app2e_fixtures::write_picture(
+            &path,
+            crate::codestream_fixtures::imf_4k(),
+            &crate::codestream_fixtures::imf_4k_bytes(),
+            PICTURE_FRAMES,
+            Some(asdcplib::jp2k::HdrMetadata {
+                color_primaries: Some(asdcplib::jp2k::COLOR_PRIMARIES_P3D65),
+                transfer_characteristic: Some(asdcplib::jp2k::TRANSFER_CHARACTERISTIC_BT709),
+                ..Default::default()
+            }),
+        );
+
+        let color = detect_color_space(&path);
+        assert_eq!(color.detected_space, ColorSpace::P3, "{color:?}");
+        let notes = check_color_compliance(&color, &path);
+        assert!(
+            notes.iter().any(|n| n.message == "Colour space: DCI-P3"),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_advertisement_over_82_db_leq_m_fails_and_a_feature_does_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sound.mxf");
+        tone_track(&path, LOUD_AMPLITUDE);
+        let leq = crate::loudness::measure_leq_m(&path);
+        assert!(leq.success, "{leq:?}");
+        assert!(
+            leq.leq_m_db > LEQ_M_ADVERTISEMENT_DB,
+            "the loud fixture must sit above the advertisement limit, got {}",
+            leq.leq_m_db
+        );
+
+        let advertisement = check_leq_m_limit(leq.leq_m_db, ContentType::Advertisement, &path);
+        assert!(
+            advertisement.iter().any(|n| {
+                n.code == Code::LoudnessExceedsLimit
+                    && n.severity == Severity::Error
+                    && n.message.contains("82")
+                    && n.message.contains("advertisement")
+            }),
+            "got: {advertisement:?}"
+        );
+
+        let feature = check_leq_m_limit(leq.leq_m_db, ContentType::Feature, &path);
+        assert!(
+            feature.is_empty(),
+            "features have no Leq(m) limit, got: {feature:?}"
+        );
     }
 
     #[test]

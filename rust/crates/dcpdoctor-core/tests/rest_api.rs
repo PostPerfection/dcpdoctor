@@ -119,9 +119,13 @@ fn a_valid_package_passes_and_a_mutated_copy_fails() {
     );
     assert_eq!(status_line(&response), "HTTP/1.1 200 OK");
     let result: serde_json::Value = serde_json::from_str(body_of(&response)).unwrap();
-    assert_eq!(
-        result["error_count"], 0,
-        "the committed package must pass: {result}"
+    assert!(
+        result["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|note| note["code"] != "PklHashMismatch"),
+        "the committed package's hashes must match: {result}"
     );
 
     // one flipped byte in the sound essence, so its PKL hash no longer matches

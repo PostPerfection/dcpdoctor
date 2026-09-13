@@ -653,7 +653,7 @@
         </div>
         <h1>Catch problems in your <em>DCP or IMP</em><br>before it ships</h1>
         <p class="hero-sub">
-            DCP Doctor checks a cinema or streaming package for the mistakes that get a delivery rejected: broken structure, bad hashes, expired keys, subtitle timing, JPEG 2000 forensics, audio levels, HDR metadata and more. Run it in the browser, or install the desktop app for a thorough JPEG 2000 and MXF check.
+            DCP Doctor checks a cinema or streaming package for the mistakes that get a delivery rejected: broken structure, bad hashes, expired keys, subtitle timing, JPEG 2000 forensics, audio levels, HDR metadata and more. Run it in the browser, or install the desktop app for an additional thorough JPEG 2000 and MXF check.
         </p>
         <div class="hero-actions">
             <a href="#download" class="btn btn-accent">
@@ -672,7 +672,7 @@
             </div>
             <div class="demo-body">
 <span class="c"># Checking a feature before delivery</span>
-<span class="o">Package:    MyFeature_FTR-1_S_EN_XX_2K_20241201</span>
+<span class="o">Package:    MyFeature_FTR-1_S_EN_XX_51_2K_20241201</span>
 <span class="o">Standard:   SMPTE (Bv2.1)</span>
 <span class="o">Reels:      4 | Duration: 01:58:32 | Resolution: 2048x858 (Scope 2K)</span>
 <span class="o">Audio:      5.1 (L R C LFE Ls Rs) | 48kHz/24bit</span>
@@ -680,9 +680,8 @@
 <span class="o">Color:      CIE XYZ 12-bit | DCI-P3</span>
 <span class="o">Encryption: All assets encrypted (KDM required)</span>
 
-<span class="s">&#10003; PASS</span> <span class="o">0 errors, 2 warnings</span>
-<span class="e">&#9888; WARN</span> <span class="o">Reel 3 duration 42 min exceeds 40-min recommendation</span>
-<span class="e">&#9888; WARN</span> <span class="o">ISDCF naming: missing audio language tag</span>
+<span class="s">&#10003; PASS</span> <span class="o">0 errors, 1 warning</span>
+<span class="e">&#9888; WARN</span> <span class="o">Reel 3 is 42 minutes — exceeds 40-minute recommendation</span>
             </div>
         </div>
 
@@ -718,7 +717,7 @@
             <div class="deploy-card">
                 <div class="d-icon">&#128187;</div>
                 <h3>Windows</h3>
-                <p>Installer (.msi / .exe) for Windows 10 and 11.</p>
+                <p>Installer (.msi) for Windows 10 and 11.</p>
                 <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" class="btn btn-accent" style="margin-top:16px;">Download latest</a>
             </div>
             <div class="deploy-card">
@@ -730,7 +729,7 @@
             <div class="deploy-card">
                 <div class="d-icon">&#128421;</div>
                 <h3>Linux</h3>
-                <p>AppImage, .deb or .rpm for common distributions.</p>
+                <p>AppImage or .deb for common distributions.</p>
                 <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" class="btn btn-accent" style="margin-top:16px;">Download latest</a>
             </div>
         </div>
@@ -797,7 +796,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128269;</div>
                 <h3>JPEG 2000 forensics</h3>
-                <p>One pass over every frame reports the track's codestream parameters (profile, tiles, TLM, POC, code-block size), the fattest frame against the DCI cap, and any parameter that changes partway through. The same scan runs on IMF AS-02 picture, minus the cinema-only rules. MXF partition checks use the Random Index Pack and bounded reads instead of holding a whole track in memory.</p>
+                <p>One pass over every frame reports the track's codestream parameters (profile, tiles, TLM, POC, code-block size), the fattest frame against the DCI cap, and any parameter that changes partway through. The same scan runs on IMF AS-02 picture, minus the cinema-only rules.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127752;</div>
@@ -836,7 +835,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#127760;</div>
                 <h3>Dolby Atmos</h3>
-                <p>Detects immersive audio (IAB) essence with an estimated object count.</p>
+                <p>Detects Dolby Atmos (ST 429-18) and IMF IAB essence. Atmos reports the object count from the descriptor; IAB is reported as present.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128279;</div>

@@ -174,6 +174,7 @@ pub enum Code {
     SoundInvalidBlockAlign,
     SoundClipping,
     SoundSilent,
+    LoudnessExceedsLimit,
     MainSoundConfigInvalid,
     SoundChannelConfigInvalid,
 
@@ -333,6 +334,7 @@ impl Code {
             Code::SoundInvalidBlockAlign => "sound_invalid_block_align",
             Code::SoundClipping => "sound_clipping",
             Code::SoundSilent => "sound_silent",
+            Code::LoudnessExceedsLimit => "loudness_exceeds_limit",
             Code::MainSoundConfigInvalid => "main_sound_config_invalid",
             Code::SoundChannelConfigInvalid => "sound_channel_config_invalid",
             Code::SubtitleParseError => "subtitle_parse_error",
@@ -453,7 +455,7 @@ pub struct VerifyOptions {
     pub check_signatures: bool,
     pub check_picture_details: bool,
     /// Run the picture codestream checks over every frame instead of only the
-    /// first. Expensive on a feature, so it is opt-in the way hash checking is.
+    /// first. On by default; `--no-deep-j2k` skips it.
     #[serde(default)]
     pub scan_every_frame: bool,
     pub strict_smpte: bool,
@@ -480,8 +482,8 @@ impl VerifyOptions {
         Self {
             check_hashes: true,
             check_signatures: true,
-            check_picture_details: false,
-            scan_every_frame: false,
+            check_picture_details: true,
+            scan_every_frame: true,
             strict_smpte: false,
             ov: None,
             kdm: None,
@@ -495,7 +497,7 @@ impl VerifyOptions {
             check_hashes: true,
             check_signatures: true,
             check_picture_details: true,
-            scan_every_frame: false,
+            scan_every_frame: true,
             strict_smpte: true,
             ov: None,
             kdm: None,

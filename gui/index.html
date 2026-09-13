@@ -40,12 +40,16 @@
         <h3>Validation Options</h3>
         <div class="options-grid">
           <label class="option-chip">
-            <input type="checkbox" value="--studio" checked />
+            <input type="checkbox" data-off="--no-studio" checked />
             <span>Studio</span>
           </label>
           <label class="option-chip">
-            <input type="checkbox" value="--deep" />
+            <input type="checkbox" data-off="--no-deep" checked />
             <span>Deep Scan</span>
+          </label>
+          <label class="option-chip">
+            <input type="checkbox" data-off="--no-deep-j2k" checked />
+            <span>JPEG 2000</span>
           </label>
           <label class="option-chip">
             <input type="checkbox" value="--netflix" />
@@ -140,7 +144,7 @@
             <label><input type="checkbox" id="pref-hashes" checked> Verify asset hashes</label>
           </div>
           <div class="field">
-            <label><input type="checkbox" id="pref-check-mxf"> Inspect MXF essence (bitrate, sound, resolution)</label>
+            <label><input type="checkbox" id="pref-check-mxf" checked> Inspect MXF essence (bitrate, sound, resolution)</label>
           </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary">Save</button>

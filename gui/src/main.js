@@ -85,8 +85,16 @@ dcpPath.addEventListener("keydown", (e) => {
 });
 
 function getSelectedFlags() {
-  const checkboxes = document.querySelectorAll('.option-chip input[type="checkbox"]:checked');
-  return Array.from(checkboxes).map((cb) => cb.value);
+  const flags = [];
+  document.querySelectorAll('.option-chip input[type="checkbox"]').forEach((cb) => {
+    const off = cb.dataset.off;
+    if (off) {
+      if (!cb.checked) flags.push(off);
+    } else if (cb.checked && cb.value) {
+      flags.push(cb.value);
+    }
+  });
+  return flags;
 }
 
 async function runValidation() {
@@ -245,13 +253,13 @@ const PREFS_KEY = "dcpdoctor-preferences";
 
 // Only prefs that map to a real `dcpdoctor validate` flag and don't change the
 // text output the sidecar parses are kept: hashes (--no-hashes) and MXF essence
-// inspection (--check-mxf). getPrefFlags() feeds them into every run.
+// inspection (--no-mxf). getPrefFlags() feeds them into every run.
 function getPrefFlags() {
   const flags = [];
   try {
     const saved = JSON.parse(localStorage.getItem(PREFS_KEY)) || {};
     if (saved.hashes === false) flags.push("--no-hashes");
-    if (saved.checkMxf) flags.push("--check-mxf");
+    if (saved.checkMxf === false) flags.push("--no-mxf");
   } catch { /* ignore */ }
   return flags;
 }
