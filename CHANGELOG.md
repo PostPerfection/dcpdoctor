@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.3.2] - 2026-09-13
 
 ### Changed
 - Native `validate` (CLI, GUI, watch, REST) runs MXF essence inspection, per-frame JPEG 2000 forensics, and studio/deep checks by default. `--no-mxf`, `--no-deep-j2k`, `--no-studio` and `--no-deep` turn each one off. The browser WASM checker stays the lighter pass.
