@@ -1736,6 +1736,7 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
         check_picture_details: flags.check_mxf || flags.deep_j2k,
         // --deep-j2k is what pays for reading past frame 0
         scan_every_frame: flags.deep_j2k,
+        skip_bitrate_measurement: false,
         strict_smpte: flags.strict,
         ov: flags.ov.clone(),
         kdm: flags.kdm.clone(),

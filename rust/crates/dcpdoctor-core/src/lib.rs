@@ -458,6 +458,8 @@ pub struct VerifyOptions {
     /// first. On by default; `--no-deep-j2k` skips it.
     #[serde(default)]
     pub scan_every_frame: bool,
+    #[serde(default)]
+    pub skip_bitrate_measurement: bool,
     pub strict_smpte: bool,
     /// OV IMP directory to resolve cross-package references when validating a
     /// supplemental IMF package. Ignored for plain DCPs.
@@ -484,6 +486,7 @@ impl VerifyOptions {
             check_signatures: true,
             check_picture_details: true,
             scan_every_frame: true,
+            skip_bitrate_measurement: false,
             strict_smpte: false,
             ov: None,
             kdm: None,
@@ -498,6 +501,7 @@ impl VerifyOptions {
             check_signatures: true,
             check_picture_details: true,
             scan_every_frame: true,
+            skip_bitrate_measurement: false,
             strict_smpte: true,
             ov: None,
             kdm: None,

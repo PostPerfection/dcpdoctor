@@ -1108,12 +1108,17 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
                     result.add(note);
                 }
 
-                let bitrate = crate::bitrate::analyze_picture_bitrate(&full_path, &content_keys);
-                for note in crate::bitrate::check_bitrate_compliance(&bitrate, &full_path) {
-                    result.add(note);
-                }
-                if let Some(note) = crate::bitrate::skipped_measurement_note(&bitrate, &full_path) {
-                    result.add(note);
+                if !opts.skip_bitrate_measurement {
+                    let bitrate =
+                        crate::bitrate::analyze_picture_bitrate(&full_path, &content_keys);
+                    for note in crate::bitrate::check_bitrate_compliance(&bitrate, &full_path) {
+                        result.add(note);
+                    }
+                    if let Some(note) =
+                        crate::bitrate::skipped_measurement_note(&bitrate, &full_path)
+                    {
+                        result.add(note);
+                    }
                 }
 
                 for note in crate::mxf::check_picture_frame_rate_mxf(&full_path) {
@@ -2940,6 +2945,81 @@ mod tests {
             skipped.message.contains(PIC_ID),
             "the note must name the track file, got: {}",
             skipped.message
+        );
+    }
+
+    // three tile parts of this at 24 fps is 345 Mbps, over the 250 Mbps DCI limit
+    const OVER_CAP_TILE_PART_BYTES: usize = 600_000;
+    const FIXTURE_DECOMPOSITION_LEVELS: u8 = 5;
+
+    fn is_bitrate_note(note: &Note) -> bool {
+        note.code == Code::J2kBitrateExceeded
+            || (note.code == Code::CheckSkipped
+                && note
+                    .message
+                    .starts_with("the peak bitrate check did not run"))
+    }
+
+    fn bitrate_notes(result: &VerifyResult) -> Vec<&Note> {
+        result.notes.iter().filter(|n| is_bitrate_note(n)).collect()
+    }
+
+    #[test]
+    fn skipping_the_bitrate_measurement_drops_its_notes_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        write_dcp(
+            dir.path(),
+            "0f0f0f0f-0000-0000-0000-000000000000",
+            &[PIC_ID],
+            PIC_ID,
+            SND_ID,
+            false,
+        );
+        crate::j2k::frame_scan_tests::write_picture_mxf(
+            dir.path(),
+            &format!("{PIC_ID}.mxf"),
+            &[(FIXTURE_DECOMPOSITION_LEVELS, OVER_CAP_TILE_PART_BYTES); 3],
+        );
+
+        let measuring = VerifyOptions {
+            check_picture_details: true,
+            ..VerifyOptions::default()
+        };
+        let measured = verify_dcp(dir.path(), &measuring);
+        let skipped = verify_dcp(
+            dir.path(),
+            &VerifyOptions {
+                skip_bitrate_measurement: true,
+                ..measuring
+            },
+        );
+
+        assert!(
+            bitrate_notes(&measured)
+                .iter()
+                .any(|note| note.code == Code::J2kBitrateExceeded
+                    && note.severity == Severity::Error),
+            "the fixture's frames are over the DCI cap, so the measuring run must say so: {:?}",
+            measured.notes
+        );
+        assert!(
+            bitrate_notes(&skipped).is_empty(),
+            "the skipped run must report nothing about the bitrate: {:?}",
+            bitrate_notes(&skipped)
+        );
+
+        let others = |result: &VerifyResult| {
+            result
+                .notes
+                .iter()
+                .filter(|note| !is_bitrate_note(note))
+                .map(|note| (note.code, note.message.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            others(&skipped),
+            others(&measured),
+            "only the bitrate notes may differ between the two runs"
         );
     }
 

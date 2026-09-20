@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `VerifyOptions::skip_bitrate_measurement` skips the picture bitrate measurement, which reads every frame back off the essence. For a caller whose encoder already held every codestream under the DCI per-frame byte cap.
+
 ## [1.3.2] - 2026-09-13
 
 ### Changed
