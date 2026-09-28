@@ -1,0 +1,10 @@
+.git
+**/target
+gui
+build
+tests/dcps
+extern/photon
+extern/CLI11
+extern/spdlog
+extern/asdcplib
+__pycache__

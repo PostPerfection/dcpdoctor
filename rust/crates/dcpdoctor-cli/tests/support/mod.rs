@@ -103,12 +103,14 @@ fn set_profile(codestream: &mut [u8], rsiz: u16) {
 
 /// A package to write: the picture content, the JPEG 2000 quantizer step ffmpeg
 /// encodes it at (a second value re-encodes the same frames at another
-/// bitrate), the CPL title and the reel durations in frames.
+/// bitrate), the CPL title, the reel durations in frames and the sound tone's
+/// fraction of full scale, where zero writes digital silence.
 pub struct PackageSpec {
     pub title: String,
     pub picture: Picture,
     pub picture_quality: u32,
     pub reel_durations: Vec<i64>,
+    pub sound_amplitude: f64,
 }
 
 impl Default for PackageSpec {
@@ -118,6 +120,7 @@ impl Default for PackageSpec {
             picture: Picture::Bars,
             picture_quality: 2,
             reel_durations: vec![FRAMES as i64],
+            sound_amplitude: TONE_AMPLITUDE,
         }
     }
 }
@@ -134,7 +137,7 @@ pub const SOUND_ID: &str = "3878f6e9-eeec-4d0f-b2b3-4fb96b7759e1";
 pub fn write_package(dir: &Path, spec: &PackageSpec) {
     let frames = encode_j2c_frames(dir, spec.picture, spec.picture_quality);
     write_picture_mxf(&dir.join(PICTURE_FILE), &frames);
-    write_sound_mxf(&dir.join(SOUND_FILE));
+    write_sound_mxf(&dir.join(SOUND_FILE), spec.sound_amplitude);
     write_xml(dir, spec);
 }
 
@@ -375,7 +378,7 @@ fn write_picture_mxf(path: &Path, frames: &[Vec<u8>]) {
     writer.finalize().unwrap();
 }
 
-fn write_sound_mxf(path: &Path) {
+fn write_sound_mxf(path: &Path, amplitude: f64) {
     use asdcplib::pcm::{AudioDescriptor, ChannelFormat, MxfWriter};
     use asdcplib::{LabelSet, Rational, WriterInfo};
 
@@ -403,7 +406,7 @@ fn write_sound_mxf(path: &Path) {
         .unwrap();
     for edit_unit in 0..FRAMES {
         writer
-            .write_frame(&tone_frame(edit_unit), None, None)
+            .write_frame(&tone_frame(edit_unit, amplitude), None, None)
             .unwrap();
     }
     writer.finalize().unwrap();
@@ -438,19 +441,19 @@ fn write_as02_sound_mxf(path: &Path) {
         .unwrap();
     for edit_unit in 0..IMP_FRAMES {
         writer
-            .write_frame(&tone_frame(edit_unit), None, None)
+            .write_frame(&tone_frame(edit_unit, TONE_AMPLITUDE), None, None)
             .unwrap();
     }
     writer.finalize().unwrap();
 }
 
-fn tone_frame(edit_unit: u32) -> Vec<u8> {
+fn tone_frame(edit_unit: u32, amplitude: f64) -> Vec<u8> {
     let block_align = CHANNELS * BYTES_PER_SAMPLE;
     let samples_per_edit_unit = SAMPLE_RATE / EDIT_RATE;
     let mut frame = Vec::with_capacity((samples_per_edit_unit * block_align) as usize);
     for offset in 0..samples_per_edit_unit {
         let sample_index = edit_unit * samples_per_edit_unit + offset;
-        let value = TONE_AMPLITUDE
+        let value = amplitude
             * (std::f64::consts::TAU * TONE_HZ * sample_index as f64 / SAMPLE_RATE as f64).sin();
         let quantized = (value * 8_388_607.0) as i32;
         for _ in 0..CHANNELS {

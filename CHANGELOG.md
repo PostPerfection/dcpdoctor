@@ -3,7 +3,12 @@
 ## Unreleased
 
 ### Added
+- **Dockerfile for a headless dcpdoctor**: the image carries ffmpeg, xmllint with the bundled schemas, and Java with the Photon jars, and the Docker workflow builds it on every push and tag without publishing it.
 - `VerifyOptions::skip_bitrate_measurement` skips the picture bitrate measurement, which reads every frame back off the essence. For a caller whose encoder already held every codestream under the DCI per-frame byte cap.
+
+### Fixed
+- **Silent sound track no longer fails the true peak check**: `validate` read ffmpeg's `Peak: -inf dBFS` for digital silence as 0.0 dBTP and raised `True peak exceeds -1 dBTP limit: 0.0 dBTP`, and it now reads the peak as -inf dBTP, which passes, the same way `loudness` and `qc-report` read it instead of NaN.
+- **Loudness findings have their own codes**: the -1 dBTP true peak error is `sound_true_peak_exceeded` and the integrated loudness warnings (under -40 LUFS, over -20 LUFS) are `sound_loudness_out_of_range`, where both used to report as `sound_invalid_sample_rate`.
 
 ## [1.3.2] - 2026-09-13
 

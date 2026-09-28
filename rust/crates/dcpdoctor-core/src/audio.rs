@@ -316,12 +316,8 @@ fn parse_loudness_value(output: &str, key: &str) -> Option<f64> {
         let trimmed = line.trim();
         if let Some(pos) = trimmed.find(key) {
             let after = &trimmed[pos + key.len()..];
-            let num_str: String = after
-                .trim()
-                .chars()
-                .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
-                .collect();
-            if let Ok(val) = num_str.parse::<f64>() {
+            // a silent track reads "Peak: -inf dBFS"
+            if let Some(Ok(val)) = after.split_whitespace().next().map(str::parse::<f64>) {
                 return Some(val);
             }
         }
@@ -412,6 +408,15 @@ mod tests {
         assert_eq!(parse_loudness_value(summary, "I:"), Some(-20.0));
         assert_eq!(parse_loudness_value(summary, "LRA:"), Some(3.5));
         assert_eq!(parse_loudness_value(summary, "Peak:"), Some(-20.0));
+    }
+
+    #[test]
+    fn a_silent_summary_reads_as_no_true_peak() {
+        let summary = "  True peak:\n    Peak:       -inf dBFS\n";
+        assert_eq!(
+            parse_loudness_value(summary, "Peak:"),
+            Some(f64::NEG_INFINITY)
+        );
     }
 
     #[test]

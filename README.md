@@ -166,6 +166,17 @@ cd rust
 cargo build --release
 ```
 
+### Docker
+
+No image is published. Build it from this repository, which needs the submodules checked out:
+
+```bash
+docker build -t dcpdoctor .
+docker run --rm -v /path/to/dcp:/data/dcp:ro dcpdoctor validate /data/dcp
+```
+
+The image holds ffmpeg and ffprobe, xmllint with the schemas in `schemas/`, and Java 21 with the Photon jars from `scripts/fetch_photon.sh`, so a validate runs the XSD and Photon passes. It has no `weasyprint` or `wkhtmltopdf`, so `qc-report --output report.pdf` fails inside it and `--output report.html` works.
+
 ## Usage
 
 ### Basic Validation

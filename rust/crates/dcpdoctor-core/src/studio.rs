@@ -103,7 +103,7 @@ pub fn check_loudness_compliance(result: &LoudnessResult, mxf_path: &Path) -> Ve
     if result.true_peak_dbtp > -1.0 {
         notes.push(Note {
             severity: Severity::Error,
-            code: Code::SoundInvalidSampleRate,
+            code: Code::SoundTruePeakExceeded,
             message: format!(
                 "True peak exceeds -1 dBTP limit: {:.1} dBTP",
                 result.true_peak_dbtp
@@ -117,7 +117,7 @@ pub fn check_loudness_compliance(result: &LoudnessResult, mxf_path: &Path) -> Ve
     if result.integrated_lufs < -40.0 {
         notes.push(Note {
             severity: Severity::Warning,
-            code: Code::SoundInvalidSampleRate,
+            code: Code::SoundLoudnessOutOfRange,
             message: format!(
                 "Integrated loudness very low: {:.1} LUFS (expected around -31 LUFS)",
                 result.integrated_lufs
@@ -131,7 +131,7 @@ pub fn check_loudness_compliance(result: &LoudnessResult, mxf_path: &Path) -> Ve
     if result.integrated_lufs > -20.0 {
         notes.push(Note {
             severity: Severity::Warning,
-            code: Code::SoundInvalidSampleRate,
+            code: Code::SoundLoudnessOutOfRange,
             message: format!(
                 "Integrated loudness very high: {:.1} LUFS",
                 result.integrated_lufs
@@ -1443,10 +1443,11 @@ fn ffprobe_number<T: std::str::FromStr>(probe: &str, key: &str) -> Option<T> {
     ffprobe_entry(probe, key)?.parse().ok()
 }
 
+// ffmpeg prints the true peak of digital silence as -inf
 fn first_number(text: &str) -> Option<f64> {
     text.split_whitespace()
         .find_map(|token| token.parse::<f64>().ok())
-        .filter(|number| number.is_finite())
+        .filter(|number| !number.is_nan())
 }
 
 fn find_cpl(dcp_dir: &Path) -> Option<PathBuf> {
@@ -1490,6 +1491,7 @@ mod tests {
     const TONE_SECONDS: f64 = 2.0;
     const LOUD_AMPLITUDE: f64 = 0.5;
     const QUIET_AMPLITUDE: f64 = 0.05;
+    const SILENCE_AMPLITUDE: f64 = 0.0;
     const DECIBELS_BETWEEN_AMPLITUDES: f64 = 20.0;
     const SOUND_TRACK_CHANNELS: u32 = 2;
     const SOUND_TRACK_SAMPLE_RATE: u32 = 48_000;
@@ -1536,6 +1538,42 @@ mod tests {
             "{loud:?}"
         );
         assert!(loud.true_peak_dbtp < 0.0, "{loud:?}");
+    }
+
+    #[test]
+    fn a_silent_track_has_no_true_peak_and_passes_the_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("silence.mxf");
+        tone_track(&path, SILENCE_AMPLITUDE);
+
+        let measured = measure_loudness(&path, 0);
+
+        assert!(measured.valid, "{measured:?}");
+        assert_eq!(measured.true_peak_dbtp, f64::NEG_INFINITY, "{measured:?}");
+        let notes = check_loudness_compliance(&measured, &path);
+        assert!(
+            !notes.iter().any(|n| n.code == Code::SoundTruePeakExceeded),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_true_peak_over_the_limit_is_a_true_peak_error() {
+        const PEAK_OVER_LIMIT_DBTP: f64 = -0.5;
+        const FEATURE_LOUDNESS_LUFS: f64 = -27.0;
+        let measured = LoudnessResult {
+            valid: true,
+            true_peak_dbtp: PEAK_OVER_LIMIT_DBTP,
+            integrated_lufs: FEATURE_LOUDNESS_LUFS,
+            ..LoudnessResult::default()
+        };
+
+        let notes = check_loudness_compliance(&measured, Path::new("sound.mxf"));
+
+        assert_eq!(notes.len(), 1, "got: {notes:?}");
+        assert_eq!(notes[0].code, Code::SoundTruePeakExceeded);
+        assert_eq!(notes[0].severity, Severity::Error);
+        assert!(notes[0].message.contains("-0.5 dBTP"), "got: {notes:?}");
     }
 
     #[test]
