@@ -1,36 +1,83 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
-  <Id>urn:uuid:5c3d4b1b-19cc-43de-896b-b22b3f39b766</Id>
-  <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
-  <Issuer>dcplint test fixture generator</Issuer>
-  <Creator>dcplint test fixture generator</Creator>
+  <Id>urn:uuid:56807594-d778-47ca-860a-24191018db3b</Id>
+  <AnnotationText>Test DCP</AnnotationText>
+  <IssueDate>2026-09-28T21:23:49.455953162+00:00</IssueDate>
+  <Issuer>DCP Wizard</Issuer>
+  <Creator>DCP Wizard</Creator>
   <ContentTitleText>Test DCP</ContentTitleText>
-  <ContentKind>test</ContentKind>
+  <ContentKind>feature</ContentKind>
   <ContentVersion>
-    <Id>urn:uuid:5c3d4b1b-19cc-43de-896b-b22b3f39b766</Id>
+    <Id>urn:uuid:56807594-d778-47ca-860a-24191018db3b</Id>
     <LabelText>Test DCP</LabelText>
   </ContentVersion>
   <RatingList/>
   <ReelList>
     <Reel>
-      <Id>urn:uuid:35e485f4-d779-4391-a9a3-21adc074bbc4</Id>
+      <Id>urn:uuid:0992a351-94fe-422f-b195-e3b72f4ae490</Id>
+      <AnnotationText>Reel 1</AnnotationText>
       <AssetList>
-        <MainPicture>
-          <Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>
+        <MainMarkers>
+          <Id>urn:uuid:606f8e1a-fb10-43a8-ac68-56f6a9fc1dd9</Id>
           <EditRate>24 1</EditRate>
-          <IntrinsicDuration>100</IntrinsicDuration>
+          <IntrinsicDuration>48</IntrinsicDuration>
+          <MarkerList>
+            <Marker>
+              <Label>FFOC</Label>
+              <Offset>1</Offset>
+            </Marker>
+            <Marker>
+              <Label>LFOC</Label>
+              <Offset>47</Offset>
+            </Marker>
+          </MarkerList>
+        </MainMarkers>
+        <MainPicture>
+          <Id>urn:uuid:0d3b6334-2c65-45f9-92dd-e46ed05c3036</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>48</IntrinsicDuration>
           <EntryPoint>0</EntryPoint>
-          <Duration>100</Duration>
+          <Duration>48</Duration>
+          <Hash>7ir/z4LjEAE3iO0nI34Io9mlCsU=</Hash>
           <FrameRate>24 1</FrameRate>
           <ScreenAspectRatio>1998 1080</ScreenAspectRatio>
         </MainPicture>
         <MainSound>
-          <Id>urn:uuid:3878f6e9-eeec-4d0f-b2b3-4fb96b7759e1</Id>
+          <Id>urn:uuid:b0907fed-9f07-41ca-a412-a67555ea4974</Id>
           <EditRate>24 1</EditRate>
-          <IntrinsicDuration>100</IntrinsicDuration>
+          <IntrinsicDuration>48</IntrinsicDuration>
           <EntryPoint>0</EntryPoint>
-          <Duration>100</Duration>
+          <Duration>48</Duration>
+          <Hash>ya01Pd3qmWS6SEgdZnG2n98a73Q=</Hash>
         </MainSound>
+        <meta:CompositionMetadataAsset xmlns:meta="http://www.smpte-ra.org/schemas/429-16/2014/CPL-Metadata">
+          <Id>urn:uuid:5532b438-0906-4ff2-953d-994216c66ed4</Id>
+          <EditRate>24 1</EditRate>
+          <IntrinsicDuration>48</IntrinsicDuration>
+          <meta:FullContentTitleText>Test DCP</meta:FullContentTitleText>
+          <meta:VersionNumber>1</meta:VersionNumber>
+          <meta:MainSoundConfiguration>51/L,R,C,LFE,Ls,Rs</meta:MainSoundConfiguration>
+          <meta:MainSoundSampleRate>48000 1</meta:MainSoundSampleRate>
+          <meta:MainPictureStoredArea>
+            <meta:Width>1998</meta:Width>
+            <meta:Height>1080</meta:Height>
+          </meta:MainPictureStoredArea>
+          <meta:MainPictureActiveArea>
+            <meta:Width>1998</meta:Width>
+            <meta:Height>1080</meta:Height>
+          </meta:MainPictureActiveArea>
+          <meta:ExtensionMetadataList>
+            <meta:ExtensionMetadata scope="http://www.smpte-ra.org/schemas/429-16/2013/Ext-Meta#scope">
+              <meta:Name>SMPTE</meta:Name>
+              <meta:PropertyList>
+                <meta:Property>
+                  <meta:Name>Version</meta:Name>
+                  <meta:Value>Bv2.1</meta:Value>
+                </meta:Property>
+              </meta:PropertyList>
+            </meta:ExtensionMetadata>
+          </meta:ExtensionMetadataList>
+        </meta:CompositionMetadataAsset>
       </AssetList>
     </Reel>
   </ReelList>

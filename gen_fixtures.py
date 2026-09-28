@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate minimal valid MXF test fixtures for dcpdoctor tests."""
+"""Generate a package of partition-pack-only MXF stubs for dcpdoctor tests."""
 import struct
 import hashlib
 import base64
@@ -258,7 +258,7 @@ if __name__ == '__main__':
     pic = make_mxf_picture()
     snd = make_mxf_sound()
 
-    write_fixture(fixtures, 'valid_mxf', pic, snd)
-    print(f"Generated valid_mxf fixture ({len(pic)} + {len(snd)} bytes)")
+    write_fixture(fixtures, 'mxf_stub_package', pic, snd)
+    print(f"Generated mxf_stub_package fixture ({len(pic)} + {len(snd)} bytes)")
     print(f"  Picture hash: {sha1_b64(pic)}")
     print(f"  Sound hash:   {sha1_b64(snd)}")

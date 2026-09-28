@@ -104,7 +104,24 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "rust/target/release/${{ matrix.binary }}" "dist/"
+          # the exe links the vcpkg libraries at load time, so ship them alongside
+          ./scripts/bundle-windows-cli-dlls.ps1 -Binary "dist/${{ matrix.binary }}" `
+            -SearchDirectories "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin"
           Compress-Archive -Path "dist/*" -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: The unpacked archive runs on its own (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force -Path unpacked
+          Expand-Archive -Path "${{ matrix.artifact }}.zip" -DestinationPath unpacked
+          # the runner's System32 has the VC++ runtime, which hides a missing copy from the run below
+          foreach ($runtime in "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll") {
+            if (-not (Test-Path (Join-Path unpacked $runtime))) { throw "the archive does not carry $runtime" }
+          }
+          # the runner PATH holds dll directories a user's machine does not have
+          $env:PATH = @("$env:SystemRoot\System32", (Resolve-Path unpacked).Path) -join [IO.Path]::PathSeparator
+          & "unpacked/${{ matrix.binary }}" --version
+          if ($LASTEXITCODE -ne 0) { throw "the unpacked archive exited with $LASTEXITCODE" }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -392,8 +392,13 @@ fn color_space_from_picture(pixel_format: &str, mxf_path: &Path, bit_depth: u8) 
 }
 
 fn picture_color_primaries(mxf_path: &Path) -> Option<[u8; 16]> {
+    use asdcplib::EssenceType;
     let path = mxf_path.to_str()?;
-    dcp_picture_primaries(path).or_else(|| as02_picture_primaries(path))
+    match asdcplib::essence_type(path).ok()? {
+        EssenceType::Jpeg2000 | EssenceType::Jpeg2000Stereo => dcp_picture_primaries(path),
+        EssenceType::As02Jpeg2000 => as02_picture_primaries(path),
+        _ => None,
+    }
 }
 
 fn dcp_picture_primaries(path: &str) -> Option<[u8; 16]> {
@@ -1340,6 +1345,14 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
                 if ch_config.layout == ChannelLayout::AtmosIab {
                     continue;
                 }
+                if sound_essence_is_encrypted(&path) {
+                    notes.push(
+                        Note::warning(Code::CheckSkipped, ENCRYPTED_SOUND_SKIPPED_MESSAGE)
+                            .with_file(&path),
+                    );
+                    continue;
+                }
+                notes.extend(silence_note(&path));
                 let loudness = measure_loudness(&path, 1000);
                 if loudness.valid {
                     notes.extend(check_loudness_compliance(&loudness, &path));
@@ -1403,6 +1416,57 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
 // ════════════════════════════════════════════════════════════════════════════════
 // Internal helpers
 // ════════════════════════════════════════════════════════════════════════════════
+
+const ENCRYPTED_SOUND_SKIPPED_MESSAGE: &str =
+    "loudness and Leq(m) checks did not run: the sound essence is encrypted";
+
+fn silence_note(mxf_path: &Path) -> Option<Note> {
+    let levels = match crate::audio::analyze_audio(mxf_path) {
+        Ok(levels) => levels,
+        Err(error) => {
+            return Some(
+                Note::warning(
+                    Code::CheckSkipped,
+                    format!("silence check did not run: {error}"),
+                )
+                .with_file(mxf_path),
+            );
+        }
+    };
+    if !levels.channels.iter().all(|channel| channel.silent) {
+        return None;
+    }
+    let file_name = mxf_path.file_name().unwrap_or_default().to_string_lossy();
+    Some(
+        Note::warning(
+            Code::SoundSilent,
+            format!("sound track {file_name} is silent on every channel"),
+        )
+        .with_file(mxf_path),
+    )
+}
+
+fn sound_essence_is_encrypted(mxf_path: &Path) -> bool {
+    use asdcplib::EssenceType;
+    let Some(path) = mxf_path.to_str() else {
+        return false;
+    };
+    if !matches!(
+        asdcplib::essence_type(path),
+        Ok(EssenceType::Pcm24b48k | EssenceType::Pcm24b96k)
+    ) {
+        return false;
+    }
+    let mut reader = asdcplib::pcm::MxfReader::new();
+    if reader.open_read(path).is_err() {
+        return false;
+    }
+    let encrypted = reader
+        .writer_info()
+        .is_ok_and(|info| info.encrypted_essence);
+    let _ = reader.close();
+    encrypted
+}
 
 /// Is ffprobe on PATH? Every essence-level check here and in the premium
 /// delivery checks needs it, and without it they can only report a skip.
@@ -1538,6 +1602,116 @@ mod tests {
             "{loud:?}"
         );
         assert!(loud.true_peak_dbtp < 0.0, "{loud:?}");
+    }
+
+    fn write_encrypted_silent_sound_track(path: &Path) {
+        use asdcplib::crypto::{AesEncContext, HmacContext};
+        use asdcplib::{LabelSet, Rational, WriterInfo};
+        const FRAME_RATE: u32 = 24;
+        const SAMPLE_RATE: u32 = 48_000;
+        const CHANNELS: u32 = 2;
+        const BYTES_PER_SAMPLE: u32 = 3;
+        const CONTENT_KEY: [u8; 16] = [7; 16];
+        const HEADER_BYTES: u32 = 16_384;
+
+        let frames = (TONE_SECONDS * FRAME_RATE as f64) as u32;
+        let block_align = CHANNELS * BYTES_PER_SAMPLE;
+        let descriptor = asdcplib::pcm::AudioDescriptor {
+            edit_rate: Rational::new(FRAME_RATE as i32, 1),
+            audio_sampling_rate: Rational::new(SAMPLE_RATE as i32, 1),
+            locked: true,
+            channel_count: CHANNELS,
+            quantization_bits: BYTES_PER_SAMPLE * 8,
+            block_align,
+            avg_bps: SAMPLE_RATE * block_align,
+            linked_track_id: 0,
+            container_duration: frames,
+            channel_format: asdcplib::pcm::ChannelFormat::None,
+        };
+        let info = WriterInfo {
+            asset_uuid: *uuid::Uuid::new_v4().as_bytes(),
+            context_id: *uuid::Uuid::new_v4().as_bytes(),
+            cryptographic_key_id: *uuid::Uuid::new_v4().as_bytes(),
+            encrypted_essence: true,
+            uses_hmac: true,
+            label_set: LabelSet::Smpte,
+            ..Default::default()
+        };
+        let mut encryption = AesEncContext::new();
+        encryption.init_key(&CONTENT_KEY).unwrap();
+        let mut hmac = HmacContext::new();
+        hmac.init_key(&CONTENT_KEY, LabelSet::Smpte).unwrap();
+
+        let mut writer = asdcplib::pcm::MxfWriter::new();
+        writer
+            .open_write(path.to_str().unwrap(), &info, &descriptor, HEADER_BYTES)
+            .unwrap();
+        let silence = vec![0u8; (SAMPLE_RATE / FRAME_RATE * block_align) as usize];
+        for _ in 0..frames {
+            writer
+                .write_frame(&silence, Some(&mut encryption), Some(&mut hmac))
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn encrypted_sound_is_not_measured_for_loudness() {
+        let directory = tempfile::tempdir().unwrap();
+        write_encrypted_silent_sound_track(&directory.path().join("sound.mxf"));
+
+        let notes = run_studio_checks(directory.path(), true);
+
+        let measurement_codes = [
+            Code::SoundTruePeakExceeded,
+            Code::SoundLoudnessOutOfRange,
+            Code::SoundSilent,
+        ];
+        assert!(
+            !notes.iter().any(|n| measurement_codes.contains(&n.code)),
+            "ciphertext measured as sound: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::CheckSkipped
+                    && n.message == ENCRYPTED_SOUND_SKIPPED_MESSAGE),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_silent_sound_track_is_reported_as_silent() {
+        let directory = tempfile::tempdir().unwrap();
+        tone_track(&directory.path().join("silence.mxf"), SILENCE_AMPLITUDE);
+
+        let notes = run_studio_checks(directory.path(), true);
+
+        assert!(
+            notes.iter().any(|n| n.code == Code::SoundSilent
+                && n.severity == Severity::Warning
+                && n.message.contains("silence.mxf")),
+            "got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_sound_track_carrying_a_tone_is_not_reported_as_silent() {
+        let directory = tempfile::tempdir().unwrap();
+        tone_track(&directory.path().join("tone.mxf"), QUIET_AMPLITUDE);
+
+        let notes = run_studio_checks(directory.path(), true);
+
+        assert!(
+            !notes.iter().any(|n| n.code == Code::SoundSilent),
+            "got: {notes:?}"
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.code == Code::CheckSkipped && n.message.contains("silence")),
+            "got: {notes:?}"
+        );
     }
 
     #[test]

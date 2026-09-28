@@ -6,9 +6,23 @@
 - **Dockerfile for a headless dcpdoctor**: the image carries ffmpeg, xmllint with the bundled schemas, and Java with the Photon jars, and the Docker workflow builds it on every push and tag without publishing it.
 - `VerifyOptions::skip_bitrate_measurement` skips the picture bitrate measurement, which reads every frame back off the essence. For a caller whose encoder already held every codestream under the DCI per-frame byte cap.
 
+### Changed
+- **The Windows release installs its installers**: the GUI release workflow installs the NSIS setup and then the msi, checks each carries every staged dll, runs the installed `dcpdoctor --version` from each, and uninstalls each after.
+
 ### Fixed
+- **The Windows installers and the CLI zip carry their dlls**: the release now stages the libxml2 and xerces-c dlls `dcpdoctor.exe` loads at start, with their vcpkg dependencies and the VC++ runtime, beside the exe in the NSIS setup, the msi and the zip, where it shipped the exe alone.
 - **Silent sound track no longer fails the true peak check**: `validate` read ffmpeg's `Peak: -inf dBFS` for digital silence as 0.0 dBTP and raised `True peak exceeds -1 dBTP limit: 0.0 dBTP`, and it now reads the peak as -inf dBTP, which passes, the same way `loudness` and `qc-report` read it instead of NaN.
 - **Loudness findings have their own codes**: the -1 dBTP true peak error is `sound_true_peak_exceeded` and the integrated loudness warnings (under -40 LUFS, over -20 LUFS) are `sound_loudness_out_of_range`, where both used to report as `sound_invalid_sample_rate`.
+- **`conformance` checks PKL hashes**: a package with a changed or missing track file read as conformant because no test compared the files against the PKL, and the new `DCI-STRUCT-6` test fails on any asset whose Hash or Size disagrees.
+- **`conformance` finds the PKL by its root element**: an ASSETMAP carries `<PackingList>true</PackingList>`, so a package with its PKL deleted still passed `DCI-STRUCT-3`.
+- **`validate` no longer logs `RGBAEssenceDescriptor object not found.`**: the deep JPEG 2000 pass opened every MXF with the picture reader, and it now skips sound, timed text and other non-picture track files by their essence type.
+- **Encrypted sound is not measured for loudness**: `validate` ran the R128 and Leq(m) measurements on the ciphertext of an encrypted sound track and raised `sound_true_peak_exceeded` at 6.1 dBTP on the ISDCF Bv2.1 reference DCP, and it now reports the two checks as skipped for encrypted sound essence.
+- **Silent sound tracks are reported**: nothing raised `sound_silent`, and `validate` now warns with it when every channel of an unencrypted sound track sits under -80 dBFS RMS, naming the track file.
+- **`validate` no longer logs AS-02 reader warnings on a DCP**: the colour primaries lookup and the bitrate measurement fell back to the AS-02 reader on AS-DCP picture, which printed `Operational pattern is not OP-1a` and `File footer partition contains index data.` twice on the ISDCF Bv2.1 reference DCP, and both now pick the reader by the track file's essence type.
+- **`tests/fixtures/valid_smpte` passes `validate`**: the package every hash, diff and repair test starts from carried placeholder bytes for its picture and sound track files and failed with `mxf_unreadable`, and it is now a 2 second dcpwizard DCP with real JPEG 2000 and 5.1 PCM essence, made by `tests/regenerate_valid_smpte.sh`, that a test validates with no errors.
+- **`fix` no longer reports a file its own repair put back as unrepaired**: a CPL whose namespace repair restored the bytes its PKL entry records was still listed under `pkl_hash_mismatch` and `pkl_size_mismatch` as not repaired, and `fix` exited with an error on a package it had fully repaired.
+- **`fix` repairs CPL hashes**: after a track file changed, `fix` rewrote its PKL hash but left the CPL's `<Hash>` for it, so the package failed `validate` on `cpl_pkl_hash_mismatch`, and it now rewrites each CPL `<Hash>` from the file the asset map points to before the PKL pass rehashes the CPL itself. `--dry-run` works on the same rewritten text instead of the CPL on disk, so it no longer misses the PKL repair of a CPL it would rewrite, lists PKL repairs for a CPL its namespace repair puts back, or reports a CPL hash it would repair as remaining.
+- **`fix` leaves signed packages alone unless told**: it rewrote signed CPLs and PKLs and exited 0, after which `validate` failed on `signature_invalid`, and it now names each signed document a repair would rewrite, writes nothing and exits 1, unless `--break-signatures` is passed, which writes the repairs and warns that each of those documents needs re-signing.
 
 ## [1.3.2] - 2026-09-13
 

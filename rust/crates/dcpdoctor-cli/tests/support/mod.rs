@@ -517,6 +517,7 @@ fn cpl_xml(spec: &PackageSpec) -> String {
     <Id>urn:uuid:6dbd2c3a-0a41-4f1f-8b2e-1c4d5e6f7a80</Id>
     <LabelText>{title}</LabelText>
   </ContentVersion>
+  <RatingList/>
   <ReelList>{reels}
   </ReelList>
 </CompositionPlaylist>

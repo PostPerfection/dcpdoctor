@@ -456,8 +456,13 @@ pub fn detect_hdr_metadata(mxf_path: &Path) -> HdrMetadata {
 // the picture essence descriptor carries the transfer and primaries as ULs, so
 // it settles the type without ffprobe having to map them first
 fn hdr_from_descriptor(mxf_path: &Path) -> Option<HdrMetadata> {
+    use asdcplib::EssenceType;
     let path = mxf_path.to_str()?;
-    let descriptor = read_dcp_hdr_descriptor(path).or_else(|| read_imf_hdr_descriptor(path))?;
+    let descriptor = match asdcplib::essence_type(path).ok()? {
+        EssenceType::Jpeg2000 | EssenceType::Jpeg2000Stereo => read_dcp_hdr_descriptor(path),
+        EssenceType::As02Jpeg2000 => read_imf_hdr_descriptor(path),
+        _ => None,
+    }?;
 
     let mut hdr = HdrMetadata {
         from_descriptor: true,

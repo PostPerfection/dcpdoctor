@@ -1,10 +1,14 @@
 use assert_cmd::Command;
+use sha1::{Digest, Sha1};
 use std::collections::BTreeMap;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 const INTEROP_CPL_NAMESPACE: &str = "http://www.digicine.com/PROTO-ASDCP-CPL-20040511#";
 const SMPTE_CPL_NAMESPACE: &str = "http://www.smpte-ra.org/schemas/429-7/2006/CPL";
+const FIXTURE_CONTENT_KIND: &str = "<ContentKind>feature</ContentKind>";
+const CHANGED_SOUND_BYTE_OFFSET: u64 = 40;
 
 fn fixture_package() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/valid_smpte")
@@ -19,19 +23,16 @@ fn broken_package() -> TempDir {
         std::fs::copy(entry.path(), package.path().join(entry.file_name())).unwrap();
     }
 
-    let sound = package.path().join("sound.mxf");
-    let mut bytes = std::fs::read(&sound).unwrap();
-    bytes[40] ^= 0xff;
-    std::fs::write(&sound, bytes).unwrap();
+    flip_byte(&package.path().join("sound.mxf"), CHANGED_SOUND_BYTE_OFFSET);
 
     let cpl_path = package.path().join("cpl.xml");
     let cpl = std::fs::read_to_string(&cpl_path).unwrap();
-    assert!(cpl.contains(SMPTE_CPL_NAMESPACE) && cpl.contains("<ContentKind>test</ContentKind>"));
+    assert!(cpl.contains(SMPTE_CPL_NAMESPACE) && cpl.contains(FIXTURE_CONTENT_KIND));
     std::fs::write(
         &cpl_path,
         cpl.replace(SMPTE_CPL_NAMESPACE, INTEROP_CPL_NAMESPACE)
             .replace(
-                "<ContentKind>test</ContentKind>",
+                FIXTURE_CONTENT_KIND,
                 "<ContentKind>Feature Film</ContentKind>",
             ),
     )
@@ -40,14 +41,31 @@ fn broken_package() -> TempDir {
     package
 }
 
-fn tree_bytes(directory: &Path) -> BTreeMap<String, Vec<u8>> {
+fn flip_byte(path: &Path, offset: u64) {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let mut byte = [0u8; 1];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&[byte[0] ^ 0xff]).unwrap();
+}
+
+// each file's size and SHA-1, hashed as it streams
+fn tree_digests(directory: &Path) -> BTreeMap<String, (u64, Vec<u8>)> {
     std::fs::read_dir(directory)
         .unwrap()
         .flatten()
         .map(|entry| {
+            let mut hasher = Sha1::new();
+            let size = std::io::copy(&mut std::fs::File::open(entry.path()).unwrap(), &mut hasher)
+                .unwrap();
             (
                 entry.file_name().to_string_lossy().into_owned(),
-                std::fs::read(entry.path()).unwrap(),
+                (size, hasher.finalize().to_vec()),
             )
         })
         .collect()
@@ -60,7 +78,7 @@ fn dcpdoctor() -> Command {
 #[test]
 fn dry_run_reports_the_three_repairs_and_writes_nothing() {
     let package = broken_package();
-    let before = tree_bytes(package.path());
+    let before = tree_digests(package.path());
 
     let output = dcpdoctor()
         .args(["fix", package.path().to_str().unwrap(), "--dry-run"])
@@ -83,7 +101,7 @@ fn dry_run_reports_the_three_repairs_and_writes_nothing() {
         );
     }
     assert_eq!(
-        tree_bytes(package.path()),
+        tree_digests(package.path()),
         before,
         "a dry run must leave every file byte for byte as it was"
     );

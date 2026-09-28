@@ -139,11 +139,16 @@ fn rsiz_to_profile(rsiz: u16) -> String {
     }
 }
 
+const NO_PICTURE_STREAM: &str = "No video/J2K stream found in MXF";
+
 /// Analyze J2K parameters from a picture MXF. Reads frame 0's real codestream
 /// via postkit's asdcplib reader (AS-DCP OP-Atom, gives the true RSIZ/COD
 /// fields), falling back to ffprobe for AS-02 (OP1a, IMF) essence the OP-Atom
 /// reader can't open.
 fn analyze_j2k_from_mxf(path: &Path) -> Result<J2kCodestreamInfo, String> {
+    if crate::mxf::known_non_picture_essence(path) {
+        return Err(NO_PICTURE_STREAM.into());
+    }
     if let Ok(frame) = postkit::j2k::read_mxf_j2k_frame(path, 0)
         && let Some(hdr) = postkit::j2k::parse_j2k_header(&frame)
     {
@@ -192,7 +197,7 @@ fn analyze_j2k_from_mxf_ffprobe(path: &Path) -> Result<J2kCodestreamInfo, String
 
     let stream = match stream {
         Some(s) => s,
-        None => return Err("No video/J2K stream found in MXF".into()),
+        None => return Err(NO_PICTURE_STREAM.into()),
     };
 
     let width = stream["width"].as_u64().unwrap_or(0) as u32;

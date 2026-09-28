@@ -31,16 +31,19 @@ pub type FrameBitrateStats = postkit::j2k::MxfBitrateStats;
 /// with `keys` where the essence is encrypted. Encrypted essence with no covering
 /// key measures nothing: its ciphertext frames are longer than the codestreams
 /// they carry, so a rate read off them is not the asset's rate.
-///
-/// AS-02 is tried after the AS-DCP wrappings because the AS-02 reader also opens
-/// stereoscopic AS-DCP essence and sees one eye per frame.
 pub fn analyze_picture_bitrate(mxf_path: &Path, keys: &ContentKeys) -> FrameBitrateStats {
-    let as_dcp = measure_frames(mxf_path, keys, PictureEssenceFamily::Cinema);
-    if as_dcp.valid {
-        return as_dcp;
-    }
-    let as02 = measure_frames(mxf_path, keys, PictureEssenceFamily::Imf);
-    if as02.valid { as02 } else { as_dcp }
+    let is_as02_picture = mxf_path.to_str().is_some_and(|path| {
+        matches!(
+            asdcplib::essence_type(path),
+            Ok(asdcplib::EssenceType::As02Jpeg2000)
+        )
+    });
+    let family = if is_as02_picture {
+        PictureEssenceFamily::Imf
+    } else {
+        PictureEssenceFamily::Cinema
+    };
+    measure_frames(mxf_path, keys, family)
 }
 
 /// Read every edit unit of one picture track and turn the codestream sizes into

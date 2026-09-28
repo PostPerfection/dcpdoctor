@@ -205,6 +205,9 @@ enum Commands {
         /// Dry run — show what would be fixed without modifying files
         #[arg(long)]
         dry_run: bool,
+        /// Rewrite signed CPLs and PKLs, whose signatures then no longer verify
+        #[arg(long)]
+        break_signatures: bool,
     },
 
     /// Validate Key Delivery Message (KDM)
@@ -656,22 +659,39 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Some(Commands::Fix { dcp_dir, dry_run }) => {
-            use dcpdoctor_core::fix::FixMode;
+        Some(Commands::Fix {
+            dcp_dir,
+            dry_run,
+            break_signatures,
+        }) => {
+            use dcpdoctor_core::fix::{FixMode, SignedDocuments};
             let mode = if dry_run {
                 FixMode::DryRun
             } else {
                 FixMode::Apply
             };
-            let fix_result = dcpdoctor_core::fix::fix_dcp(&dcp_dir, mode);
-            if fix_result.repairs.is_empty() {
-                println!("Nothing to fix — DCP is clean.");
+            let signed_documents = if break_signatures {
+                SignedDocuments::Break
             } else {
+                SignedDocuments::Refuse
+            };
+            let fix_result = dcpdoctor_core::fix::fix_dcp(&dcp_dir, mode, signed_documents);
+            let refused_signed_documents = fix_result
+                .signature_notes
+                .iter()
+                .any(|n| n.severity == dcpdoctor_core::Severity::Error);
+            if !fix_result.repairs.is_empty() {
                 let verb = if dry_run { "Would fix" } else { "Fixed" };
                 println!("{verb} {} issue(s):", fix_result.repair_count());
                 for repair in &fix_result.repairs {
                     println!("  [{}] {}", repair.code.as_str(), repair.description);
                 }
+            } else if !refused_signed_documents {
+                println!("Nothing to fix — DCP is clean.");
+            }
+
+            for note in &fix_result.signature_notes {
+                eprintln!("[{}] {}", note.code.as_str(), note.message);
             }
 
             let unfixable: Vec<_> = fix_result
@@ -684,13 +704,13 @@ fn main() {
                     "\n{} error(s) remain that cannot be auto-fixed:",
                     unfixable.len()
                 );
-                for note in unfixable {
+                for note in &unfixable {
                     eprintln!("  [{}] {}", note.code.as_str(), note.message);
                 }
-                // a dry run changed nothing, so it has nothing to fail over
-                if !dry_run {
-                    std::process::exit(1);
-                }
+            }
+            // a dry run changed nothing, so it has nothing to fail over
+            if !dry_run && (!unfixable.is_empty() || refused_signed_documents) {
+                std::process::exit(1);
             }
         }
         Some(Commands::Kdm { kdm_file, dcp }) => {

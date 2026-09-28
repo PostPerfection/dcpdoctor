@@ -47,7 +47,7 @@ const REEL_ASSET_KINDS: usize = 3;
 /// is a rejection even when the PKL hash matches the bytes on disk. Covers
 /// libdcp's MISSING_HASH plus MISMATCHED_PICTURE_HASHES / MISMATCHED_SOUND_HASHES
 /// (one code here, since the message names the asset class).
-fn check_cpl_asset_hashes(
+pub(crate) fn check_cpl_asset_hashes(
     cpl_path: &Path,
     cpl: &crate::cpl::Cpl,
     pkl_hashes: &HashMap<&str, &str>,
@@ -1377,7 +1377,7 @@ mod tests {
 
     fn fixture(relative_path: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../tests/dcps/synthetic/valid")
+            .join("../../../tests/dcps/synthetic/minimal")
             .join(relative_path)
     }
 
@@ -1386,10 +1386,6 @@ mod tests {
     /// A committed SMPTE package whose PKL records the real SHA-1 of its own
     /// files, so a hash case starts from genuine digests instead of invented ones.
     const SMPTE_PACKAGE: &str = "../../../tests/fixtures/valid_smpte";
-
-    /// Anchors the hash edits attach to; both are unique in that package's CPL.
-    const AFTER_PICTURE_FIELDS: &str = "<ScreenAspectRatio>1998 1080</ScreenAspectRatio>";
-    const SOUND_CLOSE_TAG: &str = "</MainSound>";
 
     fn smpte_package_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join(SMPTE_PACKAGE)
@@ -1419,38 +1415,32 @@ mod tests {
         dir
     }
 
-    /// The hash the committed package's PKL records for one of its files.
-    fn pkl_hash_of(original_filename: &str) -> String {
+    // the package's PKL names no files, so the asset map ties each file to its id
+    fn pkl_asset_of(file_name: &str) -> crate::pkl::PklAsset {
         use crate::assetmap::ParseXmlFile;
-        crate::pkl::Pkl::parse(&smpte_package_dir().join("pkl.xml"))
+        let id = crate::assetmap::AssetMap::parse(&smpte_package_dir().join("ASSETMAP.xml"))
+            .expect("the package's asset map parses")
+            .assets
+            .into_iter()
+            .find(|a| a.path == file_name)
+            .expect("the package's asset map lists the file")
+            .id;
+        crate::pkl::Pkl::parse(&smpte_package_dir().join(PKL_FILE))
             .expect("the package's PKL parses")
             .assets
             .into_iter()
-            .find(|a| a.original_filename == original_filename)
+            .find(|a| a.id == id)
             .expect("the package's PKL lists the file")
-            .hash
     }
 
-    /// Edits putting the PKL's own hashes into the CPL's picture and sound assets.
-    fn agreeing_hashes() -> Vec<(&'static str, String)> {
-        vec![
-            (
-                AFTER_PICTURE_FIELDS,
-                format!(
-                    "{AFTER_PICTURE_FIELDS}<Hash>{}</Hash>",
-                    pkl_hash_of("picture.mxf")
-                ),
-            ),
-            (
-                SOUND_CLOSE_TAG,
-                format!("<Hash>{}</Hash>{SOUND_CLOSE_TAG}", pkl_hash_of("sound.mxf")),
-            ),
-        ]
+    // the CPL carries the same element for the picture and the sound asset
+    fn hash_element(file_name: &str) -> String {
+        format!("<Hash>{}</Hash>", pkl_asset_of(file_name).hash)
     }
 
     #[test]
     fn cpl_hashes_agreeing_with_the_pkl_are_silent() {
-        let dir = mutated_package(CPL_FILE, &agreeing_hashes());
+        let dir = mutated_package(CPL_FILE, &[]);
         let result = verify_dcp(dir.path(), &VerifyOptions::default());
         assert!(
             !result
@@ -1464,8 +1454,15 @@ mod tests {
 
     #[test]
     fn cpl_essence_asset_without_a_hash_fires() {
-        // the package's CPL carries no <Hash> at all, which is the finding
-        let dir = mutated_package(CPL_FILE, &[]);
+        let picture_hash = hash_element("picture.mxf");
+        let sound_hash = hash_element("sound.mxf");
+        let dir = mutated_package(
+            CPL_FILE,
+            &[
+                (picture_hash.as_str(), String::new()),
+                (sound_hash.as_str(), String::new()),
+            ],
+        );
         let result = verify_dcp(dir.path(), &VerifyOptions::default());
         for kind in ["picture", "sound"] {
             assert!(
@@ -1483,15 +1480,11 @@ mod tests {
     fn cpl_hash_disagreeing_with_the_pkl_fires() {
         // the sound asset's real hash, put on the picture asset: a valid base64
         // SHA-1 that is simply the wrong one, which is what a botched re-wrap makes
-        let mut edits = agreeing_hashes();
-        edits[0] = (
-            AFTER_PICTURE_FIELDS,
-            format!(
-                "{AFTER_PICTURE_FIELDS}<Hash>{}</Hash>",
-                pkl_hash_of("sound.mxf")
-            ),
+        let picture_hash = hash_element("picture.mxf");
+        let dir = mutated_package(
+            CPL_FILE,
+            &[(picture_hash.as_str(), hash_element("sound.mxf"))],
         );
-        let dir = mutated_package(CPL_FILE, &edits);
         let result = verify_dcp(dir.path(), &VerifyOptions::default());
         assert!(
             result
@@ -1531,20 +1524,23 @@ mod tests {
 
     // ─── CPL and PKL identity (Bv2.1 §8.1) ────────────────────────────────
 
-    /// The title the committed package's CPL carries, which its AnnotationText
-    /// and its PKL's AnnotationText must both repeat.
-    const PACKAGE_TITLE: &str = "Test DCP";
-
-    /// Where an AnnotationText is inserted: it precedes ContentTitleText in the
-    /// CPL and the Creator element in the PKL.
     const CPL_TITLE_ELEMENT: &str = "<ContentTitleText>Test DCP</ContentTitleText>";
-    const PKL_CREATOR_ELEMENT: &str = "<Creator>";
+    // the CPL and the PKL each carry it once
+    const ANNOTATION_ELEMENT: &str = "<AnnotationText>Test DCP</AnnotationText>";
 
-    fn cpl_with_annotation(text: &str) -> Vec<(&'static str, String)> {
+    fn annotation_reading(text: &str) -> Vec<(&'static str, String)> {
         vec![(
-            CPL_TITLE_ELEMENT,
-            format!("<AnnotationText>{text}</AnnotationText>{CPL_TITLE_ELEMENT}"),
+            ANNOTATION_ELEMENT,
+            format!("<AnnotationText>{text}</AnnotationText>"),
         )]
+    }
+
+    fn without_annotation() -> Vec<(&'static str, String)> {
+        vec![(ANNOTATION_ELEMENT, String::new())]
+    }
+
+    fn picture_id_element() -> String {
+        format!("<Id>urn:uuid:{}</Id>", pkl_asset_of("picture.mxf").id)
     }
 
     fn notes_of(dir: &Path) -> Vec<Note> {
@@ -1553,8 +1549,7 @@ mod tests {
 
     #[test]
     fn cpl_annotation_text_must_be_present_and_equal_the_content_title() {
-        // the committed package's CPL has no AnnotationText at all
-        let missing = notes_of(mutated_package(CPL_FILE, &[]).path());
+        let missing = notes_of(mutated_package(CPL_FILE, &without_annotation()).path());
         assert!(
             missing
                 .iter()
@@ -1563,8 +1558,7 @@ mod tests {
             "a SMPTE CPL with no AnnotationText must fire, got: {missing:?}"
         );
 
-        let matching =
-            notes_of(mutated_package(CPL_FILE, &cpl_with_annotation(PACKAGE_TITLE)).path());
+        let matching = notes_of(mutated_package(CPL_FILE, &[]).path());
         assert!(
             !matching
                 .iter()
@@ -1575,7 +1569,7 @@ mod tests {
         );
 
         let differing =
-            notes_of(mutated_package(CPL_FILE, &cpl_with_annotation("Some Other Title")).path());
+            notes_of(mutated_package(CPL_FILE, &annotation_reading("Some Other Title")).path());
         assert!(
             differing
                 .iter()
@@ -1586,8 +1580,8 @@ mod tests {
 
     #[test]
     fn a_pkl_with_one_cpl_must_repeat_its_content_title() {
-        // the committed package's PKL has no AnnotationText, and lists one CPL
-        let missing = notes_of(mutated_package(PKL_FILE, &[]).path());
+        // the committed package's PKL lists one CPL
+        let missing = notes_of(mutated_package(PKL_FILE, &without_annotation()).path());
         assert!(
             missing
                 .iter()
@@ -1595,18 +1589,7 @@ mod tests {
             "a PKL whose AnnotationText is not its only CPL's title must fire, got: {missing:?}"
         );
 
-        let matching = notes_of(
-            mutated_package(
-                PKL_FILE,
-                &[(
-                    PKL_CREATOR_ELEMENT,
-                    format!(
-                        "<AnnotationText>{PACKAGE_TITLE}</AnnotationText>{PKL_CREATOR_ELEMENT}"
-                    ),
-                )],
-            )
-            .path(),
-        );
+        let matching = notes_of(mutated_package(PKL_FILE, &[]).path());
         assert!(
             !matching
                 .iter()
@@ -1623,14 +1606,13 @@ mod tests {
             "the committed package lists each asset once, got: {clean:?}"
         );
 
-        let duplicated_asset = r#"<Asset>
-      <Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>"#;
+        let duplicated_asset = format!("<Asset>\n      {}", picture_id_element());
         let notes = notes_of(
             mutated_package(
                 PKL_FILE,
                 &[(
-                    duplicated_asset,
-                    format!("{duplicated_asset}{}", "</Asset>\n    <Asset>\n      <Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>"),
+                    duplicated_asset.as_str(),
+                    format!("{duplicated_asset}</Asset>\n    {duplicated_asset}"),
                 )],
             )
             .path(),
@@ -1716,13 +1698,12 @@ mod tests {
 
     /// Elements the cases below break in the committed package, each unique in
     /// the file it sits in.
-    const PKL_PICTURE_ID: &str = "<Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>";
-    const PKL_PICTURE_SIZE: &str = "<Size>86</Size>";
-    const CPL_DURATION: &str = "<Duration>100</Duration>";
+    const CPL_DURATION: &str = "<Duration>48</Duration>";
 
     #[test]
     fn a_pkl_asset_with_no_id_is_reported_rather_than_dropped() {
-        let dir = mutated_package(PKL_FILE, &[(PKL_PICTURE_ID, String::new())]);
+        let picture_id = picture_id_element();
+        let dir = mutated_package(PKL_FILE, &[(picture_id.as_str(), String::new())]);
         let notes = notes_of(dir.path());
         assert!(
             notes.iter().any(|n| n.code == Code::MissingRequiredElement
@@ -1733,9 +1714,10 @@ mod tests {
 
     #[test]
     fn a_pkl_size_that_is_no_integer_fires() {
+        let picture_size = format!("<Size>{}</Size>", pkl_asset_of("picture.mxf").size);
         let dir = mutated_package(
             PKL_FILE,
-            &[(PKL_PICTURE_SIZE, "<Size>eighty-six</Size>".to_string())],
+            &[(picture_size.as_str(), "<Size>eighty-six</Size>".to_string())],
         );
         let notes = notes_of(dir.path());
         assert!(

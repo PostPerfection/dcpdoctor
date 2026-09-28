@@ -166,10 +166,10 @@ def create_synthetic() -> None:
     info("=== Creating Synthetic Test DCPs ===")
     base = SCRIPT_DIR / "synthetic"
 
-    # ── Valid SMPTE 2K ──────────────────────────────────────────────────────
-    vd = base / "valid" / "minimal_smpte_2k"
+    # ── Minimal SMPTE 2K ──────────────────────────────────────────────────────
+    vd = base / "minimal" / "minimal_smpte_2k"
     if not vd.exists():
-        info("Creating minimal valid SMPTE 2K DCP...")
+        info("Creating minimal SMPTE 2K DCP...")
         _write(
             vd / "ASSETMAP.xml",
             '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -251,8 +251,8 @@ def create_synthetic() -> None:
         )
         info(f"Created {vd.relative_to(SCRIPT_DIR)}")
 
-    # ── Valid Interop ───────────────────────────────────────────────────────
-    interop = base / "valid" / "minimal_interop"
+    # ── Minimal Interop ───────────────────────────────────────────────────────
+    interop = base / "minimal" / "minimal_interop"
     if not interop.exists():
         _write(
             interop / "ASSETMAP",
@@ -390,7 +390,7 @@ def main() -> None:
         create_synthetic()
 
     info("Done! Run dcpdoctor against test DCPs:")
-    info("  dcpdoctor tests/dcps/synthetic/valid/minimal_smpte_2k")
+    info("  dcpdoctor tests/dcps/synthetic/minimal/minimal_smpte_2k")
     info("  dcpdoctor tests/dcps/synthetic/invalid/bad_xml")
 
 

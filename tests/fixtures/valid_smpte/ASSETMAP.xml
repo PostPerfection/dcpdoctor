@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
-  <Id>urn:uuid:01cfce20-0df4-4393-87a6-bd8b0251e5bd</Id>
-  <Creator>dcplint test fixture generator</Creator>
+  <Id>urn:uuid:6e204758-e383-44cd-835b-ebae5af49455</Id>
+  <Creator>DCP Wizard</Creator>
   <VolumeCount>1</VolumeCount>
-  <IssueDate>2024-01-01T00:00:00+00:00</IssueDate>
-  <Issuer>dcplint test fixture generator</Issuer>
+  <IssueDate>2026-09-28T21:23:49.456064700+00:00</IssueDate>
+  <Issuer>DCP Wizard</Issuer>
   <AssetList>
     <Asset>
-      <Id>urn:uuid:dfb16c73-27c3-4afa-915f-1d4dc616cd7a</Id>
+      <Id>urn:uuid:f7c8f048-bcd4-4c53-b630-8b151630c086</Id>
       <PackingList>true</PackingList>
       <ChunkList>
         <Chunk>
@@ -16,7 +16,7 @@
       </ChunkList>
     </Asset>
     <Asset>
-      <Id>urn:uuid:5c3d4b1b-19cc-43de-896b-b22b3f39b766</Id>
+      <Id>urn:uuid:56807594-d778-47ca-860a-24191018db3b</Id>
       <ChunkList>
         <Chunk>
           <Path>cpl.xml</Path>
@@ -24,7 +24,7 @@
       </ChunkList>
     </Asset>
     <Asset>
-      <Id>urn:uuid:148971a4-abc6-44ae-bf59-34026d0faf17</Id>
+      <Id>urn:uuid:0d3b6334-2c65-45f9-92dd-e46ed05c3036</Id>
       <ChunkList>
         <Chunk>
           <Path>picture.mxf</Path>
@@ -32,7 +32,7 @@
       </ChunkList>
     </Asset>
     <Asset>
-      <Id>urn:uuid:3878f6e9-eeec-4d0f-b2b3-4fb96b7759e1</Id>
+      <Id>urn:uuid:b0907fed-9f07-41ca-a412-a67555ea4974</Id>
       <ChunkList>
         <Chunk>
           <Path>sound.mxf</Path>

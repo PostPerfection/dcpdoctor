@@ -117,6 +117,20 @@ pub fn run_conformance_tests(opts: &ConformanceOptions) -> ConformanceReport {
         format!("{mxf_count} MXF file(s)"),
     ));
 
+    let checksum = crate::checksum_verify::verify_package_checksums(
+        &crate::checksum_verify::ChecksumVerifyOptions {
+            package_dir: opts.dcp_dir.clone(),
+            ..Default::default()
+        },
+    );
+    report.structure_tests.push(make_test(
+        "DCI-STRUCT-6",
+        "Every PKL asset matches its Hash and Size",
+        "SMPTE ST 429-8:2014",
+        checksum.success && checksum.all_valid,
+        checksum_detail(&checksum),
+    ));
+
     // --- CPL tests ---
     if let Some(ref cpl) = first_cpl {
         report.content_title.clone_from(&cpl.title);
@@ -285,6 +299,23 @@ fn today_iso() -> String {
     )
 }
 
+fn checksum_detail(checksum: &crate::checksum_verify::ChecksumVerifyResult) -> String {
+    if !checksum.success {
+        return checksum.error.clone();
+    }
+    let failed_files: Vec<&str> = checksum
+        .entries
+        .iter()
+        .filter(|entry| !(entry.file_exists && entry.hash_match && entry.size_match))
+        .map(|entry| entry.filename.as_str())
+        .collect();
+    if failed_files.is_empty() {
+        format!("{} asset(s) verified", checksum.verified_ok)
+    } else {
+        format!("missing or altered: {}", failed_files.join(", "))
+    }
+}
+
 struct CplInfo {
     id: String,
     title: String,
@@ -312,10 +343,11 @@ fn find_xml_components(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>, Option<CplInf
             continue;
         };
 
-        if content.contains("PackingList") {
+        let root = crate::schema::root_element(&content).map(|(root, _)| root);
+        if root.as_deref() == Some("PackingList") {
             pkls.push(path.clone());
         }
-        if content.contains("<CompositionPlaylist") {
+        if root.as_deref() == Some("CompositionPlaylist") {
             cpls.push(path.clone());
             if first_cpl.is_none() {
                 first_cpl = Some(parse_cpl_info(&content));

@@ -238,10 +238,13 @@ The `fix` subcommand automatically repairs common issues:
 |-------|---------------|
 | PKL hash mismatch | Recomputes SHA-1 and rewrites PKL |
 | PKL size mismatch | Rewrites the asset's `Size` alongside its `Hash` |
+| CPL hash mismatch | Recomputes the asset's SHA-1 in a CPL that carries `Hash` elements, before the PKL pass |
 | Wrong namespace | Swaps Interop↔SMPTE namespace URIs |
 | Invalid ContentKind | Normalizes to canonical SMPTE value |
 
 After fixing XML files, PKL hashes and sizes are automatically recalculated to keep everything consistent. `--dry-run` runs the same repair pass with every write skipped, so it lists exactly what `fix` would change and leaves the package byte for byte as it was.
+
+A signed CPL or PKL is not rewritten: `fix` names each signed document a repair would touch and exits 1. `--break-signatures` writes those repairs and warns that each of those documents needs re-signing.
 
 ```bash
 # Fix and then re-validate
@@ -519,6 +522,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 GitHub Actions runs these Rust checks on Linux, macOS, and Windows. It also builds the frontend and checks the Tauri Rust crate on Linux.
+
+`tests/fixtures/valid_smpte` is made by `tests/regenerate_valid_smpte.sh` with dcpwizard, which the script reads from `DCPWIZARD` or finds on `PATH`. dcpwizard must find libgrokj2k on the loader path, through `LD_LIBRARY_PATH` when grok is not a system library.
 
 ### Studio Validation
 
