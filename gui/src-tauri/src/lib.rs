@@ -34,7 +34,8 @@ fn find_dcpdoctor_binary() -> String {
 
     for candidate in &candidates {
         if candidate.exists() {
-            return candidate.canonicalize()
+            return candidate
+                .canonicalize()
                 .unwrap_or_else(|_| candidate.clone())
                 .to_string_lossy()
                 .to_string();
@@ -118,7 +119,11 @@ fn summarize(results: &[ValidationResult], exit_code: i32, combined: &str) -> St
         "DCP is valid — no issues found.".to_string()
     } else if results.is_empty() && exit_code != 0 {
         // Binary ran but we couldn't parse output — show raw output
-        format!("Validation failed (exit {}): {}", exit_code, combined.trim())
+        format!(
+            "Validation failed (exit {}): {}",
+            exit_code,
+            combined.trim()
+        )
     } else {
         format!("{} error(s), {} warning(s) found.", errors, warnings)
     }
@@ -145,7 +150,11 @@ fn validate_dcp(path: String, flags: Vec<String>) -> Result<ValidationResponse, 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let combined = format!("{}\n{}", stdout, stderr);
-    eprintln!("[dcpdoctor-gui] exit: {:?}, stdout: {}", output.status.code(), stdout.trim());
+    eprintln!(
+        "[dcpdoctor-gui] exit: {:?}, stdout: {}",
+        output.status.code(),
+        stdout.trim()
+    );
 
     let results = parse_output(&combined);
     let exit_code = output.status.code().unwrap_or(-1);
@@ -164,9 +173,26 @@ fn get_version() -> Result<String, String> {
     let output = Command::new(&binary)
         .arg("--version")
         .output()
-        .map_err(|e| format!("Failed to run dcpdoctor at '{}': {} (cwd: {:?})", binary, e, std::env::current_dir()))?;
+        .map_err(|e| {
+            format!(
+                "Failed to run dcpdoctor at '{}': {} (cwd: {:?})",
+                binary,
+                e,
+                std::env::current_dir()
+            )
+        })?;
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![validate_dcp, get_version])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
 
 #[cfg(test)]
@@ -219,7 +245,8 @@ mod tests {
 
     #[test]
     fn a_message_holding_parentheses_keeps_the_last_one_as_the_file() {
-        let results = parse_output("[ERROR] cpl_invalid_language - 'Deutsch' (not a subtag) (CPL.xml)");
+        let results =
+            parse_output("[ERROR] cpl_invalid_language - 'Deutsch' (not a subtag) (CPL.xml)");
         assert_eq!(results[0].message, "'Deutsch' (not a subtag)");
         assert_eq!(results[0].file, "CPL.xml");
     }
@@ -248,30 +275,34 @@ mod tests {
             line("warning", "c", "m", "f"),
             line("info", "d", "m", "f"),
         ];
-        assert_eq!(summarize(&results, 1, ""), "1 error(s), 2 warning(s) found.");
+        assert_eq!(
+            summarize(&results, 1, ""),
+            "1 error(s), 2 warning(s) found."
+        );
     }
 
     // an INFO carries no count of its own, so a run that only produced INFOs
     // reads as valid
     #[test]
     fn an_info_only_run_summarizes_as_valid() {
-        let results = [line("info", "j2k_codestream_summary", "2048x1080, 6 levels", "pic.mxf")];
-        assert_eq!(summarize(&results, 0, ""), "DCP is valid — no issues found.");
+        let results = [line(
+            "info",
+            "j2k_codestream_summary",
+            "2048x1080, 6 levels",
+            "pic.mxf",
+        )];
+        assert_eq!(
+            summarize(&results, 0, ""),
+            "DCP is valid — no issues found."
+        );
     }
 
     #[test]
     fn a_failure_with_no_parseable_output_shows_the_raw_output() {
         let summary = summarize(&[], 2, "  error: not a DCP directory\n");
-        assert_eq!(summary, "Validation failed (exit 2): error: not a DCP directory");
+        assert_eq!(
+            summary,
+            "Validation failed (exit 2): error: not a DCP directory"
+        );
     }
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![validate_dcp, get_version])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
 }
