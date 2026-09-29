@@ -678,16 +678,6 @@ pub fn check_color_compliance(info: &ColorInfo, mxf_path: &Path) -> Vec<Note> {
         ColorSpace::Rec709 => "Rec.709",
         ColorSpace::Unknown => "",
     };
-    if !space.is_empty() {
-        notes.push(Note {
-            severity: Severity::Info,
-            code: Code::J2kInvalidProfile,
-            message: format!("Colour space: {space}"),
-            file: file.clone(),
-            line: 0,
-        });
-    }
-
     let cinema_xyz = info.pixel_format.starts_with("xyz");
     if cinema_xyz
         && info.detected_space != ColorSpace::Xyz
@@ -991,20 +981,12 @@ pub struct ContentTypeInfo {
 pub fn detect_content_type(dcp_dir: &Path) -> ContentTypeInfo {
     let mut info = ContentTypeInfo::default();
 
-    let cpl_path = match find_cpl(dcp_dir) {
-        Some(p) => p,
-        None => {
-            info.valid = true;
-            return info;
-        }
+    // no CPL to read means no ContentKind verdict, not a missing element
+    let Some(cpl_path) = find_cpl(dcp_dir) else {
+        return info;
     };
-
-    let content = match std::fs::read_to_string(&cpl_path) {
-        Ok(c) => c,
-        Err(_) => {
-            info.valid = true;
-            return info;
-        }
+    let Ok(content) = std::fs::read_to_string(&cpl_path) else {
+        return info;
     };
 
     // Extract ContentKind
@@ -1308,15 +1290,24 @@ pub fn run_studio_checks(dcp_dir: &Path, deep: bool) -> Vec<Note> {
     notes.extend(check_duration_compliance(&duration, dcp_dir));
 
     // Per-MXF checks (deep mode)
+    let imf_package = crate::imf::is_imf_package(dcp_dir);
     if deep && let Ok(entries) = std::fs::read_dir(dcp_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("mxf") {
                 continue;
             }
+            // subtitle and caption tracks have no picture or sound checks to skip
+            if crate::mxf::is_timed_text_essence(&path) {
+                continue;
+            }
 
             // Try as picture
             let color = detect_color_space(&path);
+            // the colour and resolution rules are DCI, an IMP's picture rules run in the imf pass
+            if color.valid && imf_package {
+                continue;
+            }
             if color.valid {
                 notes.extend(check_color_compliance(&color, &path));
                 let res = detect_resolution(&path);
@@ -1799,10 +1790,6 @@ mod tests {
         assert_eq!(color.detected_space, ColorSpace::Rec709, "{color:?}");
         let notes = check_color_compliance(&color, &path);
         assert!(
-            notes.iter().any(|n| n.message == "Colour space: Rec.709"),
-            "got: {notes:?}"
-        );
-        assert!(
             !notes.iter().any(|n| n.message.contains("Non-XYZ")),
             "Rec.709 is legal for App 2E, got: {notes:?}"
         );
@@ -1826,11 +1813,6 @@ mod tests {
 
         let color = detect_color_space(&path);
         assert_eq!(color.detected_space, ColorSpace::P3, "{color:?}");
-        let notes = check_color_compliance(&color, &path);
-        assert!(
-            notes.iter().any(|n| n.message == "Colour space: DCI-P3"),
-            "got: {notes:?}"
-        );
     }
 
     #[test]

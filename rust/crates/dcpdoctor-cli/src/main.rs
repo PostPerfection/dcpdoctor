@@ -1805,8 +1805,8 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
             }
         }
 
-        // Deep J2K validation
-        if flags.deep_j2k {
+        // Deep J2K validation. The rules are DCI, an IMP's codestreams are checked by the imf pass
+        if flags.deep_j2k && !dcpdoctor_core::imf::is_imf_package(dir) {
             let j2k_notes = run_deep_j2k(dir);
             for note in j2k_notes {
                 result.add(note);

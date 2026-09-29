@@ -418,6 +418,18 @@ pub fn is_pcm_sound_essence(path: &Path) -> bool {
     )
 }
 
+/// True when asdcplib identifies the essence as a subtitle or caption track.
+pub fn is_timed_text_essence(path: &Path) -> bool {
+    use asdcplib::EssenceType;
+    let Some(path) = path.to_str() else {
+        return false;
+    };
+    matches!(
+        asdcplib::essence_type(path),
+        Ok(EssenceType::TimedText | EssenceType::As02TimedText)
+    )
+}
+
 /// True when asdcplib identifies the essence as a type the picture checks never
 /// apply to, so ffprobe failing on it does not mean a check was skipped.
 pub fn known_non_picture_essence(path: &Path) -> bool {

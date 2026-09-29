@@ -13,8 +13,9 @@ const AUDIO_CONFIGURATIONS: [&str; 10] = [
 ];
 
 /// The tracks the registry lists alongside a base configuration: assisted
-/// listening, audio description, sign language and the D-BOX motion stream.
-const SUPPLEMENTARY_AUDIO_TRACKS: [&str; 4] = ["HI", "VI", "SL", "DBOX"];
+/// listening, audio description, sign language, the D-BOX motion stream and
+/// the immersive bitstreams DCP-o-matic and others append to a bed as 51-IAB.
+const SUPPLEMENTARY_AUDIO_TRACKS: [&str; 7] = ["HI", "VI", "SL", "DBOX", "IAB", "AURO", "DTSX"];
 
 /// The resolution field's two values.
 const RESOLUTIONS: [&str; 2] = ["2K", "4K"];
@@ -368,6 +369,8 @@ mod tests {
             "51",
             "51-HI-VI",
             "71-HI-VI-SL-DBOX",
+            "51-IAB",
+            "71-IAB-HI-VI",
             "21",
             "MOS",
             "IAB",
