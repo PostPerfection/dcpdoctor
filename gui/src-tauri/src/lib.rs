@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::process::Command;
+use tauri_plugin_shell::ShellExt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ValidationResult {
@@ -16,34 +18,24 @@ pub struct ValidationResponse {
     pub exit_code: i32,
 }
 
-fn find_dcpdoctor_binary() -> String {
-    // Look for the binary in common locations
-    let candidates = vec![
-        // Sidecar (bundled with Tauri — next to the executable)
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("dcpdoctor")))
-            .unwrap_or_default(),
-        // Build directory relative to project root (development)
-        std::path::PathBuf::from("../../build/dcpdoctor"),
-        std::path::PathBuf::from("../build/dcpdoctor"),
-        std::path::PathBuf::from("build/dcpdoctor"),
-        // Common system PATH
-        std::path::PathBuf::from("dcpdoctor"),
-    ];
+const CLI_SIDECAR_NAME: &str = "dcpdoctor";
 
-    for candidate in &candidates {
-        if candidate.exists() {
-            return candidate
-                .canonicalize()
-                .unwrap_or_else(|_| candidate.clone())
-                .to_string_lossy()
-                .to_string();
-        }
-    }
+fn cli_command(app: &tauri::AppHandle) -> Result<Command, String> {
+    let sidecar = app
+        .shell()
+        .sidecar(CLI_SIDECAR_NAME)
+        .map_err(|e| format!("Cannot locate the bundled dcpdoctor CLI: {e}"))?;
+    Ok(sidecar.into())
+}
 
-    // Fallback to PATH
-    "dcpdoctor".to_string()
+fn run_cli(command: &mut Command) -> Result<std::process::Output, String> {
+    command.output().map_err(|e| {
+        format!(
+            "Failed to run the bundled dcpdoctor CLI at '{}': {e}. The app build copies it there from {CLI_SIDECAR_NAME}-{}.",
+            Path::new(command.get_program()).display(),
+            env!("TAURI_ENV_TARGET_TRIPLE")
+        )
+    })
 }
 
 fn parse_output(output: &str) -> Vec<ValidationResult> {
@@ -130,22 +122,20 @@ fn summarize(results: &[ValidationResult], exit_code: i32, combined: &str) -> St
 }
 
 #[tauri::command]
-fn validate_dcp(path: String, flags: Vec<String>) -> Result<ValidationResponse, String> {
-    let binary = find_dcpdoctor_binary();
-    eprintln!("[dcpdoctor-gui] binary: {}", binary);
-    eprintln!("[dcpdoctor-gui] cwd: {:?}", std::env::current_dir());
+fn validate_dcp(
+    app: tauri::AppHandle,
+    path: String,
+    flags: Vec<String>,
+) -> Result<ValidationResponse, String> {
+    let mut command = cli_command(&app)?;
+    command.args(validation_args(&path, &flags));
+    eprintln!(
+        "[dcpdoctor-gui] binary: {}",
+        Path::new(command.get_program()).display()
+    );
     eprintln!("[dcpdoctor-gui] validating: {}", path);
 
-    let mut cmd = Command::new(&binary);
-    cmd.args(validation_args(&path, &flags));
-
-    let output = cmd.output().map_err(|e| {
-        format!(
-            "Failed to run dcpdoctor binary at '{}': {}. \
-             Make sure dcpdoctor is built (cd build && make).",
-            binary, e
-        )
-    })?;
+    let output = run_cli(&mut command)?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -168,19 +158,10 @@ fn validate_dcp(path: String, flags: Vec<String>) -> Result<ValidationResponse, 
 }
 
 #[tauri::command]
-fn get_version() -> Result<String, String> {
-    let binary = find_dcpdoctor_binary();
-    let output = Command::new(&binary)
-        .arg("--version")
-        .output()
-        .map_err(|e| {
-            format!(
-                "Failed to run dcpdoctor at '{}': {} (cwd: {:?})",
-                binary,
-                e,
-                std::env::current_dir()
-            )
-        })?;
+fn get_version(app: tauri::AppHandle) -> Result<String, String> {
+    let mut command = cli_command(&app)?;
+    command.arg("--version");
+    let output = run_cli(&mut command)?;
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

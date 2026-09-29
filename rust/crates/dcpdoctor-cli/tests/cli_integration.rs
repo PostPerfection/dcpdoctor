@@ -1,9 +1,33 @@
+mod support;
+
+use std::path::PathBuf;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
+const CODESTREAM_SUMMARY_CODE: &str = "j2k_codestream_summary";
+const BITRATE_MEASURED_CODE: &str = "picture_bitrate_measured";
+const ERROR_LINE_PREFIX: &str = "[ERROR]";
+const WARNING_LINE_PREFIX: &str = "[WARNING]";
+const INFO_LINE_PREFIX: &str = "[INFO]";
+
 fn cmd() -> Command {
     Command::cargo_bin("dcpdoctor").unwrap()
+}
+
+fn fixture_package() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/valid_smpte")
+}
+
+fn validate_stdout(extra_arguments: &[&str], package: &std::path::Path) -> String {
+    let output = cmd()
+        .arg("validate")
+        .args(extra_arguments)
+        .arg(package)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 #[test]
@@ -315,4 +339,51 @@ fn validate_fails_an_imp_whose_track_file_is_missing() {
         .failure()
         .stdout(predicate::str::contains("asset_not_found"))
         .stdout(predicate::str::contains("VIDEO.mxf"));
+}
+
+#[test]
+fn no_mxf_alone_skips_the_picture_scan() {
+    let default_stdout = validate_stdout(&["-v"], &fixture_package());
+    assert!(
+        default_stdout.contains(CODESTREAM_SUMMARY_CODE),
+        "{default_stdout}"
+    );
+
+    let no_mxf_stdout = validate_stdout(&["--no-mxf", "-v"], &fixture_package());
+    assert!(
+        !no_mxf_stdout.contains(CODESTREAM_SUMMARY_CODE),
+        "{no_mxf_stdout}"
+    );
+    assert!(
+        !no_mxf_stdout.contains(BITRATE_MEASURED_CODE),
+        "{no_mxf_stdout}"
+    );
+}
+
+#[test]
+fn quiet_prints_only_error_notes() {
+    let dir = TempDir::new().unwrap();
+    support::copy_package(&fixture_package(), dir.path());
+    support::corrupt_one_byte(&dir.path().join(support::SOUND_FILE));
+
+    let default_stdout = validate_stdout(&[], dir.path());
+    assert!(
+        default_stdout
+            .lines()
+            .any(|line| line.starts_with(WARNING_LINE_PREFIX)),
+        "{default_stdout}"
+    );
+
+    let quiet_stdout = validate_stdout(&["-q"], dir.path());
+    assert!(
+        quiet_stdout
+            .lines()
+            .any(|line| line.starts_with(ERROR_LINE_PREFIX)),
+        "{quiet_stdout}"
+    );
+    assert!(
+        !quiet_stdout.lines().any(|line| line.starts_with(WARNING_LINE_PREFIX)
+            || line.starts_with(INFO_LINE_PREFIX)),
+        "{quiet_stdout}"
+    );
 }

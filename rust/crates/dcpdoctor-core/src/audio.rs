@@ -18,7 +18,6 @@ pub struct AudioAnalysis {
 pub struct ChannelInfo {
     pub channel: u32,
     pub peak_dbfs: f64,
-    pub rms_dbfs: f64,
     pub clipping: bool,
     pub silent: bool,
 }
@@ -127,7 +126,6 @@ fn parse_astats_channels(stderr: &str) -> Vec<ChannelInfo> {
             if (trimmed.contains("RMS level dB:") || trimmed.contains("RMS_level"))
                 && let Some(val) = extract_db_value(trimmed)
             {
-                info.rms_dbfs = val;
                 info.silent = val < -80.0;
             }
         }
@@ -168,7 +166,6 @@ fn analyze_audio_volumedetect(audio_path: &Path) -> Result<AudioAnalysis, String
         if trimmed.contains("mean_volume:")
             && let Some(val) = extract_db_value(trimmed)
         {
-            info.rms_dbfs = val;
             info.silent = val < -80.0;
             parsed_level = true;
         }

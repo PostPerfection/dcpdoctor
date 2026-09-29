@@ -15,13 +15,13 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 ### Core Validation
 - **Structure validation**: ASSETMAP, PKL, CPL parsing with full cross-referencing
 - **Hash verification**: SHA-1 integrity checking for all assets
-- **XML digital signatures**: enveloped signature verification plus embedded X.509 chain linkage and expiry checks; an encrypted package with an unsigned CPL or PKL errors (`dcp_not_signed`), an unsigned unencrypted one warns (`unencrypted_dcp_not_signed`)
+- **XML digital signatures**: enveloped signature verification plus embedded X.509 chain linkage and expiry checks. An encrypted package with an unsigned CPL or PKL errors (`dcp_not_signed`), an unsigned unencrypted one warns (`unencrypted_dcp_not_signed`)
 - **Schema validation:** Well-formedness checks for every package XML file, with full XSD validation when schemas are supplied
 - **Duplicate detection**: Identifies duplicate asset IDs across packages
 - **Explicit skipped checks**: A check that cannot run reports `check_skipped` with the reason instead of looking like a clean result
 
 ### Standards Compliance
-- **SMPTE ST 429**: Complete SMPTE DCP standard validation
+- **SMPTE ST 429**: SMPTE ST 429 checks
 - **Interop**: Legacy Interop DCP support
 - **BV2.1 (Bv2.1)**: SMPTE Best Practices for theatrical distribution:
   - ASSETMAP.xml naming enforcement
@@ -33,22 +33,22 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **ISDCF Naming**: Content title naming convention validation
 
 ### Picture Validation
-- **J2K bitrate analysis**: Per-frame bitrate statistics (min/max/avg), AS-DCP and AS-02 essence (default; `--no-mxf` skips)
+- **J2K bitrate analysis**: Per-frame bitrate scan of AS-DCP and AS-02 essence (default, `--no-mxf` skips). For a DCP the validate note reports the peak frame bitrate when it exceeds the DCI limit or comes within 5 percent of it. For an IMP it reports the peak and average. `frame-qc` on a directory of J2K frames prints min, max and average
 - **DCI bitrate limit**: 250 Mbps at every resolution. IMF has no such limit, so an IMP's measured peak is reported as an info note
-- **4K frame rate (ST 429-2 Table 1)**: 4K picture essence must run at 24/1, 25/1 or 30/1 (default; `--no-mxf` skips)
+- **4K frame rate (ST 429-2 Table 1)**: 4K picture essence must run at 24/1, 25/1 or 30/1 (default, `--no-mxf` skips)
 - **Deep J2K codestream**: Profile (RSIZ), decomposition levels, code-block sizes, wavelet type, component validation
-- **Codestream forensics** (default; `--no-deep-j2k` skips): one pass over every frame reports the track's codestream parameters, the fattest frame against the DCI per-frame byte cap, and any parameter that changes partway through (`j2k_parameters_vary`); also a section in `qc-report`. An IMP's AS-02 picture tracks are scanned the same way, minus the cinema-profile checks and the DCI cap, which IMF has no equivalent of
+- **Codestream forensics** (default, `--no-deep-j2k` or `--no-mxf` skips): one pass over every frame reports the track's codestream parameters, the fattest frame against the DCI per-frame byte cap, and any parameter that changes partway through (`j2k_parameters_vary`). It is also a section in `qc-report`. An IMP's AS-02 picture tracks are scanned the same way, minus the cinema-profile checks and the DCI cap, which IMF has no equivalent of
 - **IMF App 2E picture checks**: Confirms every MainImage track uses an IMF JPEG 2000 profile, carries the matching picture coding label, matches the descriptor's pixel layout to the codestream component count and depth, and declares its color primaries and transfer characteristic
 - **4K/2K detection**: Resolution and aspect ratio verification
 - **Large MXF handling**: Partition validation reads the header, Random Index Pack, and a bounded tail window instead of loading a feature-length track file into memory
 
 ### Sound Validation
-- **Audio level analysis**: Per-channel peak and RMS in dBFS
+- **Audio level analysis**: `auto-qc` reports a channel's peak in dBFS when it clips
 - **Clipping detection**: Flags audio near 0 dBFS
 - **Silence detection**: Warns on channels below -80 dBFS
 - **Channel count**: Validates channel configuration
 - **MainSoundConfiguration (ST 429-16)**: Presence, the `<soundfield>/<channels>` grammar of section 4.4.2.10 (each channel `-` or one to six alphanumerics), and channel count matched against the sound MXF (flags garbage like `None`). A well-formed label outside the ST 428-12 and ISDCF set warns rather than failing the package
-- **Quantization / block align**: 24-bit PCM and block-align check (default; `--no-mxf` skips)
+- **Quantization / block align**: 24-bit PCM and block-align check (default, `--no-mxf` skips)
 - **MCA labeling**: Multi-Channel Audio label presence check
 - **Audio sync drift**: Detects picture/sound duration mismatches per reel
 
@@ -71,14 +71,14 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Encrypted essence checks**: With `--kdm` and `--recipient-key` the essence checks decrypt and run, on a DCP's AS-DCP essence and an IMP's AS-02 track files alike. Without a key that covers a track, the checks that cannot run say so rather than passing quietly
 
 ### Dolby Atmos
-- **IAB detection**: Identifies Immersive Audio Bitstream essence via ffprobe (with an estimated object count)
+- **IAB detection**: Identifies Immersive Audio Bitstream essence from the MXF essence type, read through asdcplib. The IAB descriptor carries no object count, and the note says so. A Dolby Atmos track reports the object count its own descriptor declares
 
 ### Reel & Structure Analysis
 - **Reel continuity**: Validates sequential entry points across reels
 - **Stereo 3D**: Checks left/right eye consistency
 - **Marker validation**: FFOC, LFOC, FFMC, LFMC presence (strict mode), plus FFOC=1 / LFOC=(reel duration - 1) offset checks per reel
 - **Cross-reference integrity**: All PKL/CPL asset references resolve
-- **Supplemental DCP**: Original Package List validation
+- **Supplemental DCP**: Notes that a CPL looks supplemental when it carries `<OPL>`, `<OriginalPackagingList` or `<OriginalFileName`. Pass `--ov` to resolve its references against the OV
 - **CPL metadata**: ContentTitleText/IssueDate, and SMPTE ContentVersion
 - **Package hygiene**: Flags unreferenced and zero-byte files in the package dir
 
@@ -88,11 +88,11 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **MXF essence extraction**: Extract video/audio tracks from MXF containers
 - **Automated QC**: Detect black frames, freeze frames, audio silence, and audio clipping
 - **IMP validation:** Route ST 2067 IMF packages to native checks and Netflix Photon without running IMF tools on DCPs
-- **Schema validation**: XML schema validation against SMPTE ST 2067 XSDs
+- **Schema validation**: XML schema validation against the vendored SMPTE ST 428-7, ST 429 and ST 430 XSDs and the Interop XSDs
 - **IMF compliance**: Platform-specific compliance checks (Netflix, Disney, Amazon, Apple, Cinema, Broadcast)
 - **Frame-level QC**: Per-frame J2K bitrate analysis with over/under-budget detection
 - **QC reports**: HTML/PDF QC reports with package and track summary, plus per-track EBU R128 loudness
-- **Loudness measurement**: EBU R128 / ATSC A/85 and ISO 21727 Leq(m) measurement, plus normalization
+- **Loudness measurement**: EBU R128 (ITU-R BS.1770) and ISO 21727 Leq(m) measurement, plus normalization to a target, -23 LUFS by default
 - **AV sync detection**: Audio/video sync drift detection and measurement
 - **HDR validation**: HDR10, HLG, Dolby Vision metadata validation
 - **Frame comparison**: Frame-by-frame PSNR/SSIM/VMAF comparison between IMPs or files
@@ -127,13 +127,13 @@ Download from the [GitHub Releases](https://github.com/PostPerfection/dcpdoctor/
 | **macOS** (Apple Silicon) | `dcpdoctor-macos-aarch64.tar.gz` | `.dmg` |
 | **Windows** (x86_64) | `dcpdoctor-windows-x86_64.zip` | `.msi` |
 
-The CLI binary is fully self-contained (all dependencies statically linked). Extract and run.
+The Windows zip carries the DLLs the exe loads, the vcpkg libraries and the VC++ runtime. The Linux and macOS binaries link OpenSSL and Xerces-C dynamically, so both have to be installed (on macOS, `brew install openssl@3 xerces-c`). Extract and run.
 
 ### Install from source
 
-The build itself needs only a Rust toolchain (1.85+). The following tools are runtime dependencies, invoked when the relevant checks run:
+The build needs Rust 1.85+, CMake, a C++ compiler, and OpenSSL development files. Clone with `--recurse-submodules`, because `rust/Cargo.toml` builds postkit from `extern/postkit`. The following tools are runtime dependencies, invoked when the relevant checks run:
 
-- `ffmpeg` / `ffprobe`: media analysis (auto-qc, loudness, HDR, Atmos, frame-compare, mxf-extract)
+- `ffmpeg` / `ffprobe`: media analysis (auto-qc, loudness, HDR, frame-compare, mxf-extract)
 - `xmllint`: XSD schema validation (`schema-validate --schema-dir`)
 
 #### Linux (Ubuntu/Debian)
@@ -185,7 +185,7 @@ The image holds ffmpeg and ffprobe, xmllint with the schemas in `schemas/`, and 
 # Validate a DCP
 dcpdoctor /path/to/dcp
 
-# Verbose output (shows INFO notes)
+# INFO notes are always in the report, -v only raises the tracing level to DEBUG
 dcpdoctor -v /path/to/dcp
 
 # Quiet mode (errors only)
@@ -207,7 +207,7 @@ dcpdoctor validate --strict /path/to/dcp
 # Skip the per-frame JPEG 2000 pass
 dcpdoctor validate --no-deep-j2k /path/to/dcp
 
-# Skip MXF essence inspection (bitrate, audio levels)
+# Skip MXF essence inspection (bitrate)
 dcpdoctor validate --no-mxf /path/to/dcp
 ```
 
@@ -467,7 +467,7 @@ dcpdoctor loudness /path/to/audio.wav -o normalized.wav --normalize --target -23
 
 ```bash
 # Check sync between video and audio
-dcpdoctor av-sync -v /path/to/video.mxf -a /path/to/audio.wav --fps-num 24
+dcpdoctor av-sync --video /path/to/video.mxf --audio /path/to/audio.wav --fps-num 24
 ```
 
 ### HDR Validation
@@ -502,14 +502,14 @@ dcpdoctor imp-info /path/to/IMP/
 | Code | Meaning |
 |---|---|
 | `0` | All DCPs passed validation |
-| `1` | One or more DCPs failed |
-| `2` | Usage/configuration error |
+| `1` | One or more DCPs failed, or the program rejected its own arguments: no DCP directories given, `--normalize` without `--output`, an unknown `imf-compliance --target` |
+| `2` | clap rejected the command line: an unknown flag, a missing value, a value that does not parse |
 
 ## Environment Variables
 
 | Variable | Effect |
 |---|---|
-| `PHOTON_DIR` | Path to an existing Netflix Photon install (skips auto-bootstrap) |
+| `PHOTON_DIR` | Path to a Photon jar or a directory of jars. dcpdoctor does not fetch or build Photon |
 | `RUST_BACKTRACE` | Set to `1` for a detailed backtrace on crash |
 
 ## Running Tests
@@ -559,8 +559,8 @@ dcpdoctor --prores /path/to/dcp
 # Pre-delivery readiness check for theater ingest
 dcpdoctor facility-check /path/to/dcp
 
-# Strict, skip hashing and naming checks
-dcpdoctor facility-check /path/to/dcp --strict --no-hashes --no-naming
+# Skip hashing and naming checks
+dcpdoctor facility-check /path/to/dcp --no-hashes --no-naming
 ```
 
 ### DCI Conformance
@@ -648,13 +648,17 @@ dcpdoctor/
 ├── rust/                 # Rust workspace
 │   ├── crates/
 │   │   ├── dcpdoctor-core/   # Core validation library
-│   │   └── dcpdoctor-cli/    # CLI binary
+│   │   ├── dcpdoctor-cli/    # CLI binary
+│   │   ├── dcpdoctor-imf/    # IMF validation logic shared with the wasm build
+│   │   ├── dcpdoctor-parse/  # ASSETMAP, CPL and PKL parsers shared with the wasm build
+│   │   └── dcpdoctor-wasm/   # Browser validator, excluded from the default workspace
 │   └── Cargo.toml
 ├── gui/                  # Tauri desktop GUI
 │   ├── src/              # Web frontend (HTML/CSS/JS)
 │   ├── src-tauri/        # Rust backend (IPC commands)
 │   └── package.json      # Node.js dependencies
-└── docs/                 # GitHub Pages website
+├── docs/                 # GitHub Pages website, published at the site root
+└── web/                  # Browser validator page, published at /validate
 ```
 
 ## License

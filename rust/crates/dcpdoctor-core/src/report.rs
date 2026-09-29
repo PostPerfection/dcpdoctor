@@ -1,12 +1,12 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::VerifyResult;
+use crate::{Severity, VerifyResult};
 
 /// Report output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReportFormat {
-    Text,
+    Text { errors_only: bool },
     Json,
     Html,
 }
@@ -19,7 +19,9 @@ pub fn write_report<W: Write>(
     format: ReportFormat,
 ) -> std::io::Result<()> {
     match format {
-        ReportFormat::Text => write_text_report(result, dcp_path, writer),
+        ReportFormat::Text { errors_only } => {
+            write_text_report(result, dcp_path, writer, errors_only)
+        }
         ReportFormat::Json => write_json_report(result, writer),
         ReportFormat::Html => write_html_report(result, dcp_path, writer),
     }
@@ -29,6 +31,7 @@ fn write_text_report<W: Write>(
     result: &VerifyResult,
     dcp_path: &Path,
     writer: &mut W,
+    errors_only: bool,
 ) -> std::io::Result<()> {
     writeln!(writer, "=== DcpDoctor Report ===")?;
     writeln!(writer, "DCP: {}", dcp_path.display())?;
@@ -42,7 +45,16 @@ fn write_text_report<W: Write>(
     )?;
     writeln!(writer)?;
 
-    for note in &result.notes {
+    let lowest_severity_shown = if errors_only {
+        Severity::Error
+    } else {
+        Severity::Info
+    };
+    for note in result
+        .notes
+        .iter()
+        .filter(|note| note.severity >= lowest_severity_shown)
+    {
         writeln!(writer, "{}", note)?;
     }
 
@@ -135,7 +147,13 @@ mod tests {
     fn test_text_report() {
         let r = sample_result();
         let mut buf = Vec::new();
-        write_report(&r, Path::new("/test/dcp"), &mut buf, ReportFormat::Text).unwrap();
+        write_report(
+            &r,
+            Path::new("/test/dcp"),
+            &mut buf,
+            ReportFormat::Text { errors_only: false },
+        )
+        .unwrap();
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("FAIL"));
         assert!(text.contains("1 errors"));
@@ -180,7 +198,13 @@ mod tests {
     fn test_pass_report() {
         let r = VerifyResult::default();
         let mut buf = Vec::new();
-        write_report(&r, Path::new("/test/dcp"), &mut buf, ReportFormat::Text).unwrap();
+        write_report(
+            &r,
+            Path::new("/test/dcp"),
+            &mut buf,
+            ReportFormat::Text { errors_only: false },
+        )
+        .unwrap();
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("PASS"));
     }

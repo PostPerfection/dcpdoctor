@@ -99,8 +99,7 @@ pub fn check_bv21_compliance(dcp_dir: &Path, standard: Standard) -> Vec<Note> {
                 });
             }
 
-            // MainMarkers in first reel
-            if !content.contains("<MainMarkers>") {
+            if !first_reel_has_main_markers(&content) {
                 notes.push(Note {
                     severity: Severity::Warning,
                     code: Code::MarkerMissing,
@@ -137,4 +136,60 @@ pub fn check_bv21_compliance(dcp_dir: &Path, standard: Standard) -> Vec<Note> {
     }
 
     notes
+}
+
+fn first_reel_has_main_markers(cpl: &str) -> bool {
+    let reel_pattern = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    reel_pattern
+        .captures(cpl)
+        .is_some_and(|reel| reel[1].contains("<MainMarkers>"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAIN_MARKERS: &str =
+        "<MainMarkers><Id>urn:uuid:2f0d6f4e-5f3a-4c7e-9b1a-0c8d7e6f5a4b</Id></MainMarkers>";
+
+    fn write_two_reel_package(
+        first_reel_assets: &str,
+        second_reel_assets: &str,
+    ) -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("ASSETMAP.xml"), "<AssetMap/>").unwrap();
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            format!(
+                r#"<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <ContentVersion><Id>urn:uuid:1</Id></ContentVersion>
+  <EditRate>24 1</EditRate>
+  <ReelList>
+    <Reel><AssetList>{first_reel_assets}</AssetList></Reel>
+    <Reel><AssetList>{second_reel_assets}</AssetList></Reel>
+  </ReelList>
+</CompositionPlaylist>"#
+            ),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn warns_missing_main_markers(dir: &Path) -> bool {
+        check_bv21_compliance(dir, Standard::Smpte)
+            .iter()
+            .any(|note| note.code == Code::MarkerMissing)
+    }
+
+    #[test]
+    fn main_markers_only_in_the_second_reel_warn() {
+        let dir = write_two_reel_package("", MAIN_MARKERS);
+        assert!(warns_missing_main_markers(dir.path()));
+    }
+
+    #[test]
+    fn main_markers_in_the_first_reel_do_not_warn() {
+        let dir = write_two_reel_package(MAIN_MARKERS, "");
+        assert!(!warns_missing_main_markers(dir.path()));
+    }
 }

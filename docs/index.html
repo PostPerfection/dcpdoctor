@@ -673,7 +673,7 @@
             <div class="demo-body">
 <span class="c"># Checking a feature before delivery</span>
 <span class="o">Package:    MyFeature_FTR-1_S_EN_XX_51_2K_20241201</span>
-<span class="o">Standard:   SMPTE (Bv2.1)</span>
+<span class="o">Standard:   SMPTE</span>
 <span class="o">Reels:      4 | Duration: 01:58:32 | Resolution: 2048x858 (Scope 2K)</span>
 <span class="o">Audio:      5.1 (L R C LFE Ls Rs) | 48kHz/24bit</span>
 <span class="o">Loudness:   -28.3 LUFS | True Peak: -2.1 dBTP</span>
@@ -681,7 +681,7 @@
 <span class="o">Encryption: All assets encrypted (KDM required)</span>
 
 <span class="s">&#10003; PASS</span> <span class="o">0 errors, 1 warning</span>
-<span class="e">&#9888; WARN</span> <span class="o">Reel 3 is 42 minutes — exceeds 40-minute recommendation</span>
+<span class="e">&#9888; WARN</span> <span class="o">Reel 3 is 42 minutes, over the 40 minute recommendation</span>
             </div>
         </div>
 
@@ -820,12 +820,12 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128266;</div>
                 <h3>Levels</h3>
-                <p>Per-channel peak and RMS in dBFS, with warnings on clipping near 0 dBFS and silent channels.</p>
+                <p>Auto-QC reports a channel's peak in dBFS when it clips. Validation warns when a sound track is silent on every channel.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127897;</div>
                 <h3>Loudness</h3>
-                <p>EBU R128 / ATSC A/85 loudness measurement, ISO 21727 Leq(m) against the content kind's limit (82 dB advertisement, 85 dB trailer), and normalization to a target such as -23 LUFS when you need it.</p>
+                <p>EBU R128 (ITU-R BS.1770) loudness measurement, ISO 21727 Leq(m) against the content kind's limit (82 dB advertisement, 85 dB trailer), and normalization to a target when you need it. The default target is -23 LUFS.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127925;</div>
@@ -1028,11 +1028,13 @@ dcpdoctor validate --deep-j2k --check-mxf /path/to/DCP</pre>
         <p class="section-desc">The project is open source under the AGPL. The core and command line are written in Rust; the desktop app wraps them with Tauri.</p>
 
         <div style="background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 32px; max-width: 760px;">
-            <pre style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.8;"><code style="color: var(--text-secondary);"><span style="color: var(--text-tertiary);"># command line (needs a Rust toolchain)</span>
-git clone https://github.com/PostPerfection/dcpdoctor.git
+            <pre style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.8;"><code style="color: var(--text-secondary);"><span style="color: var(--text-tertiary);"># command line (needs Rust 1.85+, CMake, a C++ compiler and OpenSSL development files)</span>
+git clone --recurse-submodules https://github.com/PostPerfection/dcpdoctor.git
 <span style="color: var(--accent);">cd</span> dcpdoctor/rust &amp;&amp; cargo build --release
 
 <span style="color: var(--text-tertiary);"># desktop app (needs Node.js + pnpm as well)</span>
+<span style="color: var(--text-tertiary);"># copy rust/target/release/dcpdoctor to gui/src-tauri/dcpdoctor-&lt;target-triple&gt;</span>
+<span style="color: var(--text-tertiary);"># on Windows, also stage the VC++ runtime and vcpkg DLLs (scripts/bundle-windows-cli-dlls.ps1)</span>
 <span style="color: var(--accent);">cd</span> ../gui &amp;&amp; pnpm install
 pnpm tauri build</code></pre>
             <p style="margin-top: 20px; color: var(--text-tertiary); font-size: 0.9rem;">

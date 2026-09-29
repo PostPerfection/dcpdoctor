@@ -938,7 +938,7 @@ pub fn check_duration_compliance(info: &ReelDurationInfo, dcp_dir: &Path) -> Vec
             severity: Severity::Warning,
             code: Code::CplInvalidDuration,
             message: format!(
-                "Reel {} is {} minutes — exceeds 40-minute recommendation",
+                "Reel {} is {} minutes, over the 40 minute recommendation",
                 info.longest_reel_index + 1,
                 minutes
             ),

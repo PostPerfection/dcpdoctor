@@ -8,8 +8,16 @@
 
 ### Changed
 - **The Windows release installs its installers**: the GUI release workflow installs the NSIS setup and then the msi, checks each carries every staged dll, runs the installed `dcpdoctor --version` from each, and uninstalls each after.
+- **The desktop app runs only its bundled CLI**: it resolves `dcpdoctor` through Tauri's sidecar lookup beside its own executable instead of also trying `build/dcpdoctor` and `PATH`, and when that file is missing the error names its path and the `dcpdoctor-<target triple>` file the build copies it from.
+
+### Removed
+- `ChannelInfo::rms_dbfs`, which nothing read. The silence check still reads the RMS level.
 
 ### Fixed
+- **`--no-mxf` skips the picture scan on its own**: `validate --no-mxf` still read every picture frame and reported `j2k_codestream_summary` unless `--no-deep-j2k` was also given, and `--no-mxf` now turns off the picture checks and the deep JPEG 2000 pass in `validate`, `watch` and `imf-compliance`.
+- **`-q` prints only errors**: the text report printed every warning and info note under `-q`, and it now prints only the `[ERROR]` lines, while the counts on the `Result:` line and the JSON and HTML reports keep every note.
+- **BV2.1 looks for MainMarkers in the first reel**: `validate --bv21` accepted a CPL whose MainMarkers sat in a later reel, and it now warns `BV2.1 requires MainMarkers in first reel` unless the first `<Reel>` carries them.
+- **`loudness --help` names the standard it measures**: the help said `EBU R128 / ATSC A/85` for a measurement made with ffmpeg's EBU R128 filter against a -23 LUFS default target, and it now says `EBU R128 (ITU-R BS.1770)`.
 - **A package with no CPL no longer reports a missing ContentKind**: `validate` raised `cpl_invalid_content_kind` with `CPL missing ContentKind element` beside `missing_cpl` on a package whose CPL was absent, and the content kind check now runs only on a CPL it read.
 - **A valid picture track no longer reports `j2k_invalid_profile`**: the studio colour check filed its `Colour space: CIE XYZ` note under that code as INFO on every picture track, so the code fired on packages with nothing wrong, and the note is gone.
 - **`51-IAB` is an ISDCF audio field**: `isdcf_naming_violation` named `Non-standard audio field` for an immersive bitstream token after a bed, which is how DCP-o-matic writes an Atmos package, and IAB, AURO and DTSX now pass after a bed the same as HI, VI, SL and DBOX.
@@ -28,6 +36,7 @@
 - **`fix` no longer reports a file its own repair put back as unrepaired**: a CPL whose namespace repair restored the bytes its PKL entry records was still listed under `pkl_hash_mismatch` and `pkl_size_mismatch` as not repaired, and `fix` exited with an error on a package it had fully repaired.
 - **`fix` repairs CPL hashes**: after a track file changed, `fix` rewrote its PKL hash but left the CPL's `<Hash>` for it, so the package failed `validate` on `cpl_pkl_hash_mismatch`, and it now rewrites each CPL `<Hash>` from the file the asset map points to before the PKL pass rehashes the CPL itself. `--dry-run` works on the same rewritten text instead of the CPL on disk, so it no longer misses the PKL repair of a CPL it would rewrite, lists PKL repairs for a CPL its namespace repair puts back, or reports a CPL hash it would repair as remaining.
 - **`fix` leaves signed packages alone unless told**: it rewrote signed CPLs and PKLs and exited 0, after which `validate` failed on `signature_invalid`, and it now names each signed document a repair would rewrite, writes nothing and exits 1, unless `--break-signatures` is passed, which writes the repairs and warns that each of those documents needs re-signing.
+- **The README and the site describe what the code does**: they now say SMPTE ST 429 checks, the peak bitrate the validate note reports with min, max and average left to `frame-qc`, the clipping peak from auto-QC in place of per-channel RMS, IAB found from the MXF essence type through asdcplib with no object count, a supplemental CPL note with `--ov` to resolve its references, the vendored ST 428-7, ST 429, ST 430 and Interop XSDs, OpenSSL and Xerces-C linked dynamically on Linux and macOS, a build that needs Rust 1.85+, CMake, a C++ compiler, OpenSSL development files and the submodules, `-v` as the DEBUG tracing level, `PHOTON_DIR` as a jar or a directory of jars, exit 2 for clap parse errors and 1 for the program's own argument failures, `av-sync` and `facility-check` examples clap accepts, `Standard: SMPTE` in the sample report, EBU R128 (ITU-R BS.1770) with a -23 LUFS default target, and the imf, parse and wasm crates and `web/` in the architecture tree.
 
 ## [1.3.2] - 2026-09-13
 

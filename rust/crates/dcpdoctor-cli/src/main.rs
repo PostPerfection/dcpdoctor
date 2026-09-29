@@ -242,7 +242,7 @@ enum Commands {
         no_hash: bool,
     },
 
-    /// Measure or normalize audio loudness (EBU R128 / ATSC A/85)
+    /// Measure or normalize audio loudness (EBU R128 (ITU-R BS.1770))
     Loudness {
         /// Audio file (WAV or MXF)
         audio_file: PathBuf,
@@ -495,7 +495,9 @@ fn main() {
     } else if cli.html {
         ReportFormat::Html
     } else {
-        ReportFormat::Text
+        ReportFormat::Text {
+            errors_only: cli.quiet,
+        }
     };
 
     match cli.command {
@@ -622,7 +624,7 @@ fn main() {
             }
             let opts = dcpdoctor_core::VerifyOptions {
                 check_picture_details: !cli.no_mxf,
-                scan_every_frame: !cli.no_deep_j2k,
+                scan_every_frame: !cli.no_mxf && !cli.no_deep_j2k,
                 ..dcpdoctor_core::VerifyOptions::standard()
             };
             dcpdoctor_core::watch::watch_directory(
@@ -1127,7 +1129,7 @@ fn main() {
             let opts = dcpdoctor_core::VerifyOptions {
                 check_hashes: true,
                 check_signatures: true,
-                check_picture_details: true,
+                check_picture_details: !cli.no_mxf,
                 strict_smpte: !no_strict,
                 ov: cli.ov.clone(),
                 ..Default::default()
@@ -1753,9 +1755,9 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
     let opts = dcpdoctor_core::VerifyOptions {
         check_hashes: !flags.no_hashes,
         check_signatures: !flags.no_signatures,
-        check_picture_details: flags.check_mxf || flags.deep_j2k,
+        check_picture_details: flags.check_mxf,
         // --deep-j2k is what pays for reading past frame 0
-        scan_every_frame: flags.deep_j2k,
+        scan_every_frame: flags.check_mxf && flags.deep_j2k,
         skip_bitrate_measurement: false,
         strict_smpte: flags.strict,
         ov: flags.ov.clone(),
@@ -1806,7 +1808,7 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
         }
 
         // Deep J2K validation. The rules are DCI, an IMP's codestreams are checked by the imf pass
-        if flags.deep_j2k && !dcpdoctor_core::imf::is_imf_package(dir) {
+        if flags.check_mxf && flags.deep_j2k && !dcpdoctor_core::imf::is_imf_package(dir) {
             let j2k_notes = run_deep_j2k(dir);
             for note in j2k_notes {
                 result.add(note);
@@ -1881,7 +1883,7 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
             let name = match format {
                 ReportFormat::Json => "dcpdoctor-report.json",
                 ReportFormat::Html => "dcpdoctor-report.html",
-                ReportFormat::Text => "dcpdoctor-report.txt",
+                ReportFormat::Text { .. } => "dcpdoctor-report.txt",
             };
             let report_path = dir.join(name);
             match std::fs::File::create(&report_path) {
@@ -1903,7 +1905,7 @@ fn run_validate(dcp_dirs: &[PathBuf], flags: ValidateFlags, format: ReportFormat
     }
 
     // Batch summary table for multiple DCPs
-    if dcp_dirs.len() > 1 && format == ReportFormat::Text {
+    if dcp_dirs.len() > 1 && matches!(format, ReportFormat::Text { .. }) {
         println!("\n--- Batch Summary ---");
         println!(
             "{:<50} {:>6} {:>8} {:>6}",
