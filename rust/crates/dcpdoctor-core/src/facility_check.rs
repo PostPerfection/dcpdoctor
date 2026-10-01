@@ -225,6 +225,16 @@ pub fn run_facility_check(opts: &FacilityCheckOptions) -> FacilityCheckResult {
         ));
     }
 
+    // --- Composition metadata ---
+    for cpl_path in &cpls {
+        let Ok(content) = std::fs::read_to_string(cpl_path) else {
+            continue;
+        };
+        result
+            .items
+            .extend(check_composition_metadata(cpl_path, &content));
+    }
+
     // --- ISDCF naming ---
     if opts.check_naming {
         for cpl_path in &cpls {
@@ -296,6 +306,98 @@ pub fn run_facility_check(opts: &FacilityCheckOptions) -> FacilityCheckResult {
     }
 
     result
+}
+
+// optional in ST 429-16 but required by TIFF and Deluxe QC
+const FACILITY_METADATA_ELEMENTS: [&str; 4] = ["Chain", "Distributor", "Facility", "Luminance"];
+
+const LUMINANCE_UNITS: [&str; 2] = ["foot-lambert", "candela-per-square-metre"];
+
+fn check_composition_metadata(cpl_path: &Path, content: &str) -> Vec<CheckItem> {
+    // Interop CPLs have no CompositionMetadataAsset
+    if crate::dcp::standard_of_root_namespace(content) != crate::Standard::Smpte {
+        return Vec::new();
+    }
+    let cpl_name = cpl_path.file_name().unwrap_or_default().to_string_lossy();
+    let metadata_block =
+        metadata_element(content, "CompositionMetadataAsset").map_or("", |element| element.text);
+
+    FACILITY_METADATA_ELEMENTS
+        .iter()
+        .map(|name| {
+            let check_name = format!("CompositionMetadataAsset {name}");
+            let Some(element) = metadata_element(metadata_block, name) else {
+                return make_item(
+                    "metadata",
+                    &check_name,
+                    false,
+                    &format!(
+                        "{cpl_name}: no <{name}> in the CompositionMetadataAsset, some facilities' QC requires it"
+                    ),
+                    "warning",
+                );
+            };
+            match metadata_element_defect(name, &element) {
+                Some(defect) => make_item(
+                    "metadata",
+                    &check_name,
+                    false,
+                    &format!("{cpl_name}: {defect}"),
+                    "error",
+                ),
+                None => make_item("metadata", &check_name, true, "", "error"),
+            }
+        })
+        .collect()
+}
+
+struct MetadataElement<'a> {
+    attributes: &'a str,
+    text: &'a str,
+}
+
+// a self-closing `<meta:Chain/>` counts as present and empty
+fn metadata_element<'a>(xml: &'a str, name: &str) -> Option<MetadataElement<'a>> {
+    let element_re = regex_lite::Regex::new(&format!(
+        r"<(?:[\w-]+:)?{name}(\s[^>]*?)?(?:/>|>([\s\S]*?)</(?:[\w-]+:)?{name}>)"
+    ))
+    .unwrap();
+    let captures = element_re.captures(xml)?;
+    Some(MetadataElement {
+        attributes: captures.get(1).map_or("", |group| group.as_str()),
+        text: captures.get(2).map_or("", |group| group.as_str().trim()),
+    })
+}
+
+fn metadata_element_defect(name: &str, element: &MetadataElement) -> Option<String> {
+    if name != "Luminance" {
+        return element
+            .text
+            .is_empty()
+            .then(|| format!("<{name}> is empty"));
+    }
+    let units_re = regex_lite::Regex::new(r#"\bunits\s*=\s*["']([^"']*)["']"#).unwrap();
+    let units = units_re
+        .captures(element.attributes)
+        .map(|captures| captures.get(1).unwrap().as_str());
+    if !units.is_some_and(|units| LUMINANCE_UNITS.contains(&units)) {
+        return Some(format!(
+            "<Luminance> units is {}, it must be {}",
+            units.map_or_else(|| "missing".to_string(), |units| format!("'{units}'")),
+            LUMINANCE_UNITS.join(" or ")
+        ));
+    }
+    let value_is_positive = element
+        .text
+        .parse::<f64>()
+        .is_ok_and(|value| value.is_finite() && value > 0.0);
+    if !value_is_positive {
+        return Some(format!(
+            "<Luminance> value '{}' is not a positive number",
+            element.text
+        ));
+    }
+    None
 }
 
 /// One line per asset that failed the checksum pass, naming the file and what

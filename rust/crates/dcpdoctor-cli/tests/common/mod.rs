@@ -36,6 +36,7 @@ pub struct DcpSpec {
     pub edit_rate: (u32, u32),
     pub channels: u32,
     pub stereo3d: bool,
+    pub composition_metadata_asset: Option<String>,
 }
 
 impl Default for DcpSpec {
@@ -48,6 +49,7 @@ impl Default for DcpSpec {
             edit_rate: (24, 1),
             channels: 8,
             stereo3d: false,
+            composition_metadata_asset: None,
         }
     }
 }
@@ -177,6 +179,7 @@ fn write_cpl(dir: &Path, spec: &DcpSpec) {
         edit_rate.clone()
     };
     let title = &spec.content_title;
+    let composition_metadata_asset = spec.composition_metadata_asset.as_deref().unwrap_or("");
 
     std::fs::write(
         dir.join(CPL_FILE),
@@ -213,7 +216,7 @@ fn write_cpl(dir: &Path, spec: &DcpSpec) {
           <IntrinsicDuration>{FRAMES}</IntrinsicDuration>
           <Duration>{FRAMES}</Duration>
           <EntryPoint>0</EntryPoint>
-        </MainSound>
+        </MainSound>{composition_metadata_asset}
       </AssetList>
     </Reel>
   </ReelList>

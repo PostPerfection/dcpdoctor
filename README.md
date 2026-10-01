@@ -555,6 +555,8 @@ dcpdoctor --prores /path/to/dcp
 
 ### Facility Check
 
+`facility-check` reports whether a package is ready for theater ingest. It checks the ASSETMAP, VOLINDEX, PKL, CPL and MXF files are present, namespace consistency, the PKL hashes, the signing certificates and ISDCF naming. On each SMPTE CPL it also checks the CompositionMetadataAsset for `Chain`, `Distributor`, `Facility` and `Luminance`, which some facilities' QC requires: a missing one is a warning, and an empty one or a `Luminance` without a positive value in `foot-lambert` or `candela-per-square-metre` is an error.
+
 ```bash
 # Pre-delivery readiness check for theater ingest
 dcpdoctor facility-check /path/to/dcp

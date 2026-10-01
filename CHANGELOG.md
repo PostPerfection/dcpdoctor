@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **`facility-check` checks the CPL's facility metadata**: on each SMPTE CPL it warns when the CompositionMetadataAsset has no `Chain`, `Distributor`, `Facility` or `Luminance`, which TIFF and Deluxe QC require, and errors when one is empty or `Luminance` lacks a positive value in `foot-lambert` or `candela-per-square-metre`. Interop CPLs are skipped.
 - **Dockerfile for a headless dcpdoctor**: the image carries ffmpeg, xmllint with the bundled schemas, and Java with the Photon jars, and the Docker workflow builds it on every push and tag without publishing it.
 - `VerifyOptions::skip_bitrate_measurement` skips the picture bitrate measurement, which reads every frame back off the essence. For a caller whose encoder already held every codestream under the DCI per-frame byte cap.
 
