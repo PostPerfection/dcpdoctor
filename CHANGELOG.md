@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [1.4.0] - 2026-10-02
+
 ### Added
 - **`facility-check` checks the CPL's facility metadata**: on each SMPTE CPL it warns when the CompositionMetadataAsset has no `Chain`, `Distributor`, `Facility` or `Luminance`, which TIFF and Deluxe QC require, and errors when one is empty or `Luminance` lacks a positive value in `foot-lambert` or `candela-per-square-metre`. Interop CPLs are skipped.
 - **Dockerfile for a headless dcpdoctor**: the image carries ffmpeg, xmllint with the bundled schemas, and Java with the Photon jars, and the Docker workflow builds it on every push and tag without publishing it.
