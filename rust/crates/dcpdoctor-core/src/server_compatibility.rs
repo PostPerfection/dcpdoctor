@@ -25,6 +25,8 @@ const APPLE_TRUE_TYPE_SIGNATURE: [u8; 4] = *b"true";
 
 const PORTABLE_NAME_PUNCTUATION: [char; 3] = ['.', '_', '-'];
 
+const EXPECTED_SOUND_CHANNEL_COUNTS: [u32; 2] = [8, 16];
+
 pub fn frame_rate_not_widely_played(frames_per_second: u32, interop: bool) -> Option<String> {
     let (_, instead) = NOT_WIDELY_PLAYED_FRAME_RATES
         .iter()
@@ -52,6 +54,16 @@ pub fn four_k_stereoscopic(stored_width: u32, stereoscopic: bool) -> Option<Stri
         return None;
     }
     Some("DCP is 4K 3D, which only a very limited number of projectors play".to_string())
+}
+
+pub fn unexpected_sound_channel_count(channels: u32) -> Option<String> {
+    if EXPECTED_SOUND_CHANNEL_COUNTS.contains(&channels) {
+        return None;
+    }
+    let [fewer, more] = EXPECTED_SOUND_CHANNEL_COUNTS;
+    Some(format!(
+        "Sound has {channels} channels rather than {fewer} or {more}, which some distributors raise QC errors over"
+    ))
 }
 
 pub fn small_frame(frame_index: u32, frame_bytes: u64) -> Option<String> {
@@ -221,6 +233,24 @@ mod tests {
     fn two_k_stereoscopic_and_four_k_monoscopic_are_silent() {
         assert!(four_k_stereoscopic(2048, true).is_none());
         assert!(four_k_stereoscopic(4096, false).is_none());
+    }
+
+    #[test]
+    fn a_sound_channel_count_other_than_8_or_16_warns_with_the_count() {
+        for channels in [2, 6, 12] {
+            assert_eq!(
+                unexpected_sound_channel_count(channels),
+                Some(format!(
+                    "Sound has {channels} channels rather than 8 or 16, which some distributors raise QC errors over"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn eight_and_sixteen_sound_channels_are_silent() {
+        assert!(unexpected_sound_channel_count(8).is_none());
+        assert!(unexpected_sound_channel_count(16).is_none());
     }
 
     #[test]

@@ -1018,9 +1018,6 @@ pub fn check_partial_encryption(cpl_path: &Path) -> Vec<Note> {
 
 // ─── Playback compatibility ───────────────────────────────────────────────────
 
-/// Audio channel counts distributors accept without question.
-const EXPECTED_AUDIO_CHANNELS: [u64; 2] = [8, 16];
-
 /// Rules about what installed equipment will actually play, as against what the
 /// specifications permit. Everything here is a warning: the package conforms,
 /// but shipping it risks a projector that cannot show it or a distributor QC
@@ -1065,14 +1062,9 @@ pub fn check_playback_compatibility(
     notes.extend(picture_size_and_rate_notes(&content, id_to_file, cpl_path));
 
     if let Some(channels) = first_sound_channel_count_of_cpl(cpl_path, id_to_file)
-        && !EXPECTED_AUDIO_CHANNELS.contains(&(channels as u64))
+        && let Some(message) = crate::server_compatibility::unexpected_sound_channel_count(channels)
     {
-        notes.push(warn(
-            Code::DistributorAudioChannelCount,
-            format!(
-                "sound has {channels} channels rather than 8 or 16, which some distributors raise QC errors over"
-            ),
-        ));
+        notes.push(warn(Code::DistributorAudioChannelCount, message));
     }
 
     notes

@@ -202,7 +202,7 @@ fn a_six_channel_track_raises_the_distributor_warning() {
     });
     assert!(
         stdout.contains("distributor_audio_channel_count")
-            && stdout.contains("sound has 6 channels"),
+            && stdout.contains("Sound has 6 channels"),
         "6 channels must raise the distributor warning, got: {stdout}"
     );
 }
