@@ -10,10 +10,49 @@ const GDC_UNPLAYABLE_FLAT_FRAMES_PER_SECOND: u32 = 25;
 
 const DOREMI_FOUR_K_MAX_FRAMES_PER_SECOND: u32 = 30;
 
+// None is a rate with no safer rate to name
+const NOT_WIDELY_PLAYED_FRAME_RATES: [(u32, Option<u32>); 5] = [
+    (25, Some(24)),
+    (30, None),
+    (48, Some(24)),
+    (50, Some(25)),
+    (60, Some(30)),
+];
+const INTEROP_NOT_WIDELY_PLAYED_FRAMES_PER_SECOND: u32 = 25;
+
 const TRUE_TYPE_SIGNATURE: [u8; 4] = [0x00, 0x01, 0x00, 0x00];
 const APPLE_TRUE_TYPE_SIGNATURE: [u8; 4] = *b"true";
 
 const PORTABLE_NAME_PUNCTUATION: [char; 3] = ['.', '_', '-'];
+
+pub fn frame_rate_not_widely_played(frames_per_second: u32, interop: bool) -> Option<String> {
+    let (_, instead) = NOT_WIDELY_PLAYED_FRAME_RATES
+        .iter()
+        .find(|(rate, _)| *rate == frames_per_second)?;
+    let advice = match instead {
+        Some(better) => format!(", so consider delivering at {better} fps instead"),
+        None => String::new(),
+    };
+    let interop_advice = if interop
+        && frames_per_second == INTEROP_NOT_WIDELY_PLAYED_FRAMES_PER_SECOND
+    {
+        format!(
+            ". Interop at {INTEROP_NOT_WIDELY_PLAYED_FRAMES_PER_SECOND} fps plays on fewer still, so deliver it as SMPTE"
+        )
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "DCP is {frames_per_second} fps, which not all projectors play{advice}{interop_advice}"
+    ))
+}
+
+pub fn four_k_stereoscopic(stored_width: u32, stereoscopic: bool) -> Option<String> {
+    if !stereoscopic || stored_width <= TWO_K_MAX_STORED_WIDTH {
+        return None;
+    }
+    Some("DCP is 4K 3D, which only a very limited number of projectors play".to_string())
+}
 
 pub fn small_frame(frame_index: u32, frame_bytes: u64) -> Option<String> {
     if frame_bytes >= SMALLEST_PLAYABLE_FRAME_BYTES {
@@ -115,6 +154,74 @@ fn portable_characters_description() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_rates_not_widely_played_warn_with_the_rate_to_deliver_instead() {
+        for (rate, expected) in [
+            (
+                25,
+                "DCP is 25 fps, which not all projectors play, so consider delivering at 24 fps instead",
+            ),
+            (30, "DCP is 30 fps, which not all projectors play"),
+            (
+                48,
+                "DCP is 48 fps, which not all projectors play, so consider delivering at 24 fps instead",
+            ),
+            (
+                50,
+                "DCP is 50 fps, which not all projectors play, so consider delivering at 25 fps instead",
+            ),
+            (
+                60,
+                "DCP is 60 fps, which not all projectors play, so consider delivering at 30 fps instead",
+            ),
+        ] {
+            assert_eq!(
+                frame_rate_not_widely_played(rate, false).as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn twenty_four_fps_is_silent() {
+        assert!(frame_rate_not_widely_played(24, false).is_none());
+        assert!(frame_rate_not_widely_played(24, true).is_none());
+    }
+
+    #[test]
+    fn interop_at_25_fps_is_told_to_deliver_smpte() {
+        assert_eq!(
+            frame_rate_not_widely_played(25, true).as_deref(),
+            Some(
+                "DCP is 25 fps, which not all projectors play, so consider delivering at 24 fps instead. Interop at 25 fps plays on fewer still, so deliver it as SMPTE"
+            )
+        );
+        assert!(
+            !frame_rate_not_widely_played(25, false)
+                .unwrap()
+                .contains("SMPTE")
+        );
+        assert!(
+            !frame_rate_not_widely_played(48, true)
+                .unwrap()
+                .contains("SMPTE")
+        );
+    }
+
+    #[test]
+    fn four_k_stereoscopic_warns() {
+        assert_eq!(
+            four_k_stereoscopic(4096, true).as_deref(),
+            Some("DCP is 4K 3D, which only a very limited number of projectors play")
+        );
+    }
+
+    #[test]
+    fn two_k_stereoscopic_and_four_k_monoscopic_are_silent() {
+        assert!(four_k_stereoscopic(2048, true).is_none());
+        assert!(four_k_stereoscopic(4096, false).is_none());
+    }
 
     #[test]
     fn a_frame_under_the_dss200_minimum_warns_with_its_index_and_size() {

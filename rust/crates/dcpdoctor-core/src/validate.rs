@@ -1027,7 +1027,9 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         ) {
             result.add(note);
         }
-        for note in crate::validators::check_playback_compatibility(cpl_path, &id_to_file) {
+        for note in
+            crate::validators::check_playback_compatibility(cpl_path, dcp.standard, &id_to_file)
+        {
             result.add(note);
         }
         for note in crate::validators::check_partial_encryption(cpl_path) {

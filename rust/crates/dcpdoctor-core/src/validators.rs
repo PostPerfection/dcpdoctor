@@ -1018,18 +1018,6 @@ pub fn check_partial_encryption(cpl_path: &Path) -> Vec<Note> {
 
 // ─── Playback compatibility ───────────────────────────────────────────────────
 
-/// Frame rates a DCP can legally declare but that installed projectors do not
-/// all play, with the rate to deliver instead where there is an obvious one.
-/// From DCP-o-matic's pre-encode hints: 25 is better delivered at 24, the
-/// high rates halve, and 30 has no good answer so it only carries a warning.
-const UNSUPPORTED_FRAME_RATES: [(u64, Option<u64>); 5] = [
-    (25, Some(24)),
-    (30, None),
-    (48, Some(24)),
-    (50, Some(25)),
-    (60, Some(30)),
-];
-
 /// Audio channel counts distributors accept without question.
 const EXPECTED_AUDIO_CHANNELS: [u64; 2] = [8, 16];
 
@@ -1039,6 +1027,7 @@ const EXPECTED_AUDIO_CHANNELS: [u64; 2] = [8, 16];
 /// rejection, and that is worth saying before the DCP leaves the building.
 pub fn check_playback_compatibility(
     cpl_path: &Path,
+    standard: Standard,
     id_to_file: &HashMap<String, PathBuf>,
 ) -> Vec<Note> {
     let mut notes = Vec::new();
@@ -1049,28 +1038,23 @@ pub fn check_playback_compatibility(
     let warn = |code: Code, message: String| Note::warning(code, message).with_file(cpl_path);
 
     // one rate for the composition: the reels are already required to agree
-    if let Some((numerator, denominator)) = first_picture_edit_rate(&content) {
-        let rate = numerator / denominator.max(1);
-        if let Some((_, instead)) = UNSUPPORTED_FRAME_RATES.iter().find(|(r, _)| *r == rate) {
-            let advice = match instead {
-                Some(better) => format!(", so consider delivering at {better} fps instead"),
-                None => String::new(),
-            };
-            notes.push(warn(
-                Code::ProjectorFrameRateSupport,
-                format!("DCP is {rate} fps, which not all projectors play{advice}"),
-            ));
-        }
+    if let Some((numerator, denominator)) = first_picture_edit_rate(&content)
+        && let Ok(frames_per_second) = u32::try_from(numerator / denominator.max(1))
+        && let Some(message) = crate::server_compatibility::frame_rate_not_widely_played(
+            frames_per_second,
+            standard == Standard::Interop,
+        )
+    {
+        notes.push(warn(Code::ProjectorFrameRateSupport, message));
     }
 
     // 4K 3D doubles an already-demanding decode; very few projectors manage it
     if let Some(block) = stereoscopic_picture_blocks(&content).first() {
         match asset_file(block, id_to_file).and_then(|path| picture_stored_width(&path)) {
-            Some(width) if width > crate::mxf::TWO_K_MAX_STORED_WIDTH => notes.push(warn(
-                Code::ProjectorFourKStereoSupport,
-                "DCP is 4K 3D, which only a very limited number of projectors play".into(),
-            )),
-            Some(_) => {}
+            Some(width) => notes.extend(
+                crate::server_compatibility::four_k_stereoscopic(width, true)
+                    .map(|message| warn(Code::ProjectorFourKStereoSupport, message)),
+            ),
             None => notes.push(warn(
                 Code::CheckSkipped,
                 "the 4K 3D playback check did not run: the stereoscopic picture essence would not read, so its stored width is unknown".into(),
@@ -5188,7 +5172,7 @@ mod tests {
     }
 
     fn compat_notes(cpl: &Path) -> Vec<Note> {
-        check_playback_compatibility(cpl, &HashMap::new())
+        check_playback_compatibility(cpl, Standard::Smpte, &HashMap::new())
     }
 
     /// A single edit unit of stereoscopic picture essence at the stored size
@@ -5275,7 +5259,7 @@ mod tests {
         let cpl = compat_cpl("24 1", true);
 
         let four_k = stereo_essence(&dir.path().join("four_k.mxf"), 4096, 2160);
-        let notes = check_playback_compatibility(cpl.path(), &four_k);
+        let notes = check_playback_compatibility(cpl.path(), Standard::Smpte, &four_k);
         assert!(
             notes
                 .iter()
@@ -5284,7 +5268,7 @@ mod tests {
         );
 
         let two_k = stereo_essence(&dir.path().join("two_k.mxf"), 2048, 1080);
-        let notes = check_playback_compatibility(cpl.path(), &two_k);
+        let notes = check_playback_compatibility(cpl.path(), Standard::Smpte, &two_k);
         assert!(
             !notes
                 .iter()
@@ -5328,7 +5312,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cpl = compat_cpl("25 1", false);
         let flat = mono_essence(&dir.path().join("flat.mxf"), 1998, 1080);
-        let notes = check_playback_compatibility(cpl.path(), &flat);
+        let notes = check_playback_compatibility(cpl.path(), Standard::Smpte, &flat);
         assert!(
             notes.iter().any(
                 |n| n.code == Code::ProjectorFlatAt25Support && n.severity == Severity::Warning
@@ -5342,7 +5326,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cpl = compat_cpl("48 1", false);
         let four_k = mono_essence(&dir.path().join("four_k.mxf"), 4096, 2160);
-        let notes = check_playback_compatibility(cpl.path(), &four_k);
+        let notes = check_playback_compatibility(cpl.path(), Standard::Smpte, &four_k);
         assert!(
             notes
                 .iter()
@@ -5367,6 +5351,19 @@ mod tests {
                 .iter()
                 .any(|n| n.code == Code::CheckSkipped),
             "at 24 fps neither size check applies, so nothing was skipped"
+        );
+    }
+
+    #[test]
+    fn interop_at_25_fps_is_told_to_deliver_smpte() {
+        let cpl = compat_cpl("25 1", false);
+        let notes = check_playback_compatibility(cpl.path(), Standard::Interop, &HashMap::new());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::ProjectorFrameRateSupport
+                    && n.message.ends_with("so deliver it as SMPTE")),
+            "Interop at 25 fps must be told to deliver SMPTE, got: {notes:?}"
         );
     }
 
