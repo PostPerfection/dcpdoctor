@@ -44,6 +44,7 @@ pub mod report;
 pub mod schema;
 pub mod schema_validate;
 pub mod server;
+pub mod server_compatibility;
 pub mod signature;
 pub mod studio;
 pub mod subtitle;
@@ -156,6 +157,7 @@ pub enum Code {
     PictureSamplesNotRgb,
     J2kBitrateExceeded,
     PictureBitrateMeasured,
+    PictureFrameTooSmall,
     J2kInvalidProfile,
     J2kInvalidComponentCount,
     J2kLegacyFfff,
@@ -207,12 +209,16 @@ pub enum Code {
     SubtitleLanguageMismatch,
     ClosedCaptionCountMismatch,
     SubtitleFontTooLarge,
+    SubtitleFontNotTrueType,
+    SubtitleTopAligned,
     ClosedCaptionInteropOverlap,
     PartiallyEncrypted,
 
     // Playback compatibility
     ProjectorFrameRateSupport,
     ProjectorFourKStereoSupport,
+    ProjectorFlatAt25Support,
+    ProjectorFourKHighFrameRateSupport,
     DistributorAudioChannelCount,
 
     // ISDCF naming
@@ -234,6 +240,7 @@ pub enum Code {
     ReelDiscontinuity,
     ReelIncoherent,
     ReelTooShort,
+    ReelShortForDoremi,
     ReelEditRateMismatch,
     CompositionMetadataAssetMismatch,
 
@@ -258,6 +265,7 @@ pub enum Code {
     ForeignFileInPackage,
     EmptyFileInPackage,
     NonAsciiFilename,
+    UnportableFilename,
 }
 
 impl Code {
@@ -320,6 +328,7 @@ impl Code {
             Code::PictureSamplesNotRgb => "picture_samples_not_rgb",
             Code::J2kBitrateExceeded => "j2k_bitrate_exceeded",
             Code::PictureBitrateMeasured => "picture_bitrate_measured",
+            Code::PictureFrameTooSmall => "picture_frame_too_small",
             Code::J2kInvalidProfile => "j2k_invalid_profile",
             Code::J2kInvalidComponentCount => "j2k_invalid_component_count",
             Code::J2kLegacyFfff => "j2k_legacy_ffff",
@@ -367,10 +376,14 @@ impl Code {
             Code::SubtitleLanguageMismatch => "subtitle_language_mismatch",
             Code::ClosedCaptionCountMismatch => "closed_caption_count_mismatch",
             Code::SubtitleFontTooLarge => "subtitle_font_too_large",
+            Code::SubtitleFontNotTrueType => "subtitle_font_not_true_type",
+            Code::SubtitleTopAligned => "subtitle_top_aligned",
             Code::ClosedCaptionInteropOverlap => "closed_caption_interop_overlap",
             Code::PartiallyEncrypted => "partially_encrypted",
             Code::ProjectorFrameRateSupport => "projector_frame_rate_support",
             Code::ProjectorFourKStereoSupport => "projector_4k_stereo_support",
+            Code::ProjectorFlatAt25Support => "projector_flat_at_25_support",
+            Code::ProjectorFourKHighFrameRateSupport => "projector_4k_high_frame_rate_support",
             Code::DistributorAudioChannelCount => "distributor_audio_channel_count",
             Code::IsdcfNamingViolation => "isdcf_naming_violation",
             Code::NetflixDeliveryViolation => "netflix_delivery_violation",
@@ -384,6 +397,7 @@ impl Code {
             Code::ReelDiscontinuity => "reel_discontinuity",
             Code::ReelIncoherent => "reel_incoherent",
             Code::ReelTooShort => "reel_too_short",
+            Code::ReelShortForDoremi => "reel_short_for_doremi",
             Code::ReelEditRateMismatch => "reel_edit_rate_mismatch",
             Code::CompositionMetadataAssetMismatch => "composition_metadata_asset_mismatch",
             Code::StereoMismatch => "stereo_mismatch",
@@ -396,6 +410,7 @@ impl Code {
             Code::ForeignFileInPackage => "foreign_file_in_package",
             Code::EmptyFileInPackage => "empty_file_in_package",
             Code::NonAsciiFilename => "non_ascii_filename",
+            Code::UnportableFilename => "unportable_filename",
         }
     }
 }

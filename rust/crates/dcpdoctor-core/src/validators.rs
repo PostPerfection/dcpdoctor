@@ -1078,6 +1078,8 @@ pub fn check_playback_compatibility(
         }
     }
 
+    notes.extend(picture_size_and_rate_notes(&content, id_to_file, cpl_path));
+
     if let Some(channels) = first_sound_channel_count_of_cpl(cpl_path, id_to_file)
         && !EXPECTED_AUDIO_CHANNELS.contains(&(channels as u64))
     {
@@ -1090,6 +1092,51 @@ pub fn check_playback_compatibility(
     }
 
     notes
+}
+
+fn picture_size_and_rate_notes(
+    content: &str,
+    id_to_file: &HashMap<String, PathBuf>,
+    cpl_path: &Path,
+) -> Vec<Note> {
+    use crate::server_compatibility::{
+        flat_at_25_fps, four_k_above_30_fps, picture_size_rules_apply,
+    };
+
+    let Some((numerator, denominator)) = first_picture_edit_rate(content) else {
+        return Vec::new();
+    };
+    let Ok(frames_per_second) = u32::try_from(numerator / denominator.max(1)) else {
+        return Vec::new();
+    };
+    if !picture_size_rules_apply(frames_per_second) {
+        return Vec::new();
+    }
+    let warn = |code: Code, message: String| Note::warning(code, message).with_file(cpl_path);
+
+    let picture_path = first_picture_block(content).and_then(|block| asset_file(block, id_to_file));
+    let Some((width, height)) = picture_path.and_then(|path| probe_picture_size(&path)) else {
+        return vec![warn(
+            Code::CheckSkipped,
+            format!(
+                "the Flat and 4K playback checks at {frames_per_second} fps did not run: the picture essence would not read, so its stored size is unknown"
+            ),
+        )];
+    };
+
+    let mut notes = Vec::new();
+    if let Some(message) = flat_at_25_fps(width, height, frames_per_second) {
+        notes.push(warn(Code::ProjectorFlatAt25Support, message));
+    }
+    if let Some(message) = four_k_above_30_fps(width, frames_per_second) {
+        notes.push(warn(Code::ProjectorFourKHighFrameRateSupport, message));
+    }
+    notes
+}
+
+fn first_picture_block(content: &str) -> Option<&str> {
+    let picture_re = regex_lite::Regex::new(PICTURE_TRACK_PATTERN).unwrap();
+    Some(picture_re.captures(content)?.get(1)?.as_str())
 }
 
 /// EditRate of the first picture asset in the composition, whichever track type
@@ -1340,22 +1387,18 @@ fn marker_offset(reel: &str, label: &str) -> Option<u64> {
     None
 }
 
+const PICTURE_TRACK_PATTERN: &str = r"<(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)>";
+
 /// Play duration of a reel's picture track.
 fn reel_picture_duration(reel: &str) -> Option<u64> {
-    let pic_re = regex_lite::Regex::new(
-        r"<(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)>",
-    )
-    .unwrap();
+    let pic_re = regex_lite::Regex::new(PICTURE_TRACK_PATTERN).unwrap();
     let block = pic_re.captures(reel)?.get(1)?.as_str();
     extract_u64(block, "Duration")
 }
 
 /// Picture-track edit rate of a reel, as (num, den).
 fn reel_picture_edit_rate(reel: &str) -> Option<(u64, u64)> {
-    let pic_re = regex_lite::Regex::new(
-        r"<(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)(?:\s[^>]*)?>([\s\S]*?)</(?:[\w-]+:)?(?:MainPicture|MainImage|MainStereoscopicPicture)>",
-    )
-    .unwrap();
+    let pic_re = regex_lite::Regex::new(PICTURE_TRACK_PATTERN).unwrap();
     let block = pic_re.captures(reel)?.get(1)?.as_str();
     extract_rate(block, "EditRate")
 }
@@ -2233,6 +2276,8 @@ struct Placement {
 }
 
 const DEFAULT_VALIGN: &str = "center";
+const TOP_VALIGN: &str = "top";
+const VALIGN_ATTRIBUTE: &str = "valign";
 const DEFAULT_VPOSITION: f64 = 50.0;
 
 /// One `<Subtitle>` cue: its in/out in seconds, one string per `<Text>` line and
@@ -2376,6 +2421,9 @@ fn content_notes(
 
     check_lines(&cues, kind, cpl_path, notes);
     check_durations_and_spacing(&cues, fps, cpl_path, notes);
+    if let TimedTextKind::Subtitle = kind {
+        check_top_aligned(&cues, cpl_path, notes);
+    }
     if let TimedTextKind::ClosedCaption = kind {
         check_ccap_charset(&cues, cpl_path, notes);
         check_ccap_layout(&cues, cpl_path, notes);
@@ -2477,8 +2525,7 @@ fn element_text(xml: &str, name: &str) -> Option<String> {
 
 fn placement_of(e: &quick_xml::events::BytesStart) -> Placement {
     Placement {
-        valign: attr_val(e, "VAlign")
-            .or_else(|| attr_val(e, "Valign"))
+        valign: attr_val_ignoring_case(e, VALIGN_ATTRIBUTE)
             .unwrap_or_else(|| DEFAULT_VALIGN.to_string()),
         vposition: attr_val(e, "VPosition")
             .or_else(|| attr_val(e, "Vposition"))
@@ -2496,6 +2543,32 @@ fn attr_val(e: &quick_xml::events::BytesStart, name: &str) -> Option<String> {
         (a.key.local_name().as_ref() == name.as_bytes())
             .then(|| String::from_utf8_lossy(&a.value).into_owned())
     })
+}
+
+fn attr_val_ignoring_case(e: &quick_xml::events::BytesStart, name: &str) -> Option<String> {
+    e.attributes().flatten().find_map(|a| {
+        a.key
+            .local_name()
+            .as_ref()
+            .eq_ignore_ascii_case(name.as_bytes())
+            .then(|| String::from_utf8_lossy(&a.value).into_owned())
+    })
+}
+
+fn check_top_aligned(cues: &[Cue], cpl: &Path, notes: &mut Vec<Note>) {
+    let earliest_top_aligned = cues
+        .iter()
+        .filter(|cue| {
+            cue.placements
+                .iter()
+                .any(|placement| placement.valign.eq_ignore_ascii_case(TOP_VALIGN))
+        })
+        .min_by(|a, b| a.in_s.total_cmp(&b.in_s));
+    let Some(cue) = earliest_top_aligned else {
+        return;
+    };
+    let message = crate::server_compatibility::top_aligned_subtitle(&format!("{:.3}s", cue.in_s));
+    notes.push(Note::warning(Code::SubtitleTopAligned, message).with_file(cpl));
 }
 
 /// Line-count and line-length checks. Counts unicode scalar values per line.
@@ -2747,21 +2820,8 @@ fn isdcf_doc9_char(c: char) -> bool {
 /// skipped (DoM #2723).
 pub fn check_reel_duration(cpl_path: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
-    let Ok(content) = std::fs::read_to_string(cpl_path) else {
-        return notes;
-    };
-    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
-    for (i, cap) in reel_re.captures_iter(&content).enumerate() {
-        let reel = cap.get(1).unwrap().as_str();
-        let (Some(dur), Some((n, d))) = (reel_picture_duration(reel), reel_picture_edit_rate(reel))
-        else {
-            continue;
-        };
-        if n == 0 {
-            continue;
-        }
-        let seconds = dur as f64 * d as f64 / n as f64;
-        if seconds + 1e-6 < 1.0 {
+    for (i, seconds) in reel_seconds(cpl_path) {
+        if is_under_st_429_7_minimum(seconds) {
             notes.push(
                 Note::warning(
                     Code::ReelTooShort,
@@ -2775,6 +2835,39 @@ pub fn check_reel_duration(cpl_path: &Path) -> Vec<Note> {
         }
     }
     notes
+}
+
+pub fn check_reel_duration_for_doremi(cpl_path: &Path) -> Vec<Note> {
+    reel_seconds(cpl_path)
+        .into_iter()
+        .filter(|(_, seconds)| !is_under_st_429_7_minimum(*seconds))
+        .filter_map(|(i, seconds)| crate::server_compatibility::short_reel(i + 1, seconds))
+        .map(|message| Note::warning(Code::ReelShortForDoremi, message).with_file(cpl_path))
+        .collect()
+}
+
+fn is_under_st_429_7_minimum(seconds: f64) -> bool {
+    seconds + 1e-6 < 1.0
+}
+
+fn reel_seconds(cpl_path: &Path) -> Vec<(usize, f64)> {
+    let Ok(content) = std::fs::read_to_string(cpl_path) else {
+        return Vec::new();
+    };
+    let reel_re = regex_lite::Regex::new(r"<Reel>([\s\S]*?)</Reel>").unwrap();
+    let mut reels = Vec::new();
+    for (i, cap) in reel_re.captures_iter(&content).enumerate() {
+        let reel = cap.get(1).unwrap().as_str();
+        let (Some(dur), Some((n, d))) = (reel_picture_duration(reel), reel_picture_edit_rate(reel))
+        else {
+            continue;
+        };
+        if n == 0 {
+            continue;
+        }
+        reels.push((i, dur as f64 * d as f64 / n as f64));
+    }
+    reels
 }
 
 // ─── Sound Channel Configuration (Bv2.1 §10.3.1) ──────────────────────────────
@@ -2920,16 +3013,19 @@ pub fn check_subtitle_frame_rate(
 pub fn check_non_ascii_names(dcp_dir: &Path) -> Vec<Note> {
     let mut notes = Vec::new();
 
-    if let Some(name) = dcp_dir.file_name().and_then(|n| n.to_str())
-        && !name.is_ascii()
-    {
-        notes.push(
-            Note::warning(
-                Code::NonAsciiFilename,
-                format!("DCP folder name contains non-ASCII characters: {name}"),
-            )
-            .with_file(dcp_dir),
-        );
+    if let Some(name) = dcp_dir.file_name().and_then(|n| n.to_str()) {
+        if !name.is_ascii() {
+            notes.push(
+                Note::warning(
+                    Code::NonAsciiFilename,
+                    format!("DCP folder name contains non-ASCII characters: {name}"),
+                )
+                .with_file(dcp_dir),
+            );
+        } else if let Some(message) = crate::server_compatibility::unportable_dcp_folder_name(name)
+        {
+            notes.push(Note::warning(Code::UnportableFilename, message).with_file(dcp_dir));
+        }
     }
 
     let mut stack = vec![dcp_dir.to_path_buf()];
@@ -2948,6 +3044,8 @@ pub fn check_non_ascii_names(dcp_dir: &Path) -> Vec<Note> {
                     )
                     .with_file(&path),
                 );
+            } else if let Some(message) = crate::server_compatibility::unportable_name(&name) {
+                notes.push(Note::warning(Code::UnportableFilename, message).with_file(&path));
             }
             if path.is_dir() {
                 stack.push(path);
@@ -4018,6 +4116,39 @@ mod tests {
         assert!(content(cpl.path(), &map).is_empty(), "expected clean");
     }
 
+    fn top_aligned_reel() -> String {
+        reel_of(
+            r#"<dcst:Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000"><dcst:Text Valign="top" Vposition="10">Hi</dcst:Text></dcst:Subtitle>"#,
+        )
+    }
+
+    #[test]
+    fn top_aligned_subtitle_warns_once_with_its_time() {
+        let (cpl, _d, map) = tt_case("MainSubtitle", &top_aligned_reel());
+        let notes = content(cpl.path(), &map);
+        let top_aligned: Vec<_> = notes
+            .iter()
+            .filter(|n| n.code == Code::SubtitleTopAligned)
+            .collect();
+        assert_eq!(top_aligned.len(), 1, "got: {notes:?}");
+        assert!(
+            top_aligned[0].message.starts_with("A subtitle at 5.000s"),
+            "got: {}",
+            top_aligned[0].message
+        );
+    }
+
+    #[test]
+    fn top_aligned_closed_caption_does_not_warn() {
+        let (cpl, _d, map) = tt_case("ClosedCaption", &top_aligned_reel());
+        assert!(
+            !content(cpl.path(), &map)
+                .iter()
+                .any(|n| n.code == Code::SubtitleTopAligned),
+            "the rule is for open subtitles only"
+        );
+    }
+
     #[test]
     fn subtitle_more_than_three_lines_warns() {
         let xml = reel_of(&cue("00:00:05:000", "00:00:07:000", &["a", "b", "c", "d"]));
@@ -4296,6 +4427,24 @@ mod tests {
         assert!(check_reel_duration(boundary.path()).is_empty());
     }
 
+    #[test]
+    fn a_reel_under_five_seconds_warns_for_doremi_but_one_under_a_second_does_not() {
+        // 72 frames at 24 fps = 3 s
+        let three_seconds = write_cpl(&reel_dur_cpl(72, "24 1"));
+        assert!(
+            check_reel_duration_for_doremi(three_seconds.path())
+                .iter()
+                .any(|n| n.code == Code::ReelShortForDoremi
+                    && n.message.starts_with("Reel 1 is 3.00s")),
+            "a three-second reel must warn"
+        );
+        let half_second = write_cpl(&reel_dur_cpl(12, "24 1"));
+        assert!(
+            check_reel_duration_for_doremi(half_second.path()).is_empty(),
+            "a reel under a second keeps only the ST 429-7 warning"
+        );
+    }
+
     // ─── Subtitle frame rate (ST 428-7 §5.9) ───────────────────────────────
 
     #[test]
@@ -4353,6 +4502,26 @@ mod tests {
         assert!(
             !notes.iter().any(|n| n.message.contains("plain.xml")),
             "ASCII file name must not be flagged"
+        );
+    }
+
+    #[test]
+    fn a_name_with_a_space_is_unportable_and_a_non_ascii_name_is_only_non_ascii() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("my reel.mxf"), b"x").unwrap();
+        std::fs::write(dir.path().join("café.xml"), b"x").unwrap();
+        let notes = check_non_ascii_names(dir.path());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::UnportableFilename && n.message.ends_with(": my reel.mxf")),
+            "a space must be flagged, got: {notes:?}"
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.code == Code::UnportableFilename && n.message.contains("café")),
+            "a non-ASCII name keeps only the non-ASCII warning, got: {notes:?}"
         );
     }
 
@@ -5121,6 +5290,83 @@ mod tests {
                 .iter()
                 .any(|n| n.code == Code::ProjectorFourKStereoSupport),
             "2K 3D is ordinary, got: {notes:?}"
+        );
+    }
+
+    fn mono_essence(path: &Path, width: u32, height: u32) -> HashMap<String, PathBuf> {
+        use asdcplib::jp2k::{MxfWriter, PictureDescriptor};
+        use asdcplib::{LabelSet, Rational, WriterInfo};
+
+        let info = WriterInfo {
+            asset_uuid: [9; 16],
+            label_set: LabelSet::Smpte,
+            ..Default::default()
+        };
+        let desc = PictureDescriptor {
+            edit_rate: Rational::new(24, 1),
+            sample_rate: Rational::new(24, 1),
+            stored_width: width,
+            stored_height: height,
+            aspect_ratio: Rational::new(width as i32, height as i32),
+            container_duration: 1,
+            codestream: crate::codestream_fixtures::cinema_2k(),
+        };
+        let mut writer = MxfWriter::new();
+        writer
+            .open_write(path.to_str().unwrap(), &info, &desc, 16_384)
+            .unwrap();
+        writer
+            .write_frame(&[0xFF, 0x4F, 0xFF, 0x93, 0, 0, 0, 0], None, None)
+            .unwrap();
+        writer.finalize().unwrap();
+
+        HashMap::from([(COMPAT_PICTURE_ID.to_string(), path.to_path_buf())])
+    }
+
+    #[test]
+    fn flat_picture_at_25_fps_warns_for_the_gdc_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let cpl = compat_cpl("25 1", false);
+        let flat = mono_essence(&dir.path().join("flat.mxf"), 1998, 1080);
+        let notes = check_playback_compatibility(cpl.path(), &flat);
+        assert!(
+            notes.iter().any(
+                |n| n.code == Code::ProjectorFlatAt25Support && n.severity == Severity::Warning
+            ),
+            "Flat at 25 fps must warn, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn four_k_picture_above_30_fps_warns_for_the_doremi_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let cpl = compat_cpl("48 1", false);
+        let four_k = mono_essence(&dir.path().join("four_k.mxf"), 4096, 2160);
+        let notes = check_playback_compatibility(cpl.path(), &four_k);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::ProjectorFourKHighFrameRateSupport
+                    && n.severity == Severity::Warning
+                    && n.message.contains("48 fps")),
+            "4K at 48 fps must warn, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn picture_essence_that_will_not_read_at_25_fps_says_the_size_checks_did_not_run() {
+        let notes = compat_notes(compat_cpl("25 1", false).path());
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::CheckSkipped && n.message.contains("Flat and 4K")),
+            "an unreadable picture at 25 fps must say the size checks did not run, got: {notes:?}"
+        );
+        assert!(
+            !compat_notes(compat_cpl("24 1", false).path())
+                .iter()
+                .any(|n| n.code == Code::CheckSkipped),
+            "at 24 fps neither size check applies, so nothing was skipped"
         );
     }
 

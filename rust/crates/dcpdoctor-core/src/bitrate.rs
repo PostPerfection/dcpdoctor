@@ -24,8 +24,25 @@ const NEAR_LIMIT_FRACTION: f64 = 0.95;
 /// measurement note leaves it alone.
 pub const NO_CONTENT_KEY_ERROR: &str = "Encrypted essence with no content key";
 
-/// Frame-level bitrate statistics for a picture MXF (postkit's reader output).
-pub type FrameBitrateStats = postkit::j2k::MxfBitrateStats;
+#[derive(Debug, Clone, Default)]
+pub struct FrameBitrateStats {
+    pub valid: bool,
+    pub error: String,
+    pub frame_count: u32,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: f64,
+    pub total_bytes: u64,
+    pub min_frame_bytes: u64,
+    pub max_frame_bytes: u64,
+    pub max_frame_index: u32,
+    // one eye of a stereoscopic edit unit
+    pub smallest_eye_frame_bytes: u64,
+    pub smallest_eye_frame_index: u32,
+    pub avg_bitrate_mbps: f64,
+    pub min_bitrate_mbps: f64,
+    pub max_bitrate_mbps: f64,
+}
 
 /// Measure per-frame bitrate of a picture MXF by reading every frame, decrypting
 /// with `keys` where the essence is encrypted. Encrypted essence with no covering
@@ -99,10 +116,13 @@ fn measure_frames(
     let eyes = reader.eyes();
     let mut buffer = vec![0u8; FRAME_BUFFER_BYTES];
     let mut min_frame_bytes = u64::MAX;
+    let mut smallest_eye_frame_bytes = u64::MAX;
+    let mut smallest_eye_frame_index = 0u32;
     let mut frames_read = 0u32;
 
     'edit_units: for index in 0..descriptor.container_duration {
         let mut frame_bytes = 0u64;
+        let mut smallest_eye_bytes = u64::MAX;
         for &eye in eyes {
             let (dec, hmac) = match contexts.as_mut() {
                 Some(contexts) => (Some(&mut contexts.dec), Some(&mut contexts.hmac)),
@@ -112,6 +132,11 @@ fn measure_frames(
                 break 'edit_units;
             };
             frame_bytes += read as u64;
+            smallest_eye_bytes = smallest_eye_bytes.min(read as u64);
+        }
+        if smallest_eye_bytes < smallest_eye_frame_bytes {
+            smallest_eye_frame_bytes = smallest_eye_bytes;
+            smallest_eye_frame_index = index;
         }
         stats.total_bytes += frame_bytes;
         if frame_bytes > stats.max_frame_bytes {
@@ -130,6 +155,8 @@ fn measure_frames(
     let megabits_per_second = |bytes: f64| bytes * 8.0 * stats.frame_rate / 1_000_000.0;
     stats.frame_count = frames_read;
     stats.min_frame_bytes = min_frame_bytes;
+    stats.smallest_eye_frame_bytes = smallest_eye_frame_bytes;
+    stats.smallest_eye_frame_index = smallest_eye_frame_index;
     stats.avg_bitrate_mbps = megabits_per_second(stats.total_bytes as f64 / frames_read as f64);
     stats.min_bitrate_mbps = megabits_per_second(min_frame_bytes as f64);
     stats.max_bitrate_mbps = megabits_per_second(stats.max_frame_bytes as f64);
@@ -173,6 +200,13 @@ pub fn check_bitrate_compliance(stats: &FrameBitrateStats, mxf_path: &Path) -> V
             )
             .with_file(mxf_path),
         );
+    }
+
+    if let Some(message) = crate::server_compatibility::small_frame(
+        stats.smallest_eye_frame_index,
+        stats.smallest_eye_frame_bytes,
+    ) {
+        notes.push(Note::warning(Code::PictureFrameTooSmall, message).with_file(mxf_path));
     }
 
     notes
@@ -497,6 +531,47 @@ mod tests {
         let measured = measure(&readable);
         assert!(measured.valid, "measurement failed: {}", measured.error);
         assert!(skipped_measurement_note(&measured, &readable).is_none());
+    }
+
+    #[test]
+    fn a_frame_under_the_dss200_minimum_warns_with_its_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_black_frame.mxf");
+        let frame_sizes = [100_000, 900, 100_000];
+        let mut descriptor = descriptor(2048, 1080);
+        descriptor.container_duration = frame_sizes.len() as u32;
+        let mut writer = MxfWriter::new();
+        writer
+            .open_write(path.to_str().unwrap(), &writer_info(), &descriptor, 16384)
+            .unwrap();
+        for size in frame_sizes {
+            writer.write_frame(&vec![0u8; size], None, None).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let notes = check_bitrate_compliance(&measure(&path), &path);
+        assert!(
+            notes.iter().any(|n| n.code == Code::PictureFrameTooSmall
+                && n.severity == crate::Severity::Warning
+                && n.message.starts_with("Frame 1 is 900 bytes")),
+            "got: {notes:?}"
+        );
+    }
+
+    // each eye is a frame of its own
+    #[test]
+    fn a_stereoscopic_eye_under_the_dss200_minimum_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("picture_3d_small.mxf");
+        write_stereo_mxf(&path, 10_000);
+
+        let notes = check_bitrate_compliance(&measure(&path), &path);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::PictureFrameTooSmall && n.message.contains("10000 bytes")),
+            "got: {notes:?}"
+        );
     }
 
     // 1_000_000 bytes per frame at 24 fps is 192 Mb/s, under the limit at any

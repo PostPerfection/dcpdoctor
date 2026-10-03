@@ -900,17 +900,7 @@ fn parse_urn_uuid(urn: &str) -> Option<[u8; 16]> {
     Some(out)
 }
 
-/// Parse a subtitle document and warn on any used code point missing from its
-/// resolved font. `resolve_font` hands back the font's raw bytes (from disk for
-/// plain XML, from the MXF for wrapped subs); a used font that does not resolve
-/// or does not parse is reported, since its code points went unchecked.
-fn glyph_notes(
-    xml: &str,
-    file: &Path,
-    resolve_font: impl Fn(&FontDecl) -> Option<Vec<u8>>,
-) -> Vec<Note> {
-    use skrifa::{FontRef, MetadataProvider};
-
+fn scan_glyphs(xml: &str) -> GlyphScan {
     let mut reader = Reader::from_str(xml);
     let mut scan = GlyphScan::default();
     loop {
@@ -929,6 +919,27 @@ fn glyph_notes(
             _ => {}
         }
     }
+    scan
+}
+
+pub fn declared_fonts(xml: &str) -> Vec<FontDecl> {
+    let mut fonts: Vec<FontDecl> = scan_glyphs(xml).fonts.into_values().collect();
+    fonts.sort_by(|a, b| a.id.cmp(&b.id));
+    fonts
+}
+
+/// Parse a subtitle document and warn on any used code point missing from its
+/// resolved font. `resolve_font` hands back the font's raw bytes (from disk for
+/// plain XML, from the MXF for wrapped subs); a used font that does not resolve
+/// or does not parse is reported, since its code points went unchecked.
+fn glyph_notes(
+    xml: &str,
+    file: &Path,
+    resolve_font: impl Fn(&FontDecl) -> Option<Vec<u8>>,
+) -> Vec<Note> {
+    use skrifa::{FontRef, MetadataProvider};
+
+    let scan = scan_glyphs(xml);
 
     // load and cache each resolvable font's byte data once
     let mut font_bytes: HashMap<String, Option<Vec<u8>>> = HashMap::new();

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **`validate` warns about packages named cinema servers have trouble playing**: a picture frame under 16384 bytes, which crashes a Dolby DSS200 (`picture_frame_too_small`, measured per eye on 3D and skipped with the bitrate measurement), a reel of at least 1s and under 5s, which a Doremi server can stop on (`reel_short_for_doremi`), a Flat picture at 25 fps, which a GDC SX-2001 will not play (`projector_flat_at_25_support`), 4K above 30 fps, which a Doremi plays only up to 30 fps (`projector_4k_high_frame_rate_support`), a top-aligned subtitle `Text`, which servers place by its baseline (`subtitle_top_aligned`), a subtitle font that is not TrueType, which some distributor QC rejects (`subtitle_font_not_true_type`), and a file or folder name with characters other than letters, digits, `.`, `_` and `-` (`unportable_filename`). Each is a warning. The rules and their wording are in the public `server_compatibility` module.
+
 ## [1.4.0] - 2026-10-02
 
 ### Added

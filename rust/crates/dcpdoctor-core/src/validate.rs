@@ -353,8 +353,32 @@ impl TimedTextContext<'_> {
                 &path,
                 self.standard,
             ));
+            if is_xml {
+                notes.extend(self.loose_font_notes(&path, &xml));
+            }
         }
         notes.extend(glyph_notes);
+        notes
+    }
+
+    fn loose_font_notes(&self, subtitle_path: &Path, xml: &str) -> Vec<Note> {
+        let mut notes = Vec::new();
+        for declaration in crate::subtitle::declared_fonts(xml) {
+            let Some(font_path) = self.resolve_font(subtitle_path, &declaration) else {
+                continue;
+            };
+            let Ok(font_data) = std::fs::read(&font_path) else {
+                continue;
+            };
+            let font_name = font_path.file_name().unwrap_or_default().to_string_lossy();
+            if let Some(message) =
+                crate::server_compatibility::font_not_true_type(&font_name, &font_data)
+            {
+                notes.push(
+                    Note::warning(Code::SubtitleFontNotTrueType, message).with_file(&font_path),
+                );
+            }
+        }
         notes
     }
 
@@ -397,6 +421,17 @@ impl TimedTextContext<'_> {
                 )
                 .with_file(path),
             );
+        }
+
+        let mut embedded_fonts: Vec<_> = wrapped.fonts.iter().collect();
+        embedded_fonts.sort_by_key(|(resource_id, _)| **resource_id);
+        for (resource_id, font_data) in embedded_fonts {
+            if let Some(message) = crate::server_compatibility::font_not_true_type(
+                &format_uuid(resource_id),
+                font_data,
+            ) {
+                notes.push(Note::warning(Code::SubtitleFontNotTrueType, message).with_file(path));
+            }
         }
 
         // ST 429-5: the descriptor's ResourceID names the document inside, and
@@ -1020,6 +1055,9 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             result.add(note);
         }
         for note in crate::validators::check_reel_duration(cpl_path) {
+            result.add(note);
+        }
+        for note in crate::validators::check_reel_duration_for_doremi(cpl_path) {
             result.add(note);
         }
         for note in crate::validators::check_sound_channel_configuration(
@@ -2490,6 +2528,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_embedded_open_type_cff_font_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::subtitle::tests::write_mxf(dir.path(), FIXTURE_DOCUMENT, None);
+        let wrapped = read_fixture(&path);
+        let with_cff_font = crate::subtitle::WrappedTimedText {
+            fonts: HashMap::from([([0xAB; 16], b"OTTO\x00\x0a".to_vec())]),
+            ..wrapped
+        };
+        let package = LoneAsset::new();
+        let notes = package.context(dir.path()).wrapped_asset_notes(
+            &with_cff_font,
+            &matching_reel_asset(),
+            TimedTextKind::Subtitle,
+            &path,
+        );
+        assert!(
+            notes.iter().any(|n| n.code == Code::SubtitleFontNotTrueType
+                && n.severity == Severity::Warning
+                && n.message.contains("abababab-abab-abab-abab-abababababab")),
+            "an embedded OpenType CFF font must warn, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_interop_font_file_that_is_not_true_type_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = OneAssetPackage::new(CAPTION_FILE);
+        std::fs::write(
+            dir.path().join(CAPTION_FILE),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<DCSubtitle Version="1.0">
+  <SubtitleID>22222222-2222-3333-4444-555555555555</SubtitleID>
+  <LoadFont Id="f" URI="font.otf"/>
+  <Font Id="f">
+    <Subtitle SpotNumber="1" TimeIn="00:00:05:000" TimeOut="00:00:07:000">
+      <Text VAlign="bottom" VPosition="10">Hi</Text>
+    </Subtitle>
+  </Font>
+</DCSubtitle>"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("font.otf"), b"OTTO\x00\x0a").unwrap();
+
+        let notes = package.notes(dir.path(), TimedTextKind::Subtitle);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.code == Code::SubtitleFontNotTrueType && n.message.contains("font.otf")),
+            "an OpenType CFF font file must warn, got: {notes:?}"
+        );
+    }
+
     // SMPTE ST 428-7 carries the font asset id as the LoadFont element text, and
     // the ASSETMAP ids it resolves against are stored with urn:uuid: stripped.
     #[test]
@@ -2672,6 +2763,57 @@ mod tests {
                 .iter()
                 .any(|n| n.code == Code::NonAsciiFilename),
             "expected NonAsciiFilename, got: {:?}",
+            result.notes
+        );
+    }
+
+    #[test]
+    fn a_short_reel_and_a_name_with_a_space_surface_from_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ASSETMAP.xml"),
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+      <ChunkList><Chunk><Path>cpl.xml</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#,
+        )
+        .unwrap();
+        // 72 frames at 24 fps = 3 s
+        std::fs::write(
+            dir.path().join("cpl.xml"),
+            r#"<?xml version="1.0"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <Id>urn:uuid:cccccccc-0000-0000-0000-000000000000</Id>
+  <ContentTitleText>t</ContentTitleText>
+  <ReelList><Reel><Id>urn:uuid:b353da2a-703e-4d3f-8fcd-659930713ece</Id>
+    <AssetList>
+      <MainPicture><Id>urn:uuid:f76deec8-ab85-4f05-973d-089b67a55e5f</Id><EditRate>24 1</EditRate><Duration>72</Duration></MainPicture>
+    </AssetList>
+  </Reel></ReelList>
+</CompositionPlaylist>"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("read me.txt"), b"x").unwrap();
+
+        let result = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::ReelShortForDoremi),
+            "expected ReelShortForDoremi, got: {:?}",
+            result.notes
+        );
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|n| n.code == Code::UnportableFilename),
+            "expected UnportableFilename, got: {:?}",
             result.notes
         );
     }
