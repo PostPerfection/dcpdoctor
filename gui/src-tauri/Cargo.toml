@@ -18,3 +18,4 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+guikit-startup = { git = "https://github.com/PostPerfection/guikit.git", rev = "549b213fa9c844fcf6564d51c34aa8fb5cd327ca" }

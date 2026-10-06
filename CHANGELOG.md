@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **The desktop app no longer freezes on an NVIDIA GPU under Wayland**: on Linux with an NVIDIA GPU the app sets `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` before its window opens, so WebKitGTK hands its frames to the compositor in shared memory instead of DMA-BUF. Setting that variable, `WEBKIT_DISABLE_DMABUF_RENDERER` or `WEBKIT_DISABLE_COMPOSITING_MODE` yourself turns this off. Started from a terminal, the app also leaves the terminal usable after it exits.
+
 ### Added
 - **`validate` warns about packages named cinema servers have trouble playing**: a picture frame under 16384 bytes, which crashes a Dolby DSS200 (`picture_frame_too_small`, measured per eye on 3D and skipped with the bitrate measurement), a reel of at least 1s and under 5s, which a Doremi server can stop on (`reel_short_for_doremi`), a Flat picture at 25 fps, which a GDC SX-2001 will not play (`projector_flat_at_25_support`), 4K above 30 fps, which a Doremi plays only up to 30 fps (`projector_4k_high_frame_rate_support`), a top-aligned subtitle `Text`, which servers place by its baseline (`subtitle_top_aligned`), a subtitle font that is not TrueType, which some distributor QC rejects (`subtitle_font_not_true_type`), and a file or folder name with characters other than letters, digits, `.`, `_` and `-` (`unportable_filename`). Each is a warning. The rules and their wording are in the public `server_compatibility` module. The frame rate (`projector_frame_rate_support`), 4K 3D (`projector_4k_stereo_support`) and sound channel count (`distributor_audio_channel_count`) rules moved there too. An Interop package at 25 fps is now also told to deliver it as SMPTE, and the channel count message starts `Sound has` where it started `sound has`.
 

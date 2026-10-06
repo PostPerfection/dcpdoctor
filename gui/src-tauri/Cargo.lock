@@ -503,6 +503,7 @@ dependencies = [
 name = "dcpdoctor-gui"
 version = "1.4.0"
 dependencies = [
+ "guikit-startup",
  "serde",
  "serde_json",
  "tauri",
@@ -1198,6 +1199,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "guikit-startup"
+version = "0.1.0"
+source = "git+https://github.com/PostPerfection/guikit.git?rev=549b213fa9c844fcf6564d51c34aa8fb5cd327ca#549b213fa9c844fcf6564d51c34aa8fb5cd327ca"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
