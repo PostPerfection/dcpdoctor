@@ -556,7 +556,30 @@ impl VerifyResult {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyStage {
+    // bytes of the PKL assets read for their SHA-1
+    HashCheck,
+    // edit units of one picture track file
+    FrameScan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifyProgress {
+    pub stage: VerifyStage,
+    pub done: u64,
+    pub total: u64,
+}
+
 /// Verify a DCP at the given path.
 pub fn verify(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
-    validate::verify_dcp(dcp_dir, opts)
+    verify_with_progress(dcp_dir, opts, &mut |_| {})
+}
+
+pub fn verify_with_progress(
+    dcp_dir: &Path,
+    opts: &VerifyOptions,
+    progress: &mut dyn FnMut(VerifyProgress),
+) -> VerifyResult {
+    validate::verify_dcp_with_progress(dcp_dir, opts, progress)
 }

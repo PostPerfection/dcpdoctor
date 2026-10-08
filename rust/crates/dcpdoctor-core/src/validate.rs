@@ -3,8 +3,8 @@ use std::path::Path;
 
 use crate::assetmap::ParseXmlFile;
 use crate::dcp;
-use crate::hash::sha1_base64;
-use crate::{Code, Note, Severity, VerifyOptions, VerifyResult};
+use crate::hash::sha1_base64_with_progress;
+use crate::{Code, Note, Severity, VerifyOptions, VerifyProgress, VerifyResult, VerifyStage};
 
 /// Picture sizes a DCP may carry, as (width, height). The coded sizes are the
 /// DCI/ST 428-1 flat and scope images (what libdcp's verify accepts); the full
@@ -559,6 +559,7 @@ fn check_pkl_asset_files(
     id_to_path: &HashMap<&str, &str>,
     opts: &VerifyOptions,
     result: &mut VerifyResult,
+    progress: &mut dyn FnMut(VerifyProgress),
 ) {
     if pkl.assets_without_id > 0 {
         result.add(
@@ -612,6 +613,7 @@ fn check_pkl_asset_files(
     if !opts.check_hashes {
         return;
     }
+    let mut to_hash = Vec::new();
     for pkl_asset in &pkl.assets {
         let Some(&asset_path) = id_to_path.get(pkl_asset.id.as_str()) else {
             result.add(Note {
@@ -627,7 +629,31 @@ fn check_pkl_asset_files(
         if !full_path.exists() || pkl_asset.hash.is_empty() {
             continue;
         }
-        match sha1_base64(&full_path) {
+        to_hash.push((pkl_asset, asset_path, full_path));
+    }
+    if to_hash.is_empty() {
+        return;
+    }
+    let total = to_hash
+        .iter()
+        .filter_map(|(_, _, full_path)| std::fs::metadata(full_path).ok())
+        .map(|meta| meta.len())
+        .sum();
+    let mut done = 0;
+    let mut report = |done| {
+        progress(VerifyProgress {
+            stage: VerifyStage::HashCheck,
+            done,
+            total,
+        })
+    };
+    report(done);
+    for (pkl_asset, asset_path, full_path) in to_hash {
+        let hashed = sha1_base64_with_progress(&full_path, &mut |read| {
+            done += read;
+            report(done);
+        });
+        match hashed {
             Ok(computed) if computed != pkl_asset.hash => {
                 result.add(Note {
                     severity: Severity::Error,
@@ -650,8 +676,16 @@ fn check_pkl_asset_files(
 
 /// Verify a DCP at the given path.
 pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
+    verify_dcp_with_progress(dcp_dir, opts, &mut |_| {})
+}
+
+pub fn verify_dcp_with_progress(
+    dcp_dir: &Path,
+    opts: &VerifyOptions,
+    progress: &mut dyn FnMut(VerifyProgress),
+) -> VerifyResult {
     if crate::imf::is_imf_package(dcp_dir) {
-        return verify_imp(dcp_dir, opts);
+        return verify_imp(dcp_dir, opts, progress);
     }
 
     let mut result = VerifyResult::default();
@@ -758,7 +792,15 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
         for note in check_pkl_annotation_text(pkl_path, pkl, &dcp.cpls, dcp.standard) {
             result.add(note);
         }
-        check_pkl_asset_files(dcp_dir, pkl_path, pkl, &id_to_path, opts, &mut result);
+        check_pkl_asset_files(
+            dcp_dir,
+            pkl_path,
+            pkl,
+            &id_to_path,
+            opts,
+            &mut result,
+            progress,
+        );
     }
 
     // 4. Validate CPLs
@@ -1138,12 +1180,14 @@ pub fn verify_dcp(dcp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
             // Codestream checks on picture essence: 0xFFFF legacy constraint
             // (SMPTE Cat. 862) and ISO 15444-1 cinema profile constraints.
             if mxf_info.picture.is_some() {
-                let (codestream_notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
-                    &full_path,
-                    &content_keys,
-                    crate::j2k::PictureEssenceFamily::Cinema,
-                    opts.scan_every_frame,
-                );
+                let (codestream_notes, _forensics) =
+                    crate::j2k::check_picture_j2k_mxf_with_progress(
+                        &full_path,
+                        &content_keys,
+                        crate::j2k::PictureEssenceFamily::Cinema,
+                        opts.scan_every_frame,
+                        progress,
+                    );
                 for note in codestream_notes {
                     result.add(note);
                 }
@@ -1334,7 +1378,12 @@ fn dcp_asset_ids(dir: &Path) -> HashSet<String> {
 
 /// The file-level checks the DCP path runs, for an IMP: every ASSETMAP-listed
 /// file present, and every PKL asset's size and hash matching the bytes on disk.
-fn check_imp_files(imp_dir: &Path, opts: &VerifyOptions, result: &mut VerifyResult) {
+fn check_imp_files(
+    imp_dir: &Path,
+    opts: &VerifyOptions,
+    result: &mut VerifyResult,
+    progress: &mut dyn FnMut(VerifyProgress),
+) {
     let assetmap_path = imp_dir.join(IMP_ASSETMAP_NAME);
     let assetmap = match crate::assetmap::AssetMap::parse(&assetmap_path) {
         Some(assetmap) => assetmap,
@@ -1368,14 +1417,26 @@ fn check_imp_files(imp_dir: &Path, opts: &VerifyOptions, result: &mut VerifyResu
         .map(|asset| (asset.id.as_str(), asset.path.as_str()))
         .collect();
     for (pkl_path, pkl) in crate::imf::read_pkls(imp_dir) {
-        check_pkl_asset_files(imp_dir, &pkl_path, &pkl, &id_to_path, opts, result);
+        check_pkl_asset_files(
+            imp_dir,
+            &pkl_path,
+            &pkl,
+            &id_to_path,
+            opts,
+            result,
+            progress,
+        );
     }
 }
 
 /// ST 429-9 names an IMP's asset map, unlike a DCP's, with the extension.
 const IMP_ASSETMAP_NAME: &str = "ASSETMAP.xml";
 
-fn verify_imp(imp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
+fn verify_imp(
+    imp_dir: &Path,
+    opts: &VerifyOptions,
+    progress: &mut dyn FnMut(VerifyProgress),
+) -> VerifyResult {
     let mut result = VerifyResult {
         standard: crate::Standard::Smpte,
         ..Default::default()
@@ -1386,17 +1447,18 @@ fn verify_imp(imp_dir: &Path, opts: &VerifyOptions) -> VerifyResult {
     let content_keys = build_content_keys(imp_dir, opts, &mut result);
 
     // Native IMF validation works everywhere including WASM.
-    for note in crate::imf::validate_imp(
+    for note in crate::imf::validate_imp_with_progress(
         imp_dir,
         opts.ov.as_deref(),
         opts.check_picture_details,
         opts.scan_every_frame,
         &content_keys,
+        progress,
     ) {
         result.add(note);
     }
 
-    check_imp_files(imp_dir, opts, &mut result);
+    check_imp_files(imp_dir, opts, &mut result, progress);
 
     // Photon adds deep IMF conformance checks.
     match crate::photon::run_photon(imp_dir, opts.photon.as_deref()) {
@@ -1541,6 +1603,66 @@ mod tests {
                 .any(|n| n.code == Code::CplPklHashMismatch && n.message.contains("sound")),
             "the untouched sound asset must stay silent, got: {:?}",
             result.notes
+        );
+    }
+
+    // the IntrinsicDuration of the committed package's picture
+    const SMPTE_PACKAGE_PICTURE_FRAMES: u64 = 48;
+
+    fn progress_reports(opts: &VerifyOptions) -> Vec<VerifyProgress> {
+        let mut reports = Vec::new();
+        crate::verify_with_progress(&smpte_package_dir(), opts, &mut |report| {
+            reports.push(report)
+        });
+        reports
+    }
+
+    fn last_of(reports: &[VerifyProgress], stage: VerifyStage) -> VerifyProgress {
+        *reports
+            .iter()
+            .rfind(|report| report.stage == stage)
+            .unwrap_or_else(|| panic!("no {stage:?} report in {reports:?}"))
+    }
+
+    #[test]
+    fn the_hash_check_reports_every_byte_it_reads() {
+        let reports = progress_reports(&VerifyOptions {
+            check_hashes: true,
+            ..VerifyOptions::default()
+        });
+        let package_bytes: u64 = ["cpl.xml", "picture.mxf", "sound.mxf"]
+            .iter()
+            .map(|file| {
+                std::fs::metadata(smpte_package_dir().join(file))
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+
+        let last = last_of(&reports, VerifyStage::HashCheck);
+        assert_eq!(last.total, package_bytes);
+        assert_eq!(last.done, last.total);
+        assert!(
+            !reports.iter().any(|r| r.stage == VerifyStage::FrameScan),
+            "the picture checks were off, so no frame was scanned: {reports:?}"
+        );
+    }
+
+    #[test]
+    fn the_frame_scan_reports_every_frame_it_reads() {
+        let reports = progress_reports(&VerifyOptions {
+            check_hashes: false,
+            check_picture_details: true,
+            scan_every_frame: true,
+            ..VerifyOptions::default()
+        });
+
+        let last = last_of(&reports, VerifyStage::FrameScan);
+        assert_eq!(last.total, SMPTE_PACKAGE_PICTURE_FRAMES);
+        assert_eq!(last.done, last.total);
+        assert!(
+            !reports.iter().any(|r| r.stage == VerifyStage::HashCheck),
+            "the hash check was off, so no byte was hashed: {reports:?}"
         );
     }
 
@@ -3179,7 +3301,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         imp_fixture::write_imp(dir.path());
         mutate(dir.path());
-        verify_imp(dir.path(), &VerifyOptions::standard())
+        verify_imp(dir.path(), &VerifyOptions::standard(), &mut |_| {})
     }
 
     /// The error-level note of `code` naming `names`, which is what turns the
@@ -3282,6 +3404,7 @@ mod tests {
                 scan_every_frame: false,
                 ..VerifyOptions::standard()
             },
+            &mut |_| {},
         );
         let note = error_note_with(&result, Code::XmlSchemaViolation, "cvc-complex-type");
         assert!(note.message.starts_with("[Photon]"), "{}", note.message);
@@ -3307,7 +3430,7 @@ mod tests {
             scan_every_frame: false,
             ..VerifyOptions::standard()
         };
-        let result = verify_imp(dir.path(), &opts);
+        let result = verify_imp(dir.path(), &opts, &mut |_| {});
         let note = result
             .notes
             .iter()
@@ -3335,7 +3458,7 @@ mod tests {
             check_hashes: false,
             ..VerifyOptions::standard()
         };
-        let result = verify_imp(dir.path(), &opts);
+        let result = verify_imp(dir.path(), &opts, &mut |_| {});
         assert!(
             !result.notes.iter().any(|n| n.code == Code::PklHashMismatch),
             "--no-hashes must skip the hashing, got: {:?}",

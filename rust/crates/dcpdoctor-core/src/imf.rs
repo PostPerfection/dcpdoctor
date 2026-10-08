@@ -127,7 +127,30 @@ pub fn validate_imp(
     scan_every_frame: bool,
     keys: &crate::kdm::ContentKeys,
 ) -> Vec<Note> {
+    validate_imp_with_progress(
+        imp_dir,
+        ov_dir,
+        check_picture_details,
+        scan_every_frame,
+        keys,
+        &mut |_| {},
+    )
+}
+
+pub fn validate_imp_with_progress(
+    imp_dir: &Path,
+    ov_dir: Option<&Path>,
+    check_picture_details: bool,
+    scan_every_frame: bool,
+    keys: &crate::kdm::ContentKeys,
+    progress: &mut dyn FnMut(crate::VerifyProgress),
+) -> Vec<Note> {
     let mut notes = Vec::new();
+    let picture_checks = PictureCheckOptions {
+        check_picture_details,
+        scan_every_frame,
+        keys,
+    };
 
     // Asset ids available in the OV package (its ASSETMAP is authoritative for
     // physically-present track files).
@@ -224,10 +247,9 @@ pub fn validate_imp(
             &cpl,
             imp_dir,
             cpl_path,
-            check_picture_details,
-            scan_every_frame,
-            keys,
+            &picture_checks,
             &mut notes,
+            progress,
         );
 
         // TTML subtitle tracks (filesystem)
@@ -322,14 +344,19 @@ fn validate_track_file_refs(
     }
 }
 
+struct PictureCheckOptions<'a> {
+    check_picture_details: bool,
+    scan_every_frame: bool,
+    keys: &'a crate::kdm::ContentKeys,
+}
+
 fn validate_essence_descriptors(
     cpl: &ImfCpl,
     imp_dir: &Path,
     cpl_path: &Path,
-    check_picture_details: bool,
-    scan_every_frame: bool,
-    keys: &crate::kdm::ContentKeys,
+    picture_checks: &PictureCheckOptions,
     notes: &mut Vec<Note>,
+    progress: &mut dyn FnMut(crate::VerifyProgress),
 ) {
     let assetmap_path = imp_dir.join("ASSETMAP.xml");
     if !assetmap_path.exists() {
@@ -382,10 +409,9 @@ fn validate_essence_descriptors(
                         &mxf_info,
                         cpl,
                         &full_path,
-                        check_picture_details,
-                        scan_every_frame,
-                        keys,
+                        picture_checks,
                         notes,
+                        progress,
                     );
                 }
                 TrackType::MainAudio => {
@@ -430,11 +456,15 @@ fn validate_picture_essence(
     mxf: &crate::mxf::MxfInfo,
     cpl: &ImfCpl,
     mxf_path: &Path,
-    check_picture_details: bool,
-    scan_every_frame: bool,
-    keys: &crate::kdm::ContentKeys,
+    picture_checks: &PictureCheckOptions,
     notes: &mut Vec<Note>,
+    progress: &mut dyn FnMut(crate::VerifyProgress),
 ) {
+    let PictureCheckOptions {
+        check_picture_details,
+        scan_every_frame,
+        keys,
+    } = *picture_checks;
     // measured through asdcplib, so it runs even when ffprobe gave no descriptor
     if check_picture_details {
         match missing_content_key_note(mxf_path, keys) {
@@ -443,12 +473,14 @@ fn validate_picture_essence(
                 let bitrate = crate::bitrate::analyze_picture_bitrate(mxf_path, keys);
                 notes.extend(crate::bitrate::report_measured_bitrate(&bitrate, mxf_path));
 
-                let (codestream_notes, _forensics) = crate::j2k::check_picture_j2k_mxf(
-                    mxf_path,
-                    keys,
-                    crate::j2k::PictureEssenceFamily::Imf,
-                    scan_every_frame,
-                );
+                let (codestream_notes, _forensics) =
+                    crate::j2k::check_picture_j2k_mxf_with_progress(
+                        mxf_path,
+                        keys,
+                        crate::j2k::PictureEssenceFamily::Imf,
+                        scan_every_frame,
+                        progress,
+                    );
                 notes.extend(codestream_notes);
             }
         }

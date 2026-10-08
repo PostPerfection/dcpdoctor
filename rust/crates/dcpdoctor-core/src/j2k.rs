@@ -6,7 +6,7 @@
 /// - Code-block size
 /// - Wavelet transform type
 /// - Component count and bit depth
-use crate::{Code, Note};
+use crate::{Code, Note, VerifyProgress, VerifyStage};
 use asdcplib::as02::jp2k::MxfReader as As02MxfReader;
 use asdcplib::jp2k::{MxfReader, StereoMxfReader, StereoscopicPhase};
 use dcpdoctor_parse::j2k::{
@@ -1092,6 +1092,16 @@ pub fn check_picture_j2k_mxf(
     family: PictureEssenceFamily,
     scan_every_frame: bool,
 ) -> (Vec<Note>, Option<CodestreamForensics>) {
+    check_picture_j2k_mxf_with_progress(path, keys, family, scan_every_frame, &mut |_| {})
+}
+
+pub fn check_picture_j2k_mxf_with_progress(
+    path: &Path,
+    keys: &crate::kdm::ContentKeys,
+    family: PictureEssenceFamily,
+    scan_every_frame: bool,
+    progress: &mut dyn FnMut(VerifyProgress),
+) -> (Vec<Note>, Option<CodestreamForensics>) {
     let mut notes = Vec::new();
     let Some(s) = path.to_str() else {
         return (notes, None);
@@ -1175,6 +1185,14 @@ pub fn check_picture_j2k_mxf(
     let mut buf = vec![0u8; FRAME_BUFFER_BYTES];
     let mut scanned = 0u32;
     let mut scan: Option<PictureScanState> = None;
+    let mut report = |done| {
+        progress(VerifyProgress {
+            stage: VerifyStage::FrameScan,
+            done,
+            total: u64::from(frames),
+        })
+    };
+    report(0);
     'edit_units: for i in 0..frames {
         for &eye in eyes {
             let (dec, hmac) = match ctx.as_mut() {
@@ -1278,6 +1296,7 @@ pub fn check_picture_j2k_mxf(
                 state.forensics.observe_frame(i, &header, n as u64);
             }
         }
+        report(u64::from(i) + 1);
     }
 
     let forensics = scan.map(|state| state.forensics);
