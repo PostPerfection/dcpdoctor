@@ -144,9 +144,15 @@ pub fn check_isdcf_naming(content_title: &str, cpl_path: &Path) -> Vec<Note> {
         }
     }
 
+    // a name with no release territory, as DCP-o-matic writes it, leaves that field out
+    let territory_left_out =
+        fields.len() >= 6 && is_registry_audio(fields[4]) && RESOLUTIONS.contains(&fields[5]);
+    let audio_index = if territory_left_out { 4 } else { 5 };
+    let resolution_index = audio_index + 1;
+
     // Field 6: Audio type. The tokens are the ISDCF registry's audio
     // configurations: one base configuration, then the supplementary tracks.
-    if fields.len() < 6 || fields[5].is_empty() {
+    if fields.len() <= audio_index || fields[audio_index].is_empty() {
         notes.push(Note {
             severity: Severity::Warning,
             code: Code::IsdcfNamingViolation,
@@ -154,32 +160,24 @@ pub fn check_isdcf_naming(content_title: &str, cpl_path: &Path) -> Vec<Note> {
             file: Some(cpl_path.to_path_buf()),
             line: 0,
         });
-    } else {
-        let mut tokens = fields[5].split('-');
-        let base_ok = tokens
-            .next()
-            .is_some_and(|base| AUDIO_CONFIGURATIONS.contains(&base.to_uppercase().as_str()));
-        let supplementary_ok =
-            tokens.all(|token| SUPPLEMENTARY_AUDIO_TRACKS.contains(&token.to_uppercase().as_str()));
-        if !base_ok || !supplementary_ok {
-            notes.push(Note {
-                severity: Severity::Info,
-                code: Code::IsdcfNamingViolation,
-                message: format!("Non-standard audio field: {}", fields[5]),
-                file: Some(cpl_path.to_path_buf()),
-                line: 0,
-            });
-        }
+    } else if !is_registry_audio(fields[audio_index]) {
+        notes.push(Note {
+            severity: Severity::Info,
+            code: Code::IsdcfNamingViolation,
+            message: format!("Non-standard audio field: {}", fields[audio_index]),
+            file: Some(cpl_path.to_path_buf()),
+            line: 0,
+        });
     }
 
     // Field 7: Resolution
-    if fields.len() >= 7 && !RESOLUTIONS.contains(&fields[6]) {
+    if fields.len() > resolution_index && !RESOLUTIONS.contains(&fields[resolution_index]) {
         notes.push(Note {
             severity: Severity::Info,
             code: Code::IsdcfNamingViolation,
             message: format!(
                 "Non-standard resolution field: {} (expected 2K or 4K)",
-                fields[6]
+                fields[resolution_index]
             ),
             file: Some(cpl_path.to_path_buf()),
             line: 0,
@@ -187,6 +185,15 @@ pub fn check_isdcf_naming(content_title: &str, cpl_path: &Path) -> Vec<Note> {
     }
 
     notes
+}
+
+fn is_registry_audio(field: &str) -> bool {
+    let mut tokens = field.split('-');
+    let base_ok = tokens
+        .next()
+        .is_some_and(|base| AUDIO_CONFIGURATIONS.contains(&base.to_uppercase().as_str()));
+    base_ok
+        && tokens.all(|token| SUPPLEMENTARY_AUDIO_TRACKS.contains(&token.to_uppercase().as_str()))
 }
 
 /// Parameters for ISDCF name generation.
@@ -424,6 +431,21 @@ mod tests {
             notes
                 .iter()
                 .any(|n| n.message.contains("Non-standard resolution field: XX")),
+            "got: {notes:?}"
+        );
+    }
+
+    // DCP-o-matic and dcpwizard leave the territory out when no release territory is set
+    #[test]
+    fn a_name_without_a_territory_reads_audio_and_resolution_one_field_earlier() {
+        let notes = check_isdcf_naming(
+            "Queue2_FTR-1_S_XX-XX_51_4K_20261006_SMPTE_OV",
+            &PathBuf::from("CPL.xml"),
+        );
+        assert!(
+            !notes.iter().any(
+                |n| n.message.contains("audio field") || n.message.contains("resolution field")
+            ),
             "got: {notes:?}"
         );
     }

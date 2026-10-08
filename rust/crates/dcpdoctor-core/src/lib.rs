@@ -99,6 +99,7 @@ pub enum Code {
     CheckSkipped,
     InvalidUuid,
     MissingRequiredElement,
+    MissingRecommendedElement,
 
     // PKL
     PklHashMismatch,
@@ -284,6 +285,7 @@ impl Code {
             Code::CheckSkipped => "check_skipped",
             Code::InvalidUuid => "invalid_uuid",
             Code::MissingRequiredElement => "missing_required_element",
+            Code::MissingRecommendedElement => "missing_recommended_element",
             Code::PklHashMismatch => "pkl_hash_mismatch",
             Code::PklSizeMismatch => "pkl_size_mismatch",
             Code::ManifestSizeMismatch => "manifest_size_mismatch",

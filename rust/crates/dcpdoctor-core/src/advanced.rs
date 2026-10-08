@@ -92,7 +92,7 @@ pub fn check_bv21_compliance(dcp_dir: &Path, standard: Standard) -> Vec<Note> {
             if !content.contains("<ExtensionMetadata") {
                 notes.push(Note {
                     severity: Severity::Info,
-                    code: Code::MissingRequiredElement,
+                    code: Code::MissingRecommendedElement,
                     message: "BV2.1 recommends ExtensionMetadata in CPL".into(),
                     file: cpl_path.clone(),
                     line: 0,
@@ -191,5 +191,17 @@ mod tests {
     fn main_markers_in_the_first_reel_do_not_warn() {
         let dir = write_two_reel_package(MAIN_MARKERS, "");
         assert!(!warns_missing_main_markers(dir.path()));
+    }
+
+    #[test]
+    fn missing_extension_metadata_is_a_recommendation() {
+        let dir = write_two_reel_package(MAIN_MARKERS, "");
+        let notes = check_bv21_compliance(dir.path(), Standard::Smpte);
+        let note = notes
+            .iter()
+            .find(|note| note.message.contains("ExtensionMetadata"))
+            .expect("the CPL has no ExtensionMetadata");
+        assert_eq!(note.code, Code::MissingRecommendedElement);
+        assert_eq!(note.code.as_str(), "missing_recommended_element");
     }
 }
