@@ -6,10 +6,61 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          package_version() {
+            awk '/^\[package\]/{found=1; next} /^\[/{found=0} found && /^version = / {gsub(/[" ]/, "", $3); print $3; exit}' "$1"
+          }
+          workspace_version=$(awk '/^\[workspace.package\]/{found=1; next} /^\[/{found=0} found && /^version = / {gsub(/[" ]/, "", $3); print $3; exit}' rust/Cargo.toml)
+          imf_crate_version=$(package_version rust/crates/dcpdoctor-imf/Cargo.toml)
+          wasm_crate_version=$(package_version rust/crates/dcpdoctor-wasm/Cargo.toml)
+          desktop_crate_version=$(package_version gui/src-tauri/Cargo.toml)
+          desktop_version=$(jq -r .version gui/src-tauri/tauri.conf.json)
+          frontend_version=$(jq -r .version gui/package.json)
+
+          release_version="$workspace_version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            release_version="${GITHUB_REF_NAME#v}"
+          fi
+
+          for version in "$workspace_version" "$imf_crate_version" "$wasm_crate_version" "$desktop_crate_version" "$desktop_version" "$frontend_version"; do
+            if [ "$version" != "$release_version" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match project version $version"
+              exit 1
+            fi
+          done
+
+      - name: Release notes from CHANGELOG.md
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk -v heading="## [$version]" 'index($0, heading) == 1 {found = 1; next} found && /^## / {exit} found {print}' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then
+            echo "::error::CHANGELOG.md has no notes for $version"
+            exit 1
+          fi
+
+      - name: Upload release notes
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+
+  cli:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +79,7 @@ jobs:
             binary: dcpdoctor.exe
 
     runs-on: ${{ matrix.os }}
-    name: Build (${{ matrix.name }})
+    name: CLI (${{ matrix.name }})
 
     steps:
       - name: Enable long paths (Windows)
@@ -131,9 +182,10 @@ jobs:
             ${{ matrix.artifact }}.tar.gz
             ${{ matrix.artifact }}.zip
 
-  deb:
+  cli-deb:
+    needs: version
     runs-on: ubuntu-24.04
-    name: Build .deb
+    name: CLI (.deb)
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -161,21 +213,221 @@ jobs:
           name: dcpdoctor-deb
           path: rust/target/debian/*.deb
 
-  release:
-    needs: [build, deb]
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
+  gui:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: Linux
+          - os: macos-14
+            name: macOS
+          - os: windows-2022
+            name: Windows
+
+    runs-on: ${{ matrix.os }}
+    name: GUI (${{ matrix.name }})
+
     steps:
-      - name: Download all artifacts
+      - name: Enable long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: gui/package.json
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libxml2-dev \
+            libssl-dev \
+            libxerces-c-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install pkg-config libxml2 openssl@3 xerces-c
+          OPENSSL_PREFIX=$(brew --prefix openssl@3)
+          echo "OPENSSL_DIR=$OPENSSL_PREFIX" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$OPENSSL_PREFIX/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$OPENSSL_PREFIX/include" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=$OPENSSL_PREFIX/lib:$(brew --prefix xerces-c)/lib" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$OPENSSL_PREFIX/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$(brew --prefix xerces-c)/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $env:VCPKG_BUILD_TYPE="release"
+          # vcpkg reads curl 56 and 503 off github's archive host as permanent and
+          # refuses to retry the source download, so retry the whole install
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            vcpkg install libxml2 openssl xerces-c --triplet x64-windows
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 5) { throw "vcpkg install failed after $attempt attempts" }
+            Start-Sleep -Seconds (30 * $attempt)
+          }
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+
+      - name: Install frontend dependencies
+        working-directory: gui
+        run: pnpm install --frozen-lockfile
+
+      - name: Build CLI sidecar (Unix)
+        if: runner.os != 'Windows'
+        working-directory: rust
+        env:
+          OPENSSL_STATIC: "1"
+        run: |
+          cargo build --release -p dcpdoctor-cli
+          TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
+          cp target/release/dcpdoctor ../gui/src-tauri/dcpdoctor-${TRIPLE}
+
+      - name: Build CLI sidecar (Windows)
+        if: runner.os == 'Windows'
+        working-directory: rust
+        env:
+          OPENSSL_STATIC: "1"
+        run: |
+          cargo build --release -p dcpdoctor-cli
+          Copy-Item "target/release/dcpdoctor.exe" "../gui/src-tauri/dcpdoctor-x86_64-pc-windows-msvc.exe"
+
+      # tauri.windows.conf.json ships every dll staged here beside the installed exes
+      - name: Stage VC++ runtime and vcpkg dlls (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          ./scripts/bundle-windows-cli-dlls.ps1 -Binary "gui/src-tauri/dcpdoctor-x86_64-pc-windows-msvc.exe" `
+            -SearchDirectories "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin"
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          OPENSSL_STATIC: "1"
+        with:
+          projectPath: gui
+
+      - name: The installer carries its dlls (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $installer = Get-ChildItem "gui/src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if ($null -eq $installer) { throw "NSIS installer not found" }
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)" }
+          $entry = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
+            Where-Object { $_.DisplayName -eq "DcpDoctor" } |
+            Select-Object -First 1
+          if ($null -eq $entry) { throw "Installed application was not registered" }
+          $installDirectory = $entry.InstallLocation.Trim('"')
+          foreach ($dll in Get-ChildItem gui/src-tauri/*.dll) {
+            if (-not (Test-Path (Join-Path $installDirectory $dll.Name))) { throw "the installer does not carry $($dll.Name)" }
+          }
+          $env:PATH = @("$env:SystemRoot\System32", $installDirectory) -join [IO.Path]::PathSeparator
+          & (Join-Path $installDirectory "dcpdoctor.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "the installed sidecar exited with $LASTEXITCODE" }
+
+      - name: The msi carries its dlls (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $nsisEntry = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
+            Where-Object { $_.DisplayName -eq "DcpDoctor" } |
+            Select-Object -First 1
+          if ($null -eq $nsisEntry) { throw "NSIS installer was not registered" }
+          $uninstall = Start-Process -FilePath $nsisEntry.UninstallString.Trim('"') -ArgumentList "/S" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "NSIS uninstaller exited with $($uninstall.ExitCode)" }
+          # the NSIS uninstaller returns before it removes the entry
+          foreach ($attempt in 1..30) {
+            $nsisEntry = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
+              Where-Object { $_.DisplayName -eq "DcpDoctor" } |
+              Select-Object -First 1
+            if ($null -eq $nsisEntry) { break }
+            Start-Sleep -Seconds 1
+          }
+          if ($null -ne $nsisEntry) { throw "NSIS installer was still registered after uninstall" }
+          $installer = Get-ChildItem "gui/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
+          if ($null -eq $installer) { throw "msi not found" }
+          $install = Start-Process -FilePath msiexec -ArgumentList "/i `"$($installer.FullName)`" /qn" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "msi exited with $($install.ExitCode)" }
+          $uninstallKeys = @(
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
+          )
+          $entry = Get-ItemProperty $uninstallKeys |
+            Where-Object { $_.DisplayName -eq "DcpDoctor" } |
+            Select-Object -First 1
+          if ($null -eq $entry) { throw "Installed application was not registered" }
+          $installDirectory = "$($entry.InstallLocation)".Trim('"')
+          if ($installDirectory -eq "") { $installDirectory = Split-Path ($entry.DisplayIcon -replace ',\d+$', '').Trim('"') }
+          foreach ($dll in Get-ChildItem gui/src-tauri/*.dll) {
+            if (-not (Test-Path (Join-Path $installDirectory $dll.Name))) { throw "the msi does not carry $($dll.Name)" }
+          }
+          $env:PATH = @("$env:SystemRoot\System32", $installDirectory) -join [IO.Path]::PathSeparator
+          & (Join-Path $installDirectory "dcpdoctor.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "the installed sidecar exited with $LASTEXITCODE" }
+          $uninstall = Start-Process -FilePath msiexec -ArgumentList "/x `"$($installer.FullName)`" /qn" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "msi uninstall exited with $($uninstall.ExitCode)" }
+          $entry = Get-ItemProperty $uninstallKeys |
+            Where-Object { $_.DisplayName -eq "DcpDoctor" } |
+            Select-Object -First 1
+          if ($null -ne $entry) { throw "msi was still registered after uninstall" }
+      - name: Upload GUI packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: dcpdoctor-gui-${{ matrix.name }}
+          path: |
+            gui/src-tauri/target/release/bundle/deb/*.deb
+            gui/src-tauri/target/release/bundle/rpm/*.rpm
+            gui/src-tauri/target/release/bundle/appimage/*.AppImage
+            gui/src-tauri/target/release/bundle/dmg/*.dmg
+            gui/src-tauri/target/release/bundle/msi/*.msi
+            gui/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [cli, cli-deb, gui]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested packages
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Create GitHub Release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          name: DCP Doctor ${{ github.ref_name }}
+          body_path: artifacts/release-notes/release-notes.md
+          fail_on_unmatched_files: true
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
             artifacts/**/*.deb
+            artifacts/**/*.rpm
+            artifacts/**/*.AppImage
+            artifacts/**/*.dmg
+            artifacts/**/*.msi
+            artifacts/**/*-setup.exe
