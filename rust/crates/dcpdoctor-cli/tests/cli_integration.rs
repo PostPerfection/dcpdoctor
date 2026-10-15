@@ -206,6 +206,41 @@ fn inspect_json_lists_every_certificate_of_a_pem_file() {
 }
 
 #[test]
+fn inspect_json_lists_the_issuer_rules_of_a_lone_leaf_as_not_checked() {
+    let output = cmd()
+        .args(["--json", "inspect"])
+        .arg(kdm_fixture("certs").join("leaf.pem"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let inspection: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let check = &inspection["check"];
+    assert_eq!(check["failures"], serde_json::json!([]), "{check}");
+    assert_eq!(check["issuers_missing"], true);
+    let no_chain: Vec<&str> = check["not_checked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|skipped| {
+            skipped["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("no chain, ")
+        })
+        .map(|skipped| skipped["rule"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        no_chain,
+        [
+            "AuthorityKeyIdentifier",
+            "SignatureValue",
+            "Issuer",
+            "ValidityDates"
+        ]
+    );
+}
+
+#[test]
 fn inspect_refuses_a_file_that_is_neither() {
     cmd()
         .arg("inspect")
