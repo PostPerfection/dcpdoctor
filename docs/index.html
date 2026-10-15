@@ -340,6 +340,11 @@
             color: var(--text-secondary);
             line-height: 1.6;
         }
+        .feat-card code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+            color: var(--text-primary);
+        }
         .feat-tag {
             display: inline-block;
             margin-top: 12px;
@@ -459,6 +464,11 @@
             font-size: 0.82rem;
             color: var(--text-tertiary);
             line-height: 1.5;
+        }
+        .pipeline-card p code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.76rem;
+            color: var(--text-secondary);
         }
         .pipeline-card pre {
             margin-top: 12px;
@@ -653,7 +663,7 @@
         </div>
         <h1>Catch problems in your <em>DCP or IMP</em><br>before it ships</h1>
         <p class="hero-sub">
-            DCP Doctor checks a cinema or streaming package for the mistakes that get a delivery rejected: broken structure, bad hashes, expired keys, subtitle timing, JPEG 2000 forensics, audio levels, HDR metadata and more. Run it in the browser, or install the desktop app for an additional thorough JPEG 2000 and MXF check.
+            DCP Doctor checks a cinema or streaming package for the mistakes that get a delivery rejected: broken structure, bad hashes, expired keys, subtitle timing, JPEG 2000 forensics, audio levels and HDR metadata. Run a lighter check in the browser, or install the desktop app, which also reads every JPEG 2000 frame and the MXF essence.
         </p>
         <div class="hero-actions">
             <a href="#download" class="btn btn-accent">
@@ -672,16 +682,14 @@
             </div>
             <div class="demo-body">
 <span class="c"># Checking a feature before delivery</span>
-<span class="o">Package:    MyFeature_FTR-1_S_EN_XX_51_2K_20241201</span>
-<span class="o">Standard:   SMPTE</span>
-<span class="o">Reels:      4 | Duration: 01:58:32 | Resolution: 2048x858 (Scope 2K)</span>
-<span class="o">Audio:      5.1 (L R C LFE Ls Rs) | 48kHz/24bit</span>
-<span class="o">Loudness:   -28.3 LUFS | True Peak: -2.1 dBTP</span>
-<span class="o">Color:      CIE XYZ 12-bit | DCI-P3</span>
-<span class="o">Encryption: All assets encrypted (KDM required)</span>
+<span class="p">$</span> <span class="w">dcpdoctor MyFeature_FTR-1_S_EN-XX_51_2K_20241201_SMPTE_OV</span>
+<span class="o">=== DcpDoctor Report ===</span>
+<span class="o">DCP: MyFeature_FTR-1_S_EN-XX_51_2K_20241201_SMPTE_OV</span>
+<span class="o">Standard: SMPTE</span>
+<span class="o">Result: </span><span class="s">PASS</span><span class="o"> (0 errors, 1 warnings)</span>
 
-<span class="s">&#10003; PASS</span> <span class="o">0 errors, 1 warning</span>
-<span class="e">&#9888; WARN</span> <span class="o">Reel 3 is 42 minutes, over the 40 minute recommendation</span>
+<span class="v">[INFO]</span> <span class="o">j2k_codestream_summary - JPEG 2000 codestream: 2048x858, Cinema 2K, ...</span>
+<span class="e">[WARNING]</span> <span class="o">cpl_invalid_duration - Reel 3 is 42 minutes, over the 40 minute recommendation</span>
             </div>
         </div>
 
@@ -717,7 +725,7 @@
             <div class="deploy-card">
                 <div class="d-icon">&#128187;</div>
                 <h3>Windows</h3>
-                <p>Installer (.msi) for Windows 10 and 11.</p>
+                <p>Installer (.msi) or setup program (.exe) for 64-bit Windows.</p>
                 <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" class="btn btn-accent" style="margin-top:16px;">Download latest</a>
             </div>
             <div class="deploy-card">
@@ -729,13 +737,13 @@
             <div class="deploy-card">
                 <div class="d-icon">&#128421;</div>
                 <h3>Linux</h3>
-                <p>AppImage or .deb for common distributions.</p>
+                <p>AppImage, .deb or .rpm for x86_64.</p>
                 <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" class="btn btn-accent" style="margin-top:16px;">Download latest</a>
             </div>
         </div>
 
         <p style="margin-top:28px; color: var(--text-tertiary); font-size:0.9rem;">
-            Prefer the command line? The same <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" style="color: var(--accent); text-decoration:none;">releases page</a> has a standalone command-line build for Windows, macOS and Linux, handy for scripting and watch folders. See <a href="#automation" style="color: var(--accent); text-decoration:none;">Automation</a>.
+            Prefer the command line? The same <a href="https://github.com/PostPerfection/dcpdoctor/releases/latest" style="color: var(--accent); text-decoration:none;">releases page</a> has a standalone command-line build for Windows, macOS and Linux, and a command-line .deb, for scripting and watch folders. See <a href="#automation" style="color: var(--accent); text-decoration:none;">Automation</a>.
         </p>
     </div>
 </section>
@@ -746,7 +754,7 @@
         <div style="text-align: center; margin-bottom: 48px;">
             <span class="section-label" style="justify-content:center;">Online checker</span>
             <h2 style="color: var(--text-primary); font-size: 2.2rem; font-weight: 800; margin-bottom: 16px;">Check a DCP or IMP in your browser</h2>
-            <p style="color: var(--text-secondary); font-size: 1.1rem; max-width: 640px; margin: 0 auto;">dcpdoctor as WebAssembly, in your browser. Point it at a DCP or IMP folder. Nothing is uploaded. For a thorough JPEG 2000 pass, use the <a href="#download" style="color: var(--accent);">desktop app</a>.</p>
+            <p style="color: var(--text-secondary); font-size: 1.1rem; max-width: 640px; margin: 0 auto;">dcpdoctor as WebAssembly, in your browser. Point it at a DCP or IMP folder. Nothing is uploaded. It checks the structure, the PKL hashes, the CPL, the ISDCF name and the MXF and JPEG 2000 headers. It does not decrypt, verify signatures, scan every frame or measure loudness. For those, use the <a href="#download" style="color: var(--accent);">desktop app</a>.</p>
         </div>
         <div style="border: 1px solid var(--border); border-radius: 16px; overflow: hidden; height: 700px; background: var(--bg-primary);">
             <iframe src="validate/" style="width: 100%; height: 100%; border: none;" title="DCP Doctor online DCP and IMP checker"></iframe>
@@ -767,17 +775,17 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128196;</div>
                 <h3>Structure and references</h3>
-                <p>Checks that ASSETMAP, PKL and CPL line up and that every asset they point to is actually present. Catches duplicate asset IDs, a CPL whose title does not match its annotation, and a missing CompositionMetadataAsset.</p>
+                <p>Checks that ASSETMAP, PKL and CPL line up and that every asset they point to is actually present. Catches duplicate asset IDs, a CPL whose title does not match its annotation, and a missing CompositionMetadataAsset. A supplemental (VF) package resolves its references against the OV you pass with <code>--ov</code>.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#9989;</div>
                 <h3>Hashes and file sizes</h3>
-                <p>Verifies the SHA-1 hash and size of every file, including the hash each CPL reel asset carries, so a corrupt or half-copied asset gets caught before it reaches a theater or a facility.</p>
+                <p>Verifies the SHA-1 hash and size of every file, including the hash each CPL reel asset carries, so a corrupt or half-copied asset gets caught before it reaches a theater or a facility. <code>--manifest</code> also compares the files against a JSON list of names and sizes.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128274;</div>
                 <h3>Signatures and certificates</h3>
-                <p>Validates the XML signatures and the certificate chain, flags expired certs and malformed package XML, and catches an encrypted package that was left unsigned. Schema validation against the vendored SMPTE and Interop XSDs is on by default.</p>
+                <p>Validates the XML signatures and the certificate chain against the ST 430-2 rules, flags expired certs and malformed package XML, and catches an encrypted package that was left unsigned. The SMPTE and Interop XSD pass runs when xmllint is installed and the repository's <code>schemas</code> folder is found, as in a source build or the Docker image, or through <code>DCPDOCTOR_SCHEMA_DIR</code>. Otherwise the report says it did not run.</p>
             </div>
         </div>
 
@@ -786,12 +794,12 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128208;</div>
                 <h3>Resolution and format</h3>
-                <p>Confirms the 2K or 4K container, Flat / Scope / Full and aspect ratio, including the coded scope sizes (2048&times;858, 4096&times;1716). Flags a 4K track at an illegal frame rate. App 2E tracks are checked for an IMF JPEG 2000 profile, matching picture coding label, matching descriptor and codestream pixel depths, color primaries and transfer characteristic.</p>
+                <p>Confirms the 2K or 4K container, Flat / Scope / Full and aspect ratio, including the coded scope sizes (2048&times;858, 4096&times;1716). Flags a 4K track at an illegal frame rate. App 2E tracks are checked for an IMF JPEG 2000 profile, matching picture coding label, matching descriptor and codestream pixel depths, color primaries and transfer characteristic. Sampled frames are decoded to catch X&prime;Y&prime;Z&prime; samples behind an IMF label.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127916;</div>
                 <h3>Bitrate limits</h3>
-                <p>Per-frame picture bitrate with min, max and average, checked against the DCI cap of 250 Mbps at every resolution. IMF has no such cap, so an IMP's peak is reported as an info note.</p>
+                <p>Reads every picture frame and checks the peak against the DCI cap of 250 Mbps at every resolution, with a warning within 5 percent of it. IMF has no such cap, so an IMP's peak and average are reported as an info note. <code>frame-qc</code> prints min, max and average for a folder of J2K frames.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128269;</div>
@@ -806,7 +814,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#127774;</div>
                 <h3>HDR metadata</h3>
-                <p>HDR10, HLG and Dolby Vision metadata, with MaxCLL and MaxFALL checks.</p>
+                <p><code>--hdr</code> reads the PQ or HLG transfer from the picture descriptor and MaxCLL and MaxFALL from the CPL, and errors on a MaxFALL above MaxCLL. <code>--dolby-vision</code> reads the RPU of an HEVC track file. <code>hdr-validate</code> checks a file's HDR10 light levels against the values you expect.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127909;</div>
@@ -820,7 +828,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128266;</div>
                 <h3>Levels</h3>
-                <p>Auto-QC reports a channel's peak in dBFS when it clips. Validation warns when a sound track is silent on every channel.</p>
+                <p>Validation errors on a true peak over -1 dBTP and warns when a sound track is silent on every channel. Auto-QC reports a channel's peak in dBFS when it clips.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127897;</div>
@@ -835,12 +843,12 @@
             <div class="feat-card">
                 <div class="feat-icon">&#127760;</div>
                 <h3>Dolby Atmos</h3>
-                <p>Detects Dolby Atmos (ST 429-18) and IMF IAB essence. Atmos reports the object count from the descriptor; IAB is reported as present.</p>
+                <p>Detects Dolby Atmos (ST 429-18) and IMF IAB essence. Atmos reports the object count from its descriptor. IAB is reported as present, since its descriptor carries no count.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128279;</div>
                 <h3>A/V sync</h3>
-                <p>Flags picture and sound drift, per reel.</p>
+                <p><code>av-sync</code> compares each reel's picture and sound as the CPL declares them, and reports the entry point offset and duration difference in frames.</p>
             </div>
         </div>
 
@@ -859,7 +867,7 @@
             <div class="feat-card">
                 <div class="feat-icon">&#9855;</div>
                 <h3>Accessibility tracks</h3>
-                <p>Detects and checks audio description, hearing-impaired and closed-caption tracks, including MXF-wrapped SMPTE subtitles and encrypted timed text when a KDM is supplied.</p>
+                <p><code>--accessibility</code> reports whether the CPL names audio description, hearing-impaired or closed-caption tracks, and warns when it names none. The timed-text rules also read MXF-wrapped SMPTE subtitles, and encrypted timed text when a KDM is supplied.</p>
             </div>
         </div>
 
@@ -868,12 +876,12 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128274;</div>
                 <h3>Encryption status</h3>
-                <p>Spots encrypted assets. A composition that mixes encrypted and clear essence is an error. Encrypted picture, sound and timed text are checked when you pass a KDM, on a DCP and on an IMP alike. Without a key the report says so rather than passing quietly.</p>
+                <p>Spots encrypted assets. A composition that mixes encrypted and clear essence is an error. Encrypted picture, sound and timed text are checked when you pass a KDM and the recipient's private key, on a DCP and on an IMP alike. Without a key the report says so rather than passing quietly.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128273;</div>
                 <h3>KDM checks</h3>
-                <p>Validates KDMs against the ST 430-1 / 430-3 schemas: the validity window, that the key matches the right CPL, thumbprint length, and that the assume-trust marker is not mixed with a real device list.</p>
+                <p>Checks a KDM's validity window, its signature, that it names the right CPL, thumbprint length, and that the assume-trust marker is not mixed with a real device list. It is validated against the ST 430-1 and 430-3 schemas when the XSD pass can run.</p>
             </div>
         </div>
 
@@ -882,17 +890,22 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128269;</div>
                 <h3>Automatic QC scan</h3>
-                <p>Finds black frames, freeze frames, audio silence and clipping automatically, with thresholds you can set.</p>
+                <p>Finds black frames, freeze frames, audio silence and clipping, with thresholds you can set, and names the time each one starts and ends.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128203;</div>
                 <h3>QC reports</h3>
-                <p>Clean HTML or PDF reports with package, track and per-track loudness summaries, plus a JPEG 2000 forensics table per picture track, ready for a client name and title.</p>
+                <p>HTML or PDF reports with package, track and per-track loudness summaries, plus a JPEG 2000 forensics table per picture track, with a client name and title. PDF needs weasyprint or wkhtmltopdf installed.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128200;</div>
                 <h3>Compare two packages</h3>
-                <p>Diff two DCPs to see exactly what changed, down to a perceptual picture fingerprint.</p>
+                <p>Diff two DCPs to see what changed in the structure and hashes, down to a perceptual picture fingerprint. <code>frame-compare</code> scores two packages or files frame by frame with PSNR and SSIM, and VMAF when ffmpeg has libvmaf.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#128197;</div>
+                <h3>Reel timeline</h3>
+                <p><code>validate --timeline</code> writes an SVG of the reels, each labelled with its duration as a timecode at the reel's own edit rate.</p>
             </div>
         </div>
 
@@ -900,23 +913,23 @@
         <div class="features-grid fade-in">
             <div class="feat-card">
                 <div class="feat-icon">&#127909;</div>
-                <h3>Theater server profiles</h3>
-                <p>Check a package against pre-built profiles for Dolby, Barco, Christie, GDC and IMAX servers. Separate playback warnings flag a 25/30/48/50/60 fps feature, 4K 3D, or a sound track that is not 8 or 16 channels, which many rooms will not play even when the package is legal.</p>
+                <h3>Theater equipment profiles</h3>
+                <p><code>profiles</code> checks a package's resolution, frame rate, channel count, Atmos and 3D against built-in profiles for Dolby, Barco, Christie, GDC, IMAX and NEC servers and projectors. Separate playback warnings flag a 25, 30, 48, 50 or 60 fps package, 4K 3D, or a sound track that is not 8 or 16 channels, which many rooms will not play even when the package is legal.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127981;</div>
                 <h3>Facility ingest check</h3>
-                <p>A pre-delivery readiness pass for theater ingest, so a package clears the door on the first try.</p>
+                <p><code>facility-check</code> reports whether a package is ready for theater ingest: the ASSETMAP, VOLINDEX, PKL, CPL and MXF files, namespaces, hashes, signing certificates and ISDCF name. On a SMPTE CPL it also checks the Chain, Distributor, Facility and Luminance metadata some facilities' QC requires.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#127380;</div>
                 <h3>Streamer IMF delivery</h3>
-                <p>Netflix IMF delivery checks, with deep IMF conformance run through Netflix Photon for IMF packages.</p>
+                <p><code>--netflix</code> checks the Netflix IMF delivery rules Photon applies to the ASSETMAP, CPL namespace, application and edit rate. Deep IMF conformance runs through Netflix Photon, which needs Java and the Photon jars from <code>scripts/fetch_photon.sh</code>.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128477;</div>
                 <h3>ISDCF naming</h3>
-                <p>Validates the content title against the ISDCF naming convention: content type, resolution, audio and language.</p>
+                <p>Validates the content title against the ISDCF naming convention: content type, language, audio and resolution, with the audio field read against the ISDCF registry.</p>
             </div>
         </div>
 
@@ -925,12 +938,17 @@
             <div class="feat-card">
                 <div class="feat-icon">&#128295;</div>
                 <h3>Auto-fix common problems</h3>
-                <p>Repairs the usual suspects: hash mismatches, wrong SMPTE/Interop namespaces and invalid ContentKind, with a dry-run to preview first.</p>
+                <p>Repairs PKL and CPL hashes, PKL sizes, wrong SMPTE or Interop namespaces and invalid ContentKind, with a dry run to preview first. A signed CPL or PKL is left alone unless you pass <code>--break-signatures</code>.</p>
             </div>
             <div class="feat-card">
                 <div class="feat-icon">&#128193;</div>
                 <h3>Watch folders</h3>
-                <p>Point it at an ingest folder and it checks new packages as they land.</p>
+                <p>Point it at an ingest folder and it checks each new package once every file its ASSETMAP names has finished copying.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">&#128230;</div>
+                <h3>Package tools</h3>
+                <p><code>imp-info</code> lists an IMP's tracks with the raster, frame count, channels and sample rate read from each track file. <code>mxf-extract</code> pulls the JPEG 2000 frames or the PCM sound out of a track file. <code>checksum-verify</code> checks every PKL hash and size on its own.</p>
             </div>
         </div>
     </div>
@@ -961,18 +979,18 @@
                 <tr><td>Dolby Atmos / IAB</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>Stereoscopic 3D</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>Up to 4K</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
-                <tr><td>23.98 to 120 fps</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
+                <tr><td>DCP 24 to 60 fps, IMF App 2E 23.98 to 120 fps</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>SMPTE 428-7 / Bv2.1 timed text</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>Subtitle Font Validation</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>KDM Validation</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>CLI / Scriptable</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
-                <tr><td>HDR metadata (Dolby Vision RPU, HDR10 light levels)</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
-                <tr><td>Dolby Vision RPU (profile, frames, MaxCLL/MaxFALL)</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
-                <tr><td>Netflix Delivery Spec</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
+                <tr><td>HDR metadata (PQ and HLG transfer, MaxCLL/MaxFALL)</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
+                <tr><td>Dolby Vision RPU in HEVC track files (profile, frames, MaxCLL/MaxFALL)</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
+                <tr><td>Netflix IMF delivery rules</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
                 <tr><td>IMF Validation (Photon)</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
-                <tr><td>Accessibility Tracks</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
+                <tr><td>Accessibility track detection</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
                 <tr><td>Content Fingerprinting</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
-                <tr><td>Color Gamut Validation</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
+                <tr><td>Out-of-gamut sampling</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
                 <tr><td>Certificate Chain Trust</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
                 <tr><td>ISDCF Naming</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
                 <tr><td>DCP Diff / Comparison</td><td class="check">&#10003;</td><td class="cross">-</td></tr>
@@ -1002,7 +1020,7 @@
                 <h3>Check a package</h3>
                 <p>Run a full check and get a pass/fail exit code you can act on.</p>
 <pre>dcpdoctor /path/to/DCP
-dcpdoctor validate --deep-j2k --check-mxf /path/to/DCP</pre>
+dcpdoctor validate --bv21 --strict /path/to/DCP</pre>
             </div>
             <div class="pipeline-card">
                 <span class="pipe-tag">Watch folder</span>
@@ -1013,8 +1031,29 @@ dcpdoctor validate --deep-j2k --check-mxf /path/to/DCP</pre>
             <div class="pipeline-card">
                 <span class="pipe-tag">REST API</span>
                 <h3>Call it from your tools</h3>
-                <p>Run a small HTTP service and POST a package path to check it.</p>
+                <p>Run a small HTTP service and POST a package path to check it. It listens on 127.0.0.1 unless you pass <code>--bind</code>, and <code>--api-key</code> requires a key on every request but <code>/health</code>.</p>
 <pre>dcpdoctor serve --port 8080</pre>
+            </div>
+            <div class="pipeline-card">
+                <span class="pipe-tag">Batch</span>
+                <h3>Check a day of deliveries</h3>
+                <p>Pass several packages and get a summary table with the pass count at the end.</p>
+<pre>dcpdoctor /dcp1 /dcp2 /dcp3</pre>
+            </div>
+            <div class="pipeline-card">
+                <span class="pipe-tag">Reports</span>
+                <h3>Feed your own tools</h3>
+                <p>Write the report as JSON or HTML, to a file or into each package's own folder.</p>
+<pre>dcpdoctor --json /path/to/DCP
+dcpdoctor validate --html -o report.html /path/to/DCP</pre>
+            </div>
+            <div class="pipeline-card">
+                <span class="pipe-tag">Docker</span>
+                <h3>Run it headless</h3>
+                <p>Build the image from the repository. It carries ffmpeg, xmllint with the schemas, and Java with Photon. No image is published.</p>
+<pre>docker build -t dcpdoctor .
+docker run --rm -v /path/to/dcp:/data/dcp:ro \
+  dcpdoctor validate /data/dcp</pre>
             </div>
         </div>
     </div>
@@ -1025,10 +1064,10 @@ dcpdoctor validate --deep-j2k --check-mxf /path/to/DCP</pre>
     <div class="section-inner">
         <span class="section-label">For developers</span>
         <h2 class="section-title">Build from source</h2>
-        <p class="section-desc">The project is open source under the AGPL. The core and command line are written in Rust; the desktop app wraps them with Tauri.</p>
+        <p class="section-desc">The project is open source under the AGPL. The core and command line are written in Rust. The desktop app wraps them with Tauri.</p>
 
         <div style="background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 32px; max-width: 760px;">
-            <pre style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.8;"><code style="color: var(--text-secondary);"><span style="color: var(--text-tertiary);"># command line (needs Rust 1.85+, CMake, a C++ compiler and OpenSSL development files)</span>
+            <pre style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.8;"><code style="color: var(--text-secondary);"><span style="color: var(--text-tertiary);"># command line (needs Rust 1.89+, CMake, a C++ compiler and OpenSSL development files)</span>
 git clone --recurse-submodules https://github.com/PostPerfection/dcpdoctor.git
 <span style="color: var(--accent);">cd</span> dcpdoctor/rust &amp;&amp; cargo build --release
 
@@ -1087,7 +1126,6 @@ pnpm tauri build</code></pre>
             <h4>Community</h4>
             <a href="https://github.com/PostPerfection/dcpdoctor/issues">Issues</a>
             <a href="https://github.com/PostPerfection/dcpdoctor/pulls">Pull Requests</a>
-            <a href="https://github.com/PostPerfection/dcpdoctor/discussions">Discussions</a>
         </div>
         <div class="footer-col">
             <h4>Standards</h4>
