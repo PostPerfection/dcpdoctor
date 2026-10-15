@@ -89,7 +89,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 - **Automated QC**: Detect black frames, freeze frames, audio silence, and audio clipping
 - **IMP validation:** Route ST 2067 IMF packages to native checks and Netflix Photon without running IMF tools on DCPs
 - **Schema validation**: XML schema validation against the vendored SMPTE ST 428-7, ST 429 and ST 430 XSDs and the Interop XSDs
-- **IMF compliance**: Platform-specific compliance checks (Netflix, Disney, Amazon, Apple, Cinema, Broadcast)
+- **IMF compliance**: Checks picture resolution and frame rate against per-platform limits (Netflix, Disney, Amazon, Apple, Cinema 2K and 4K, Broadcast HD and UHD)
 - **Frame-level QC**: Per-frame J2K bitrate analysis with over/under-budget detection
 - **QC reports**: HTML/PDF QC reports with package and track summary, plus per-track EBU R128 loudness
 - **Loudness measurement**: EBU R128 (ITU-R BS.1770) and ISO 21727 Leq(m) measurement, plus normalization to a target, -23 LUFS by default
@@ -103,6 +103,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
   - Christie CP4440-RGB, CP2230
   - GDC SX-4000, SR-1000
   - IMAX Digital
+  - NEC NC3541L
 - **Automated fix suggestions**: Actionable remediation advice for common issues
 - **SVG timeline visualization**: Visual reel structure diagram with timecodes
 - **Manifest comparison**: Validate DCP against a reference manifest JSON
@@ -129,12 +130,14 @@ Download from the [GitHub Releases](https://github.com/PostPerfection/dcpdoctor/
 
 The Windows zip carries the DLLs the exe loads, the vcpkg libraries and the VC++ runtime. The Linux and macOS binaries link OpenSSL and Xerces-C dynamically, so both have to be installed (on macOS, `brew install openssl@3 xerces-c`). Extract and run.
 
+Every package ships the XSDs from `schemas/`. XSD validation also needs `xmllint` on `PATH`, which no package bundles: install `libxml2-utils` on Debian and Ubuntu, macOS has it built in. Without it a validate reports `schema_validation_skipped`.
+
 ### Install from source
 
-The build needs Rust 1.85+, CMake, a C++ compiler, and OpenSSL development files. Clone with `--recurse-submodules`, because `rust/Cargo.toml` builds postkit from `extern/postkit`. The following tools are runtime dependencies, invoked when the relevant checks run:
+The build needs Rust 1.89+, CMake, a C++ compiler, and OpenSSL development files. Clone with `--recurse-submodules`, because `rust/Cargo.toml` builds postkit from `extern/postkit`. The following tools are runtime dependencies, invoked when the relevant checks run:
 
 - `ffmpeg` / `ffprobe`: media analysis (auto-qc, loudness, HDR, frame-compare, mxf-extract)
-- `xmllint`: XSD schema validation (`schema-validate --schema-dir`)
+- `xmllint`: XSD validation in `validate`, `kdm` and `schema-validate --schema-dir`
 
 #### Linux (Ubuntu/Debian)
 
@@ -509,6 +512,7 @@ dcpdoctor imp-info /path/to/IMP/
 
 | Variable | Effect |
 |---|---|
+| `DCPDOCTOR_SCHEMA_DIR` | Directory of XSDs for the XSD pass, used instead of the `schemas/` a package ships |
 | `PHOTON_DIR` | Path to a Photon jar or a directory of jars. dcpdoctor does not fetch or build Photon |
 | `RUST_BACKTRACE` | Set to `1` for a detailed backtrace on crash |
 
@@ -568,10 +572,11 @@ dcpdoctor facility-check /path/to/dcp --no-hashes --no-naming
 ### DCI Conformance
 
 ```bash
-# Run the DCI conformance test suite
+# Run 14 basic checks: ASSETMAP, VOLINDEX, PKL, CPL and MXFs present, PKL hashes and sizes match,
+# CPL Id and required elements present, no empty MXF, a sound track, encryption status
 dcpdoctor conformance /path/to/dcp
 
-# Skip picture-profile or security tests
+# Skip the empty MXF check or the encryption status check
 dcpdoctor conformance /path/to/dcp --no-picture --no-security
 ```
 
@@ -606,7 +611,7 @@ DcpDoctor includes an optional desktop GUI built with [Tauri](https://tauri.app)
 
 | Dependency | Platform | Install |
 |---|---|---|
-| Rust 1.85+ | All | [rustup.rs](https://rustup.rs) |
+| Rust 1.89+ | All | [rustup.rs](https://rustup.rs) |
 | Node.js 18+ | All | [nodejs.org](https://nodejs.org) |
 | webkit2gtk-4.1 | Linux | `sudo dnf install webkit2gtk4.1-devel` (Fedora) / `sudo apt install libwebkit2gtk-4.1-dev` (Debian) |
 | librsvg2 | Linux | `sudo dnf install librsvg2-devel` (Fedora) / `sudo apt install librsvg2-dev` (Debian) |

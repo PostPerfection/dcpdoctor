@@ -101,6 +101,7 @@ jobs:
           sudo apt-get install -y \
             pkg-config \
             libxml2-dev \
+            libxml2-utils \
             libssl-dev \
             libxerces-c-dev
 
@@ -122,7 +123,7 @@ jobs:
           # vcpkg reads curl 56 and 503 off github's archive host as permanent and
           # refuses to retry the source download, so retry the whole install
           for ($attempt = 1; $attempt -le 5; $attempt++) {
-            vcpkg install libxml2 openssl xerces-c --triplet x64-windows
+            vcpkg install libxml2[tools] openssl xerces-c --triplet x64-windows
             if ($LASTEXITCODE -eq 0) { break }
             if ($attempt -eq 5) { throw "vcpkg install failed after $attempt attempts" }
             Start-Sleep -Seconds (30 * $attempt)
@@ -148,13 +149,22 @@ jobs:
         run: |
           mkdir -p dist
           cp rust/target/release/${{ matrix.binary }} dist/
+          cp -R schemas dist/
           tar -czf ${{ matrix.artifact }}.tar.gz -C dist .
+
+      - name: The unpacked archive runs the XSD pass (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir unpacked
+          tar -xzf ${{ matrix.artifact }}.tar.gz -C unpacked
+          ./scripts/check-installed-schema-pass.sh unpacked/${{ matrix.binary }}
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "rust/target/release/${{ matrix.binary }}" "dist/"
+          Copy-Item -Recurse schemas "dist/"
           # the exe links the vcpkg libraries at load time, so ship them alongside
           ./scripts/bundle-windows-cli-dlls.ps1 -Binary "dist/${{ matrix.binary }}" `
             -SearchDirectories "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin"
@@ -173,6 +183,9 @@ jobs:
           $env:PATH = @("$env:SystemRoot\System32", (Resolve-Path unpacked).Path) -join [IO.Path]::PathSeparator
           & "unpacked/${{ matrix.binary }}" --version
           if ($LASTEXITCODE -ne 0) { throw "the unpacked archive exited with $LASTEXITCODE" }
+          $env:PATH = @($env:PATH, "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\tools\libxml2", "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin") -join [IO.Path]::PathSeparator
+          & "$env:ProgramFiles\Git\bin\bash.exe" scripts/check-installed-schema-pass.sh "unpacked/${{ matrix.binary }}"
+          if ($LASTEXITCODE -ne 0) { throw "the unpacked archive did not run the XSD pass" }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -198,7 +211,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libxml2-dev libssl-dev libxerces-c-dev
+          sudo apt-get install -y pkg-config libxml2-dev libxml2-utils libssl-dev libxerces-c-dev
           cargo install cargo-deb
 
       - name: Build .deb package
@@ -206,6 +219,11 @@ jobs:
         env:
           OPENSSL_STATIC: "1"
         run: cargo deb -p dcpdoctor-cli
+
+      - name: The installed .deb runs the XSD pass
+        run: |
+          sudo apt-get install -y ./rust/target/debian/*.deb
+          ./scripts/check-installed-schema-pass.sh /usr/bin/dcpdoctor
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
@@ -259,12 +277,15 @@ jobs:
           sudo apt-get install -y \
             pkg-config \
             libxml2-dev \
+            libxml2-utils \
             libssl-dev \
             libxerces-c-dev \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            rpm2cpio \
+            cpio
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
@@ -284,7 +305,7 @@ jobs:
           # vcpkg reads curl 56 and 503 off github's archive host as permanent and
           # refuses to retry the source download, so retry the whole install
           for ($attempt = 1; $attempt -le 5; $attempt++) {
-            vcpkg install libxml2 openssl xerces-c --triplet x64-windows
+            vcpkg install libxml2[tools] openssl xerces-c --triplet x64-windows
             if ($LASTEXITCODE -eq 0) { break }
             if ($attempt -eq 5) { throw "vcpkg install failed after $attempt attempts" }
             Start-Sleep -Seconds (30 * $attempt)
@@ -328,6 +349,28 @@ jobs:
         with:
           projectPath: gui
 
+      - name: The packages run the XSD pass (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          bundle=gui/src-tauri/target/release/bundle
+          sudo apt-get install -y ./$bundle/deb/*.deb
+          ./scripts/check-installed-schema-pass.sh /usr/bin/dcpdoctor
+          rpm_root=$(mktemp -d)
+          rpm2cpio $bundle/rpm/*.rpm | (cd "$rpm_root" && cpio -idm --quiet)
+          ./scripts/check-installed-schema-pass.sh "$rpm_root/usr/bin/dcpdoctor"
+          appimage=$(realpath $bundle/appimage/*.AppImage)
+          appimage_root=$(mktemp -d)
+          (cd "$appimage_root" && "$appimage" --appimage-extract >/dev/null)
+          ./scripts/check-installed-schema-pass.sh "$appimage_root/squashfs-root/usr/bin/dcpdoctor"
+
+      - name: The dmg runs the XSD pass (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mountpoint=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mountpoint" gui/src-tauri/target/release/bundle/dmg/*.dmg
+          trap 'hdiutil detach "$mountpoint"' EXIT
+          ./scripts/check-installed-schema-pass.sh "$mountpoint/DcpDoctor.app/Contents/MacOS/dcpdoctor"
+
       - name: The installer carries its dlls (Windows)
         if: runner.os == 'Windows'
         run: |
@@ -346,6 +389,9 @@ jobs:
           $env:PATH = @("$env:SystemRoot\System32", $installDirectory) -join [IO.Path]::PathSeparator
           & (Join-Path $installDirectory "dcpdoctor.exe") --version
           if ($LASTEXITCODE -ne 0) { throw "the installed sidecar exited with $LASTEXITCODE" }
+          $env:PATH = @($env:PATH, "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\tools\libxml2", "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin") -join [IO.Path]::PathSeparator
+          & "$env:ProgramFiles\Git\bin\bash.exe" scripts/check-installed-schema-pass.sh ((Join-Path $installDirectory "dcpdoctor.exe") -replace '\\', '/')
+          if ($LASTEXITCODE -ne 0) { throw "the installed sidecar did not run the XSD pass" }
 
       - name: The msi carries its dlls (Windows)
         if: runner.os == 'Windows'
@@ -385,6 +431,9 @@ jobs:
           $env:PATH = @("$env:SystemRoot\System32", $installDirectory) -join [IO.Path]::PathSeparator
           & (Join-Path $installDirectory "dcpdoctor.exe") --version
           if ($LASTEXITCODE -ne 0) { throw "the installed sidecar exited with $LASTEXITCODE" }
+          $env:PATH = @($env:PATH, "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\tools\libxml2", "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin") -join [IO.Path]::PathSeparator
+          & "$env:ProgramFiles\Git\bin\bash.exe" scripts/check-installed-schema-pass.sh ((Join-Path $installDirectory "dcpdoctor.exe") -replace '\\', '/')
+          if ($LASTEXITCODE -ne 0) { throw "the installed sidecar did not run the XSD pass" }
           $uninstall = Start-Process -FilePath msiexec -ArgumentList "/x `"$($installer.FullName)`" /qn" -Wait -PassThru
           if ($uninstall.ExitCode -ne 0) { throw "msi uninstall exited with $($uninstall.ExitCode)" }
           $entry = Get-ItemProperty $uninstallKeys |

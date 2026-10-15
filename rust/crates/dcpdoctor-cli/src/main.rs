@@ -435,7 +435,7 @@ enum Commands {
         no_naming: bool,
     },
 
-    /// Run the DCI conformance test suite
+    /// Run 14 basic package presence and integrity checks
     Conformance {
         /// DCP directory
         dcp_dir: PathBuf,

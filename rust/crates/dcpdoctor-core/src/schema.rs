@@ -10,6 +10,9 @@ const XMLLINT: &str = "xmllint";
 /// Env override naming the directory of XSDs to validate against.
 const SCHEMA_DIR_ENV: &str = "DCPDOCTOR_SCHEMA_DIR";
 
+// Linux desktop bundles put resources in /usr/lib/<productName from tauri.conf.json>
+const DESKTOP_PRODUCT_NAME: &str = "DcpDoctor";
+
 /// Root element of a SMPTE ST 428-7 timed-text document.
 const SMPTE_SUBTITLE_ROOT: &str = "SubtitleReel";
 
@@ -132,23 +135,10 @@ pub(crate) fn root_namespace(content: &str) -> Option<String> {
     root_element(content).map(|(_, namespace)| namespace)
 }
 
-/// Locate a directory of SMPTE/Interop XSDs. Schema-path driven: the
-/// `DCPDOCTOR_SCHEMA_DIR` env override wins, else a bundled `schemas/` dir next
-/// to the executable or in the source tree. `None` means schema checks are
-/// skipped (the schemas are not vendored, since SMPTE XSDs are copyrighted).
+/// Locate the directory of SMPTE/Interop XSDs. The `DCPDOCTOR_SCHEMA_DIR` env
+/// override wins, then the copy a release package ships beside the executable,
+/// then the source tree. `None` means the XSD pass cannot run.
 pub fn locate_schema_dir() -> Option<PathBuf> {
-    let has_xsd = |dir: &Path| {
-        std::fs::read_dir(dir).ok().is_some_and(|mut entries| {
-            entries.any(|e| {
-                e.ok().is_some_and(|e| {
-                    e.path()
-                        .extension()
-                        .is_some_and(|x| x.eq_ignore_ascii_case("xsd"))
-                })
-            })
-        })
-    };
-
     if let Ok(dir) = std::env::var(SCHEMA_DIR_ENV) {
         let p = PathBuf::from(dir);
         if has_xsd(&p) {
@@ -156,16 +146,42 @@ pub fn locate_schema_dir() -> Option<PathBuf> {
         }
     }
 
-    let mut candidates = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(exe_dir) = exe.parent()
-    {
-        candidates.push(exe_dir.join("schemas"));
-        candidates.push(exe_dir.join("../schemas"));
-    }
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../schemas"));
+    let installed = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().and_then(installed_schema_dir));
+    let source_tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../schemas");
+    installed.or_else(|| has_xsd(&source_tree).then_some(source_tree))
+}
 
-    candidates.into_iter().find(|p| has_xsd(p))
+fn installed_schema_dir(exe_dir: &Path) -> Option<PathBuf> {
+    [
+        // CLI archives, Windows installers
+        exe_dir.join("schemas"),
+        exe_dir.join("../schemas"),
+        // CLI deb
+        exe_dir.join("../share/dcpdoctor/schemas"),
+        // desktop deb, rpm and AppImage
+        exe_dir
+            .join("../lib")
+            .join(DESKTOP_PRODUCT_NAME)
+            .join("schemas"),
+        // macOS app bundle
+        exe_dir.join("../Resources/schemas"),
+    ]
+    .into_iter()
+    .find(|p| has_xsd(p))
+}
+
+fn has_xsd(dir: &Path) -> bool {
+    std::fs::read_dir(dir).ok().is_some_and(|mut entries| {
+        entries.any(|e| {
+            e.ok().is_some_and(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case("xsd"))
+            })
+        })
+    })
 }
 
 /// True when the `xmllint` the XSD pass shells out to is installed.
@@ -850,5 +866,33 @@ mod tests {
     fn a_complete_environment_reports_nothing() {
         let schema_dir = locate_schema_dir().expect("the repository vendors its XSDs");
         assert_eq!(schema_pass_unavailable(Some(&schema_dir)), None);
+    }
+
+    #[test]
+    fn each_release_layout_finds_the_schemas_it_ships() {
+        let layouts = [
+            ("usr/bin", "usr/lib/DcpDoctor/schemas"),
+            ("usr/bin", "usr/share/dcpdoctor/schemas"),
+            (
+                "DcpDoctor.app/Contents/MacOS",
+                "DcpDoctor.app/Contents/Resources/schemas",
+            ),
+            ("DcpDoctor", "DcpDoctor/schemas"),
+        ];
+        for (exe_dir, shipped) in layouts {
+            let root = tempfile::tempdir().unwrap();
+            let exe_dir = root.path().join(exe_dir);
+            let shipped = root.path().join(shipped);
+            std::fs::create_dir_all(&exe_dir).unwrap();
+            std::fs::create_dir_all(&shipped).unwrap();
+            std::fs::write(shipped.join("SMPTE-429-9-2007-AM.xsd"), "").unwrap();
+
+            let found = installed_schema_dir(&exe_dir)
+                .unwrap_or_else(|| panic!("nothing found from {}", exe_dir.display()));
+            assert_eq!(
+                found.canonicalize().unwrap(),
+                shipped.canonicalize().unwrap()
+            );
+        }
     }
 }

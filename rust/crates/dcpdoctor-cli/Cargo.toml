@@ -37,6 +37,7 @@ assets = [
     ["target/release/dcpdoctor", "usr/bin/", "755"],
     ["../../../README.md", "usr/share/doc/dcpdoctor/README.md", "644"],
     ["../../../CHANGELOG.md", "usr/share/doc/dcpdoctor/CHANGELOG.md", "644"],
+    ["../../../schemas/*", "usr/share/dcpdoctor/schemas/", "644"],
 ]
 extended-description = """\
 DcpDoctor validates Digital Cinema Packages and IMF packages against \
