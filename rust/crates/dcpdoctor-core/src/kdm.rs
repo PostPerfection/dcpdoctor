@@ -1,9 +1,10 @@
 /// KDM (Key Delivery Message) parsing and validation.
-use crate::{Code, Note};
+use crate::{Code, Note, Severity};
 use asdcplib::WriterInfo;
 use asdcplib::crypto::{AesDecContext, HmacContext};
 use base64::Engine;
-use postkit::certificate::{FileInspection, UnwrappedKdm, unwrap_kdm};
+use postkit::certificate::{FileInspection, KdmMetadata, UnwrappedKdm, unwrap_kdm};
+use postkit::package_library::Standard;
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -223,22 +224,11 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
 
     let cpl_id = info.cpl_id.to_string();
 
-    // Cross-validate against DCP if provided
     if let Some(dcp_path) = dcp_dir {
-        // Check that the DCP contains a CPL with the referenced ID
-        let cpl_found = find_cpl_id_in_dcp(dcp_path, &cpl_id);
-        if !cpl_found {
-            notes.push(
-                Note::error(
-                    Code::CrossRefBroken,
-                    format!("KDM references CPL {cpl_id} which is not present in the DCP"),
-                )
-                .with_file(kdm_path),
-            );
-        }
+        notes.extend(check_against_package(&info, dcp_path, kdm_path));
     }
 
-    if notes.is_empty() {
+    if !notes.iter().any(|note| note.severity > Severity::Info) {
         notes.push(
             Note::info(
                 Code::EncryptionDetected,
@@ -438,25 +428,76 @@ fn parse_iso_datetime(s: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(&cleaned, &time::format_description::well_known::Rfc3339).ok()
 }
 
-fn find_cpl_id_in_dcp(dcp_dir: &Path, cpl_id: &str) -> bool {
-    let target = cpl_id.to_lowercase();
-    // Search all XML files for the CPL ID
-    let entries = match std::fs::read_dir(dcp_dir) {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("xml")
-            && let Ok(content) = std::fs::read_to_string(&path)
-            && content.contains("CompositionPlaylist")
-            && content.to_lowercase().contains(&target)
-        {
-            return true;
+fn check_against_package(info: &KdmMetadata, package_dir: &Path, kdm_path: &Path) -> Vec<Note> {
+    let cpl_path = match postkit::kdm_coverage::find_cpl(package_dir, info.cpl_id) {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            return vec![
+                Note::error(
+                    Code::CrossRefBroken,
+                    format!(
+                        "KDM references CPL {} which is not present in the DCP",
+                        info.cpl_id
+                    ),
+                )
+                .with_file(kdm_path),
+            ];
         }
+        Err(e) => {
+            return vec![
+                Note::error(
+                    Code::CrossRefBroken,
+                    format!("cannot look for the KDM's CPL in the package: {e}"),
+                )
+                .with_file(kdm_path),
+            ];
+        }
+    };
+    let cpl = match std::fs::read_to_string(&cpl_path) {
+        Ok(text) => text,
+        Err(e) => {
+            return vec![
+                Note::error(
+                    Code::XmlParseError,
+                    format!("cannot read {}: {e}", cpl_path.display()),
+                )
+                .with_file(&cpl_path),
+            ];
+        }
+    };
+    if postkit::package_library::cpl_standard(&cpl) == Ok(Standard::Imf) {
+        return vec![
+            Note::info(
+                Code::EncryptionDetected,
+                "KDM keys not matched to the CPL: an IMF CPL names no KeyIds",
+            )
+            .with_file(&cpl_path),
+        ];
     }
-    false
+    let keys = match postkit::kdm_coverage::read_cpl_keys(&cpl) {
+        Ok(keys) => keys,
+        Err(e) => {
+            return vec![Note::error(Code::XmlParseError, e).with_file(&cpl_path)];
+        }
+    };
+    let coverage = postkit::kdm_coverage::check_kdm_coverage(info, &keys);
+    let missing = coverage
+        .missing_keys
+        .iter()
+        .map(|missing| Note::error(Code::KdmKeyMissing, missing.to_string()));
+    let unused = coverage
+        .unused_keys
+        .iter()
+        .map(|unused| Note::warning(Code::KdmKeyUnused, unused.to_string()));
+    let mismatched = coverage
+        .key_type_mismatches
+        .iter()
+        .map(|mismatch| Note::warning(Code::KdmKeyTypeMismatch, mismatch.to_string()));
+    missing
+        .chain(unused)
+        .chain(mismatched)
+        .map(|note| note.with_file(kdm_path))
+        .collect()
 }
 
 // The digest rules, run against KDMs another implementation wrote. Each rule has
@@ -1226,6 +1267,97 @@ pub(crate) mod decrypt_tests {
             Ok(_) => panic!("wrong recipient key must fail loud"),
             Err(e) => assert!(!e.is_empty(), "error must carry a message"),
         }
+    }
+
+    // a one-reel SMPTE DCP whose picture and sound carry these KeyIds
+    fn package_with_key_ids(
+        dir: &Path,
+        cpl_id: &str,
+        picture_key: uuid::Uuid,
+        sound_key: uuid::Uuid,
+    ) {
+        use postkit::packaging::{AssetMap, AssetMapAsset, DcpCpl, DcpCplReel, ns};
+        let cpl = DcpCpl {
+            uuid: cpl_id.to_string(),
+            namespace: ns::CPL_SMPTE.into(),
+            title: "Keys".into(),
+            reels: vec![DcpCplReel {
+                reel_id: uuid::Uuid::new_v4().to_string(),
+                picture_id: uuid::Uuid::new_v4().to_string(),
+                picture_edit_rate_num: 24,
+                picture_edit_rate_den: 1,
+                picture_duration: 24,
+                picture_width: 1998,
+                picture_height: 1080,
+                picture_key_id: Some(picture_key.to_string()),
+                sound_id: Some(uuid::Uuid::new_v4().to_string()),
+                sound_edit_rate_num: 24,
+                sound_edit_rate_den: 1,
+                sound_duration: 24,
+                sound_key_id: Some(sound_key.to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        std::fs::write(dir.join("composition.xml"), cpl.to_xml()).unwrap();
+        let assetmap = AssetMap {
+            uuid: uuid::Uuid::new_v4().to_string(),
+            namespace: ns::AM_SMPTE.into(),
+            assets: vec![AssetMapAsset {
+                id: cpl_id.to_string(),
+                path: "composition.xml".into(),
+                packing_list: false,
+            }],
+            ..Default::default()
+        };
+        std::fs::write(dir.join("ASSETMAP.xml"), assetmap.to_xml()).unwrap();
+    }
+
+    #[test]
+    fn a_kdm_lacking_the_sound_key_is_an_error_naming_the_reel() {
+        let picture_key = uuid::Uuid::new_v4();
+        let sound_key = uuid::Uuid::new_v4();
+        let cpl_id = "8a2b1c3d-4e5f-6071-8293-a4b5c6d7e8f9";
+        let (kdm_path, _recipient_key, _wrong, _certs) = make_kdm(picture_key, [0x44; 16], cpl_id);
+        let dir = tempfile::tempdir().unwrap();
+        package_with_key_ids(dir.path(), cpl_id, picture_key, sound_key);
+
+        let notes = validate_kdm(&kdm_path, Some(dir.path()));
+        let missing: Vec<&Note> = notes
+            .iter()
+            .filter(|n| n.code == Code::KdmKeyMissing)
+            .collect();
+        assert_eq!(missing.len(), 1, "{notes:?}");
+        assert_eq!(missing[0].severity, Severity::Error);
+        assert_eq!(
+            missing[0].message,
+            format!("reel 1 MainSound KeyId urn:uuid:{sound_key} has no key in the KDM")
+        );
+        assert!(
+            !notes.iter().any(|n| n.code == Code::CrossRefBroken),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_kdm_whose_cpl_is_not_in_the_package_is_a_broken_reference() {
+        let key = uuid::Uuid::new_v4();
+        let (kdm_path, _recipient_key, _wrong, _certs) =
+            make_kdm(key, [0x55; 16], "8a2b1c3d-4e5f-6071-8293-a4b5c6d7e8f9");
+        let dir = tempfile::tempdir().unwrap();
+        package_with_key_ids(dir.path(), "9b3c2d4e-0000-0000-0000-000000000000", key, key);
+
+        let notes = validate_kdm(&kdm_path, Some(dir.path()));
+        assert!(
+            notes.iter().any(|n| n.code == Code::CrossRefBroken
+                && n.severity == Severity::Error
+                && n.message.contains("not present in the DCP")),
+            "{notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.code == Code::KdmKeyMissing),
+            "{notes:?}"
+        );
     }
 
     #[test]

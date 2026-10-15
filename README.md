@@ -293,7 +293,7 @@ dcpdoctor diff --fingerprint /path/to/dcp_v1 /path/to/dcp_v2
 # Validate KDM file
 dcpdoctor kdm /path/to/kdm.xml
 
-# Validate KDM against specific DCP
+# Validate KDM against specific DCP: its CPL must be there and every encrypted asset's KeyId in the KDM
 dcpdoctor kdm /path/to/kdm.xml --dcp /path/to/dcp
 
 # Verify an encrypted DCP or IMP: decrypt essence with a KDM and run the full checks

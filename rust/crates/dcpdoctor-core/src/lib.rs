@@ -236,6 +236,9 @@ pub enum Code {
     KdmThumbprintInvalid,
     KdmContentAuthenticatorInvalid,
     KdmAssumeTrustConflict,
+    KdmKeyMissing,
+    KdmKeyUnused,
+    KdmKeyTypeMismatch,
 
     // Reel continuity
     ReelDiscontinuity,
@@ -396,6 +399,9 @@ impl Code {
             Code::KdmThumbprintInvalid => "kdm_thumbprint_invalid",
             Code::KdmContentAuthenticatorInvalid => "kdm_content_authenticator_invalid",
             Code::KdmAssumeTrustConflict => "kdm_assume_trust_conflict",
+            Code::KdmKeyMissing => "kdm_key_missing",
+            Code::KdmKeyUnused => "kdm_key_unused",
+            Code::KdmKeyTypeMismatch => "kdm_key_type_mismatch",
             Code::ReelDiscontinuity => "reel_discontinuity",
             Code::ReelIncoherent => "reel_incoherent",
             Code::ReelTooShort => "reel_too_short",

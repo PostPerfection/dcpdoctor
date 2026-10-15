@@ -613,6 +613,13 @@ fn main() {
                         info.asset_count, info.cpl_count, info.pkl_count, info.reel_count
                     );
                     println!("Total duration: {} frames", info.total_duration_frames);
+                    for cpl in &info.cpls {
+                        let encryption = if cpl.encrypted { "encrypted" } else { "clear" };
+                        println!("CPL: urn:uuid:{} {} ({encryption})", cpl.id, cpl.title);
+                    }
+                    for pkl_id in &info.pkl_ids {
+                        println!("PKL: urn:uuid:{pkl_id}");
+                    }
                 }
             }
             None => {

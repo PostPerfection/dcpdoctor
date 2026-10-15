@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **`kdm --dcp` checks the KDM carries every key the CPL needs**: the CPL is found by id through the ASSETMAP, an encrypted asset whose KeyId the KDM lacks is a `kdm_key_missing` error naming its reel and kind, a KDM key no asset uses is a `kdm_key_unused` warning, and a key type that does not fit the asset kind is a `kdm_key_type_mismatch` warning. `info` lists each CPL with its id, title and whether it is encrypted, and the PKL ids, and its JSON adds `cpls`, `pkl_ids` and `assetmap_entries` with each asset's id and path. Encryption detection counts a namespace-prefixed `KeyId`, which it missed before.
 - **`inspect` shows what a KDM or a certificate file holds**: for a KDM, its title, CPL, window, recipient, key ids with their types and whether its signature verifies, then the signer chain. For a PEM file, every certificate leaf first with its full subject and issuer, validity, key, CA flag, key usage, thumbprint and roles, and the ST 430-2 chain check. A tampered KDM still prints, with the signature failing. `--json` prints the same as JSON. No private key is needed. A certificate file holding a lone leaf, without its issuers, passes with ST 430-2 rules 14, 15, 17 and 18 listed as not checked because there is no chain, and the JSON check gains `issuers_missing`. A KDM's signer chain is still refused without its issuers.
 
 ### Changed

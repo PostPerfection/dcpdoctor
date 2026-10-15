@@ -18,6 +18,22 @@ pub struct DcpInfo {
     pub audio_channels: u32,
     pub has_atmos: bool,
     pub is_stereo3d: bool,
+    pub cpls: Vec<CplSummary>,
+    pub pkl_ids: Vec<String>,
+    pub assetmap_entries: Vec<AssetMapEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CplSummary {
+    pub id: String,
+    pub title: String,
+    pub encrypted: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AssetMapEntry {
+    pub id: String,
+    pub path: String,
 }
 
 /// Get summary information about a DCP.
@@ -29,6 +45,26 @@ pub fn get_dcp_info(dcp_dir: &Path) -> Option<DcpInfo> {
         asset_count: dcp.assetmap.assets.len(),
         cpl_count: dcp.cpls.len(),
         pkl_count: dcp.pkls.len(),
+        cpls: dcp
+            .cpls
+            .iter()
+            .map(|(path, cpl)| CplSummary {
+                id: cpl.id.clone(),
+                title: cpl.content_title.clone(),
+                encrypted: std::fs::read_to_string(path)
+                    .is_ok_and(|text| crate::validators::cpl_is_encrypted(&text)),
+            })
+            .collect(),
+        pkl_ids: dcp.pkls.iter().map(|(_, pkl)| pkl.id.clone()).collect(),
+        assetmap_entries: dcp
+            .assetmap
+            .assets
+            .iter()
+            .map(|asset| AssetMapEntry {
+                id: asset.id.clone(),
+                path: asset.path.clone(),
+            })
+            .collect(),
         ..Default::default()
     };
 

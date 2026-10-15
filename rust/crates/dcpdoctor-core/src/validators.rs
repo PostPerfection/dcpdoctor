@@ -276,6 +276,8 @@ pub fn check_assetmap_chunk_size(
 
 // ─── Encryption Detection ─────────────────────────────────────────────────────
 
+const KEY_ID_ELEMENT: &[u8] = b"KeyId";
+
 /// Check CPLs for encrypted content and whether a KDM is present, either
 /// supplied to the run or lying in the package directory.
 pub fn check_encryption(dcp_dir: &Path, cpl_paths: &[PathBuf], kdm_supplied: bool) -> Vec<Note> {
@@ -286,7 +288,7 @@ pub fn check_encryption(dcp_dir: &Path, cpl_paths: &[PathBuf], kdm_supplied: boo
             continue;
         };
 
-        let key_id_count = content.matches("<KeyId>").count();
+        let key_id_count = key_id_count(&content);
         let has_enc_keys = content.contains("<EncryptedDocumentKey");
 
         if key_id_count > 0 || has_enc_keys {
@@ -325,14 +327,33 @@ pub fn check_encryption(dcp_dir: &Path, cpl_paths: &[PathBuf], kdm_supplied: boo
     notes
 }
 
+// a namespace prefix such as cpl:KeyId counts too
+fn key_id_count(xml: &str) -> usize {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut count = 0;
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(e)) if e.local_name().as_ref() == KEY_ID_ELEMENT => {
+                count += 1;
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => return count,
+            _ => {}
+        }
+    }
+}
+
 /// True if any CPL declares encrypted essence (a KeyId or an embedded
 /// EncryptedDocumentKey), i.e. the package needs a KDM.
 fn package_is_encrypted(cpl_paths: &[PathBuf]) -> bool {
     cpl_paths.iter().any(|p| {
         std::fs::read_to_string(p)
-            .map(|c| c.contains("<KeyId>") || c.contains("<EncryptedDocumentKey"))
+            .map(|c| cpl_is_encrypted(&c))
             .unwrap_or(false)
     })
+}
+
+pub(crate) fn cpl_is_encrypted(cpl: &str) -> bool {
+    key_id_count(cpl) > 0 || cpl.contains("<EncryptedDocumentKey")
 }
 
 /// ClairMeta `check_dcp_signed`: an encrypted DCP must carry a signed CPL and
@@ -957,7 +978,7 @@ fn essence_block<'a>(reel: &'a str, tags: &[&str]) -> Option<&'a str> {
 /// ClairMeta keys per-asset encryption off `<KeyId>` presence in the CPL.
 /// An asset carries a `<KeyId>` exactly when its essence is encrypted.
 fn is_encrypted(block: &str) -> bool {
-    block.contains("<KeyId>")
+    key_id_count(block) > 0
 }
 
 fn encrypted_str(block: &str) -> String {
@@ -5390,6 +5411,32 @@ mod tests {
             key(picture),
             key(sound)
         ))
+    }
+
+    #[test]
+    fn a_prefixed_key_id_counts_as_encrypted() {
+        let package = tempfile::tempdir().unwrap();
+        let cpl_path = package.path().join("CPL.xml");
+        std::fs::write(
+            &cpl_path,
+            r#"<cpl:CompositionPlaylist xmlns:cpl="http://www.smpte-ra.org/schemas/429-7/2006/CPL">
+  <cpl:ReelList><cpl:Reel><cpl:AssetList>
+    <cpl:MainPicture><cpl:Id>urn:uuid:00000000-0000-0000-0000-0000000000b1</cpl:Id><cpl:KeyId>urn:uuid:00000000-0000-0000-0000-0000000000e1</cpl:KeyId></cpl:MainPicture>
+    <cpl:MainSound><cpl:Id>urn:uuid:00000000-0000-0000-0000-0000000000b2</cpl:Id><cpl:KeyId>urn:uuid:00000000-0000-0000-0000-0000000000e2</cpl:KeyId></cpl:MainSound>
+  </cpl:AssetList></cpl:Reel></cpl:ReelList>
+</cpl:CompositionPlaylist>"#,
+        )
+        .unwrap();
+        let notes = check_encryption(package.path(), &[cpl_path], false);
+        let detected = notes
+            .iter()
+            .find(|n| n.code == Code::EncryptionDetected)
+            .unwrap_or_else(|| panic!("a prefixed KeyId must be detected, got: {notes:?}"));
+        assert!(
+            detected.message.contains("(2 encrypted assets)"),
+            "{}",
+            detected.message
+        );
     }
 
     /// A KDM handed to the run counts as much as one lying in the package.
