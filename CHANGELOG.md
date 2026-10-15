@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [1.5.0] - 2026-10-15
+
 ### Fixed
 - **A name with no territory field is read correctly**: DCP-o-matic and dcpwizard leave the territory out of the ISDCF name when no release territory is set, as in `Film_FTR-1_S_XX-XX_51_4K_20261006_SMPTE_OV`. The naming check read every field after it one place off and reported `Non-standard audio field: 4K` and `Non-standard resolution field: 20261006`. When the fifth field is a registry audio value and the sixth is 2K or 4K, the check now reads them as audio and resolution.
 - **A missing ExtensionMetadata is reported as `missing_recommended_element`**: the Bv2.1 note said ExtensionMetadata is recommended but carried the `missing_required_element` code. It now has a code of its own.
