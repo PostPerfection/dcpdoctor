@@ -12,7 +12,7 @@ version = "1.5.0"
 clap = { version = "4", features = ["derive"] }
 dcpdoctor-imf = { path = "crates/dcpdoctor-imf" }
 dcpdoctor-parse = { path = "crates/dcpdoctor-parse" }
-postkit = { git = "https://github.com/PostPerfection/postkit.git", rev = "3f42b03dea6578f91fd780022604a87898f5cb94", default-features = false }
+postkit = { git = "https://github.com/PostPerfection/postkit.git", rev = "f55ac0364b5a7e6478ce0ea541eb8b49601a2e81", default-features = false }
 quick-xml = "0.41"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
