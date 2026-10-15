@@ -3,8 +3,7 @@ use crate::{Code, Note};
 use asdcplib::WriterInfo;
 use asdcplib::crypto::{AesDecContext, HmacContext};
 use base64::Engine;
-use postkit::certificate::{UnwrappedKdm, unwrap_kdm};
-use serde::{Deserialize, Serialize};
+use postkit::certificate::{FileInspection, UnwrappedKdm, unwrap_kdm};
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -123,77 +122,12 @@ impl EssenceKey {
     }
 }
 
-/// Parsed KDM information.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct KdmInfo {
-    pub cpl_id: String,
-    pub content_title: String,
-    pub not_valid_before: String,
-    pub not_valid_after: String,
-    pub recipient_cn: String,
-    pub issuer: String,
-    pub key_count: usize,
-}
-
-/// Parse a KDM XML file and extract key information.
-pub fn parse_kdm(kdm_path: &Path) -> Result<KdmInfo, String> {
-    let xml = read_kdm(kdm_path)?;
-    parse_kdm_xml(&xml)
+pub fn inspect_file(path: &Path) -> Result<FileInspection, String> {
+    postkit::certificate::inspect_file(path, chrono::Utc::now())
 }
 
 fn read_kdm(kdm_path: &Path) -> Result<String, String> {
     std::fs::read_to_string(kdm_path).map_err(|e| format!("Failed to read KDM file: {e}"))
-}
-
-fn parse_kdm_xml(xml: &str) -> Result<KdmInfo, String> {
-    if !xml.contains("KeyDeliveryMessage") && !xml.contains("KDM") {
-        return Err("File does not appear to be a KDM".into());
-    }
-
-    let cpl_id = extract_element(xml, "CompositionPlaylistId")
-        .unwrap_or_default()
-        .replace("urn:uuid:", "");
-
-    let content_title = extract_element(xml, "ContentTitleText").unwrap_or_default();
-
-    let not_valid_before = extract_element(xml, "ContentKeysNotValidBefore")
-        .or_else(|| extract_element(xml, "NotValidBefore"))
-        .unwrap_or_default();
-    let not_valid_after = extract_element(xml, "ContentKeysNotValidAfter")
-        .or_else(|| extract_element(xml, "NotValidAfter"))
-        .unwrap_or_default();
-
-    let recipient_cn = extract_element(xml, "X509SubjectName")
-        .and_then(|s| {
-            s.split(',')
-                .find(|part| part.trim().starts_with("CN="))
-                .map(|cn| cn.trim().trim_start_matches("CN=").to_string())
-        })
-        .unwrap_or_default();
-
-    let issuer = extract_element(xml, "X509IssuerName")
-        .and_then(|s| {
-            s.split(',')
-                .find(|part| part.trim().starts_with("O="))
-                .map(|o| o.trim().trim_start_matches("O=").to_string())
-        })
-        .unwrap_or_default();
-
-    let mut key_count =
-        xml.matches("<KeyId>").count() + xml.matches("<enc:CipherValue>").count().min(1);
-    if key_count == 0 {
-        key_count = xml.matches("CipherValue").count();
-    }
-
-    Ok(KdmInfo {
-        cpl_id,
-        content_title,
-        not_valid_before,
-        not_valid_after,
-        recipient_cn,
-        issuer,
-        key_count,
-    })
 }
 
 /// Validate a KDM file, optionally against a DCP.
@@ -220,7 +154,7 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
         }
     };
 
-    let info = match parse_kdm_xml(&xml) {
+    let info = match postkit::certificate::parse_kdm(&xml) {
         Ok(i) => i,
         Err(e) => {
             notes.push(Note::error(Code::XmlParseError, e).with_file(kdm_path));
@@ -287,31 +221,17 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
         }
     }
 
-    // Check CPL ID is present
-    if info.cpl_id.is_empty() {
-        notes.push(
-            Note::warning(
-                Code::KdmRequired,
-                "KDM does not reference a CompositionPlaylistId".to_string(),
-            )
-            .with_file(kdm_path),
-        );
-    }
+    let cpl_id = info.cpl_id.to_string();
 
     // Cross-validate against DCP if provided
-    if let Some(dcp_path) = dcp_dir
-        && !info.cpl_id.is_empty()
-    {
+    if let Some(dcp_path) = dcp_dir {
         // Check that the DCP contains a CPL with the referenced ID
-        let cpl_found = find_cpl_id_in_dcp(dcp_path, &info.cpl_id);
+        let cpl_found = find_cpl_id_in_dcp(dcp_path, &cpl_id);
         if !cpl_found {
             notes.push(
                 Note::error(
                     Code::CrossRefBroken,
-                    format!(
-                        "KDM references CPL {} which is not present in the DCP",
-                        info.cpl_id
-                    ),
+                    format!("KDM references CPL {cpl_id} which is not present in the DCP"),
                 )
                 .with_file(kdm_path),
             );
@@ -325,12 +245,8 @@ pub fn validate_kdm(kdm_path: &Path, dcp_dir: Option<&Path>) -> Vec<Note> {
                 format!(
                     "KDM valid for '{}' (CPL {}, {} key(s), valid {} → {})",
                     info.content_title,
-                    if info.cpl_id.is_empty() {
-                        "unknown"
-                    } else {
-                        &info.cpl_id
-                    },
-                    info.key_count,
+                    cpl_id,
+                    info.key_ids.len(),
                     info.not_valid_before,
                     info.not_valid_after
                 ),
@@ -502,42 +418,6 @@ fn check_digests(xml: &str, kdm_path: &Path) -> Vec<Note> {
     }
 
     notes
-}
-
-fn extract_element(xml: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    // Also try with namespace prefix
-    let open_ns = format!(":{tag}>");
-    let close_ns = format!(":/{tag}>");
-
-    if let Some(start) = xml.find(&open) {
-        let after = start + open.len();
-        if let Some(end) = xml[after..].find(&close) {
-            return Some(xml[after..after + end].trim().to_string());
-        }
-    }
-
-    // Try namespace-prefixed version
-    for line in xml.lines() {
-        let trimmed = line.trim();
-        if trimmed.contains(&open_ns) || trimmed.contains(&format!("<{tag}>")) {
-            // Extract content between > and <
-            if let Some(gt) = trimmed.find('>') {
-                let rest = &trimmed[gt + 1..];
-                if let Some(lt) = rest.find('<') {
-                    let val = rest[..lt].trim();
-                    if !val.is_empty() {
-                        return Some(val.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    // Try without namespace
-    let _ = (open_ns, close_ns);
-    None
 }
 
 fn parse_iso_datetime(s: &str) -> Option<OffsetDateTime> {
@@ -713,8 +593,9 @@ mod digest_tests {
     fn a_date_changed_after_signing_fails_the_kdm_signature() {
         // ContentKeysNotValidAfter sits inside AuthenticatedPublic, which the
         // KDM's by-Id references cover.
-        let signed_date = extract_element(&fixture_xml(DCI_ANY), "ContentKeysNotValidAfter")
-            .expect("the fixture declares a key validity end");
+        let signed_date = postkit::certificate::parse_kdm(&fixture_xml(DCI_ANY))
+            .expect("the fixture declares a key validity end")
+            .not_valid_after;
         let moved_year = format!("2099{}", &signed_date[4..]);
         assert_ne!(signed_date, moved_year, "the tamper must change the date");
 

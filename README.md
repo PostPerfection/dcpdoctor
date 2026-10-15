@@ -298,6 +298,10 @@ dcpdoctor kdm /path/to/kdm.xml --dcp /path/to/dcp
 
 # Verify an encrypted DCP or IMP: decrypt essence with a KDM and run the full checks
 dcpdoctor validate /path/to/dcp --kdm /path/to/kdm.xml --recipient-key /path/to/private.pem
+
+# Show what a KDM or a PEM certificate file holds: KDM details, key ids, signature, every certificate and the chain check
+dcpdoctor inspect /path/to/kdm.xml
+dcpdoctor --json inspect /path/to/chain.pem
 ```
 
 ### Theater Profiles

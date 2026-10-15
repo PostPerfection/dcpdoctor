@@ -219,6 +219,12 @@ enum Commands {
         dcp: Option<PathBuf>,
     },
 
+    /// Show what a KDM or a PEM certificate file holds
+    Inspect {
+        /// KDM XML or PEM certificate file
+        file: PathBuf,
+    },
+
     /// List or check theater compatibility profiles
     Profiles {
         /// Check DCP against a specific theater profile
@@ -732,6 +738,19 @@ fn main() {
                 }
             }
         }
+        Some(Commands::Inspect { file }) => match dcpdoctor_core::kdm::inspect_file(&file) {
+            Ok(inspection) => {
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&inspection).unwrap());
+                } else {
+                    print!("{inspection}");
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        },
         Some(Commands::Profiles { check, dcp }) => {
             if let Some(profile_name) = check {
                 let profile = match dcpdoctor_core::profiles::find_profile(&profile_name) {

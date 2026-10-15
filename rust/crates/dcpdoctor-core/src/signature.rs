@@ -13,7 +13,6 @@
 //! self-contained: each cert must be signed by the next and the chain must
 //! terminate in a self-signed root, all within dates.
 use crate::{Code, Note};
-use base64::Engine;
 use std::path::Path;
 use x509_parser::prelude::*;
 
@@ -114,51 +113,6 @@ pub fn verify_signature(xml_file: &Path, strict: bool) -> Vec<Note> {
     notes
 }
 
-/// Extract base64 X509Certificate blobs from the signature's KeyInfo, with the
-/// count of elements whose base64 would not decode. Resolved by namespace: the
-/// ISDCF reference DCPs and DCP-o-matic bind the signature namespace to `dsig:`,
-/// and a prefix nothing recognised left every certificate rule unrun. Without that count a chain with a
-/// corrupt certificate in it passes every chain rule.
-pub(crate) fn extract_certs(content: &str) -> (Vec<Vec<u8>>, usize) {
-    use quick_xml::events::Event;
-    use quick_xml::name::ResolveResult;
-
-    let mut reader = quick_xml::NsReader::from_str(content);
-    let mut out = Vec::new();
-    let mut undecodable = 0;
-    let mut inside = false;
-    let mut base64_text = String::new();
-
-    loop {
-        match reader.read_resolved_event() {
-            Ok((namespace, Event::Start(element)))
-                if element.local_name().as_ref() == b"X509Certificate" =>
-            {
-                inside = matches!(namespace, ResolveResult::Bound(ns) if ns.0 == DSIG_NAMESPACE);
-                base64_text.clear();
-            }
-            Ok((_, Event::Text(text))) if inside => {
-                base64_text.push_str(&String::from_utf8_lossy(text.as_ref()));
-            }
-            Ok((_, Event::End(element))) if element.local_name().as_ref() == b"X509Certificate" => {
-                if inside {
-                    let cleaned: String =
-                        base64_text.chars().filter(|c| !c.is_whitespace()).collect();
-                    match base64::engine::general_purpose::STANDARD.decode(&cleaned) {
-                        Ok(der) => out.push(der),
-                        Err(_) => undecodable += 1,
-                    }
-                }
-                inside = false;
-            }
-            Ok((_, Event::Eof)) | Err(_) => break,
-            Ok(_) => {}
-        }
-    }
-
-    (out, undecodable)
-}
-
 fn common_name<'a>(name: &'a X509Name<'a>) -> String {
     name.iter_common_name()
         .next()
@@ -169,7 +123,7 @@ fn common_name<'a>(name: &'a X509Name<'a>) -> String {
 
 /// Validate the embedded DCI certificate chain: expiry and issuer linkage.
 fn verify_cert_chain(content: &str, xml_file: &Path, strict: bool) -> Vec<Note> {
-    let (ders, undecodable) = extract_certs(content);
+    let (ders, undecodable) = postkit::xmldsig::extract_certificates(content);
     let mut notes = Vec::new();
     for _ in 0..undecodable {
         notes.push(
@@ -290,6 +244,7 @@ fn verify_cert_chain(content: &str, xml_file: &Path, strict: bool) -> Vec<Note> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use std::io::Write;
 
     fn write(name: &str, xml: &str) -> (tempfile::TempDir, std::path::PathBuf) {

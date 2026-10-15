@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- **`inspect` shows what a KDM or a certificate file holds**: for a KDM, its title, CPL, window, recipient, key ids with their types and whether its signature verifies, then the signer chain. For a PEM file, every certificate leaf first with its full subject and issuer, validity, key, CA flag, key usage, thumbprint and roles, and the ST 430-2 chain check. A tampered KDM still prints, with the signature failing. `--json` prints the same as JSON. No private key is needed.
+
+### Changed
+- **`kdm` reads the KDM with postkit's parser**: the key count in its summary line counts the KeyIdList entries, where it was one higher for a KDM with encrypted keys. A KDM missing its CompositionPlaylistId or validity window elements is an `xml_parse_error`.
+
 ## [1.5.0] - 2026-10-15
 
 ### Fixed

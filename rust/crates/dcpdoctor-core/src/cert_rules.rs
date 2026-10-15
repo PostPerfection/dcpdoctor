@@ -3,7 +3,6 @@
 //! checks: each cert in the ds:KeyInfo chain must obey the 430-2 profile
 //! (sha256 sig, 2048-bit RSA e=65537, correct BasicConstraints/KeyUsage for
 //! its role, dnQualifier == public-key thumbprint, consistent Organization).
-use crate::signature::extract_certs;
 use crate::{Code, Note};
 use base64::Engine;
 use sha1::{Digest, Sha1};
@@ -20,7 +19,7 @@ use x509_parser::public_key::PublicKey;
 /// Decode and parse failures are already reported by signature::verify_cert_chain,
 /// so we silently skip anything that does not parse here.
 pub fn check_certificates(xml_content: &str, file: &Path) -> Vec<Note> {
-    let (ders, _undecodable) = extract_certs(xml_content);
+    let (ders, _undecodable) = postkit::xmldsig::extract_certificates(xml_content);
     if ders.is_empty() {
         return Vec::new();
     }

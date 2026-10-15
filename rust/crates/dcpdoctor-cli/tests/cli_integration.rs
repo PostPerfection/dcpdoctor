@@ -114,6 +114,7 @@ fn rust_command_surface_help_smoke() {
         "serve",
         "fix",
         "kdm",
+        "inspect",
         "profiles",
         "checksum-verify",
         "loudness",
@@ -140,6 +141,80 @@ fn kdm_missing_file_fails() {
         .args(["kdm", "/nonexistent/file.kdm.xml"])
         .assert()
         .failure();
+}
+
+fn kdm_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../tests/fixtures/kdm")
+        .join(name)
+}
+
+#[test]
+fn inspect_prints_a_kdm_and_its_signer_chain() {
+    let output = cmd()
+        .arg("inspect")
+        .arg(kdm_fixture("kdm-dci-any.xml"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.starts_with("KDM\n"), "{text}");
+    assert!(text.contains("  Signature: passed\n"), "{text}");
+    assert!(
+        text.contains("Signer chain\nCertificate 1 of 3\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn inspect_reports_a_tampered_kdm_signature() {
+    let directory = TempDir::new().unwrap();
+    let tampered = directory.path().join("tampered.xml");
+    let xml = std::fs::read_to_string(kdm_fixture("kdm-dci-any.xml")).unwrap();
+    let edited = xml.replacen("<ContentTitleText>", "<ContentTitleText>Edited ", 1);
+    assert_ne!(xml, edited);
+    std::fs::write(&tampered, edited).unwrap();
+
+    let output = cmd().arg("inspect").arg(&tampered).output().unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("  Signature: failed, "), "{text}");
+}
+
+#[test]
+fn inspect_json_lists_every_certificate_of_a_pem_file() {
+    let directory = TempDir::new().unwrap();
+    let chain = directory.path().join("chain.pem");
+    let pem: String = ["root.pem", "leaf.pem", "intermediate.pem"]
+        .iter()
+        .map(|name| std::fs::read_to_string(kdm_fixture("certs").join(name)).unwrap())
+        .collect();
+    std::fs::write(&chain, pem).unwrap();
+
+    let output = cmd()
+        .args(["--json", "inspect"])
+        .arg(&chain)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let inspection: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(inspection["kind"], "certificates");
+    let certificates = inspection["certificates"].as_array().unwrap();
+    assert_eq!(certificates.len(), 3);
+    assert_eq!(certificates[0]["is_certificate_authority"], false);
+    assert_eq!(certificates[2]["subject"], certificates[2]["issuer"]);
+}
+
+#[test]
+fn inspect_refuses_a_file_that_is_neither() {
+    cmd()
+        .arg("inspect")
+        .arg(fixture_package().join("ASSETMAP.xml"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "neither a KDM nor a PEM certificate file",
+        ));
 }
 
 #[test]
