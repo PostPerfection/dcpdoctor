@@ -17,7 +17,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-asdcplib = { git = "https://github.com/PostPerfection/asdcplib-rs.git", rev = "c8c24cc2d3ed4d22460b744e55b0b840ed98cbfa" }
+asdcplib = { git = "https://github.com/PostPerfection/asdcplib-rs.git", rev = "084fd449cd90408078ee53b6b097522226e01153" }
 assert_cmd = "2"
 base64 = "0.22"
 predicates = "3"
