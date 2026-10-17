@@ -363,28 +363,31 @@ fn validate_timeline_alignment(cpl: &ImfCpl, notes: &mut Vec<ImfNote>) {
         return;
     }
 
-    let reference_duration = cpl
+    let Some(reference_track) = cpl
         .virtual_tracks
         .iter()
         .find(|vt| vt.track_type == TrackType::MainImage)
-        .map(|vt| {
-            vt.resources
-                .iter()
-                .map(|r| r.effective_duration())
-                .sum::<u64>()
-        });
-
-    let reference_duration = match reference_duration {
-        Some(d) if d > 0 => d,
-        _ => return,
+    else {
+        return;
     };
+    let reference_duration: u64 = reference_track
+        .resources
+        .iter()
+        .map(|r| r.effective_duration())
+        .sum();
+    if reference_duration == 0 {
+        return;
+    }
 
     for vt in &cpl.virtual_tracks {
         if vt.track_type == TrackType::Marker || vt.resources.is_empty() {
             continue;
         }
         let track_duration: u64 = vt.resources.iter().map(|r| r.effective_duration()).sum();
-        if track_duration > 0 && track_duration != reference_duration {
+        if track_duration == 0 {
+            continue;
+        }
+        if track_duration != reference_duration {
             notes.push(ImfNote {
                 severity: ImfSeverity::Error,
                 code: "cpl_mismatched_durations",
@@ -393,8 +396,36 @@ fn validate_timeline_alignment(cpl: &ImfCpl, notes: &mut Vec<ImfNote>) {
                     vt.track_type, vt.id, track_duration, reference_duration
                 ),
             });
+            continue;
+        }
+        for segment_index in 0..cpl.segment_count {
+            let track_segment_duration = segment_duration(vt, segment_index);
+            let reference_segment_duration = segment_duration(reference_track, segment_index);
+            if track_segment_duration != reference_segment_duration {
+                notes.push(ImfNote {
+                    severity: ImfSeverity::Error,
+                    code: "cpl_mismatched_durations",
+                    message: format!(
+                        "{:?} track {} duration in segment {} ({}) differs from MainImage duration in that segment ({}) (ST 2067-3 Section 7.2)",
+                        vt.track_type,
+                        vt.id,
+                        segment_index + 1,
+                        track_segment_duration,
+                        reference_segment_duration
+                    ),
+                });
+            }
         }
     }
+}
+
+fn segment_duration(track: &VirtualTrack, segment_index: u32) -> u64 {
+    track
+        .resources
+        .iter()
+        .filter(|resource| resource.segment_index == segment_index)
+        .map(|resource| resource.effective_duration())
+        .sum()
 }
 
 fn validate_uuids(cpl: &ImfCpl, notes: &mut Vec<ImfNote>) {
@@ -483,6 +514,31 @@ fn validate_segment_structure(cpl: &ImfCpl, notes: &mut Vec<ImfNote>) {
             code: "missing_required_element",
             message: "CPL has no Segment elements (at least one required)".to_string(),
         });
+    }
+
+    for vt in cpl
+        .virtual_tracks
+        .iter()
+        .filter(|vt| !vt.resources.is_empty())
+    {
+        for segment_index in 0..cpl.segment_count {
+            let in_segment = vt
+                .resources
+                .iter()
+                .any(|resource| resource.segment_index == segment_index);
+            if !in_segment {
+                notes.push(ImfNote {
+                    severity: ImfSeverity::Error,
+                    code: "missing_required_element",
+                    message: format!(
+                        "Virtual track {} ({:?}) has no resources in segment {} (ST 2067-3 Section 6.9.3 requires every virtual track in every segment)",
+                        vt.id,
+                        vt.track_type,
+                        segment_index + 1
+                    ),
+                });
+            }
+        }
     }
 }
 
@@ -954,5 +1010,95 @@ mod tests {
             .iter()
             .any(|n| n.code == "supplemental_ov_not_provided"));
         assert!(!soft.iter().any(|n| n.code == "cross_ref_broken"));
+    }
+
+    const TRACK_FILE_DURATION: u64 = 10;
+
+    fn segment_resource(
+        segment_index: u32,
+        entry_point: u64,
+        source_duration: u64,
+    ) -> TrackResource {
+        TrackResource {
+            intrinsic_duration: TRACK_FILE_DURATION,
+            entry_point,
+            source_duration,
+            edit_rate: (24, 1),
+            segment_index,
+            ..Default::default()
+        }
+    }
+
+    fn two_segment_cpl(image: Vec<TrackResource>, audio: Vec<TrackResource>) -> ImfCpl {
+        let total_duration = image.iter().map(|r| r.effective_duration()).sum();
+        ImfCpl {
+            segment_count: 2,
+            edit_rate: (24, 1),
+            total_duration,
+            virtual_tracks: vec![
+                VirtualTrack {
+                    id: "image-track".to_string(),
+                    track_type: TrackType::MainImage,
+                    resources: image,
+                },
+                VirtualTrack {
+                    id: "audio-track".to_string(),
+                    track_type: TrackType::MainAudio,
+                    resources: audio,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_virtual_track_continuing_over_two_segments_sums_its_durations() {
+        let image = vec![segment_resource(0, 0, 4), segment_resource(1, 4, 6)];
+        let cpl = two_segment_cpl(image.clone(), image);
+        assert_eq!(cpl.total_duration, 10);
+
+        let mut notes = Vec::new();
+        validate_virtual_tracks(&cpl, &mut notes);
+        validate_timeline_alignment(&cpl, &mut notes);
+        validate_segment_structure(&cpl, &mut notes);
+        assert!(
+            notes.is_empty(),
+            "{:?}",
+            notes.iter().map(|n| &n.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_track_whose_segment_durations_differ_from_the_image_is_named_per_segment() {
+        let image = vec![segment_resource(0, 0, 4), segment_resource(1, 4, 6)];
+        let audio = vec![segment_resource(0, 0, 6), segment_resource(1, 6, 4)];
+        let cpl = two_segment_cpl(image, audio);
+
+        let mut notes = Vec::new();
+        validate_timeline_alignment(&cpl, &mut notes);
+        let messages: Vec<&str> = notes
+            .iter()
+            .filter(|n| n.code == "cpl_mismatched_durations")
+            .map(|n| n.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].contains("MainAudio track audio-track duration in segment 1 (6)"));
+        assert!(messages[1]
+            .contains("in segment 2 (4) differs from MainImage duration in that segment (6)"));
+    }
+
+    #[test]
+    fn a_track_absent_from_one_segment_is_named() {
+        let image = vec![segment_resource(0, 0, 4), segment_resource(1, 4, 6)];
+        let audio = vec![segment_resource(0, 0, 4)];
+        let cpl = two_segment_cpl(image, audio);
+
+        let mut notes = Vec::new();
+        validate_segment_structure(&cpl, &mut notes);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].code, "missing_required_element");
+        assert!(notes[0]
+            .message
+            .contains("Virtual track audio-track (MainAudio) has no resources in segment 2"));
     }
 }

@@ -168,13 +168,14 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                     | "IABSequence"
                     | "ImmersiveAudioSequence"
                     | "MarkerSequence" => {
-                        if let Some(vt) = current_vt.take() {
-                            cpl.virtual_tracks.push(vt);
+                        if let Some(sequence) = current_vt.take() {
+                            add_sequence(&mut cpl.virtual_tracks, sequence);
                         }
                     }
                     "Resource" => {
-                        if let Some(res) = current_resource.take() {
+                        if let Some(mut res) = current_resource.take() {
                             if let Some(ref mut vt) = current_vt {
+                                res.segment_index = cpl.segment_count.saturating_sub(1);
                                 vt.resources.push(res);
                             }
                         }
@@ -276,6 +277,11 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
                             if vt.id.is_empty() {
                                 vt.id = text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
                             }
+                        }
+                    }
+                    "TrackId" if in_vt && !in_resource => {
+                        if let Some(ref mut vt) = current_vt {
+                            vt.id = text.strip_prefix("urn:uuid:").unwrap_or(&text).to_string();
                         }
                     }
                     "Id" if in_resource => {
@@ -388,6 +394,16 @@ pub fn parse_imf_cpl(xml: &str) -> Result<ImfCpl, String> {
     }
 
     Ok(cpl)
+}
+
+fn add_sequence(virtual_tracks: &mut Vec<VirtualTrack>, sequence: VirtualTrack) {
+    let existing = virtual_tracks
+        .iter_mut()
+        .find(|track| track.id == sequence.id && track.track_type == sequence.track_type);
+    match existing {
+        Some(track) => track.resources.extend(sequence.resources),
+        None => virtual_tracks.push(sequence),
+    }
 }
 
 /// Parse an integer element's text, recording the element name when the text is
@@ -627,6 +643,112 @@ mod tests {
             resource.source_encoding,
             "dddddddd-4444-4444-4444-dddddddddddd"
         );
+    }
+
+    #[test]
+    fn sequences_sharing_a_track_id_across_segments_are_one_virtual_track() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<CompositionPlaylist xmlns="http://www.smpte-ra.org/schemas/2067-3/2016">
+  <Id>urn:uuid:12345678-1234-1234-1234-123456789abc</Id>
+  <EditRate>24 1</EditRate>
+  <SegmentList>
+    <Segment>
+      <Id>urn:uuid:00000000-0000-0000-0000-000000000001</Id>
+      <SequenceList>
+        <MainImageSequence>
+          <Id>urn:uuid:00000000-0000-0000-0000-000000000011</Id>
+          <TrackId>urn:uuid:aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa</TrackId>
+          <ResourceList><Resource>
+            <Id>urn:uuid:00000000-0000-0000-0000-000000000111</Id>
+            <EditRate>24 1</EditRate>
+            <IntrinsicDuration>10</IntrinsicDuration>
+            <EntryPoint>0</EntryPoint>
+            <SourceDuration>4</SourceDuration>
+            <TrackFileId>urn:uuid:cccccccc-3333-3333-3333-cccccccccccc</TrackFileId>
+          </Resource></ResourceList>
+        </MainImageSequence>
+        <MainAudioSequence>
+          <Id>urn:uuid:00000000-0000-0000-0000-000000000012</Id>
+          <TrackId>urn:uuid:bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb</TrackId>
+          <ResourceList><Resource>
+            <Id>urn:uuid:00000000-0000-0000-0000-000000000112</Id>
+            <EditRate>24 1</EditRate>
+            <IntrinsicDuration>10</IntrinsicDuration>
+            <EntryPoint>0</EntryPoint>
+            <SourceDuration>4</SourceDuration>
+            <TrackFileId>urn:uuid:dddddddd-4444-4444-4444-dddddddddddd</TrackFileId>
+          </Resource></ResourceList>
+        </MainAudioSequence>
+      </SequenceList>
+    </Segment>
+    <Segment>
+      <Id>urn:uuid:00000000-0000-0000-0000-000000000002</Id>
+      <SequenceList>
+        <MainImageSequence>
+          <Id>urn:uuid:00000000-0000-0000-0000-000000000021</Id>
+          <TrackId>urn:uuid:aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa</TrackId>
+          <ResourceList><Resource>
+            <Id>urn:uuid:00000000-0000-0000-0000-000000000121</Id>
+            <EditRate>24 1</EditRate>
+            <IntrinsicDuration>10</IntrinsicDuration>
+            <EntryPoint>4</EntryPoint>
+            <SourceDuration>6</SourceDuration>
+            <TrackFileId>urn:uuid:cccccccc-3333-3333-3333-cccccccccccc</TrackFileId>
+          </Resource></ResourceList>
+        </MainImageSequence>
+        <MainAudioSequence>
+          <Id>urn:uuid:00000000-0000-0000-0000-000000000022</Id>
+          <TrackId>urn:uuid:bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb</TrackId>
+          <ResourceList><Resource>
+            <Id>urn:uuid:00000000-0000-0000-0000-000000000122</Id>
+            <EditRate>24 1</EditRate>
+            <IntrinsicDuration>10</IntrinsicDuration>
+            <EntryPoint>4</EntryPoint>
+            <SourceDuration>6</SourceDuration>
+            <TrackFileId>urn:uuid:dddddddd-4444-4444-4444-dddddddddddd</TrackFileId>
+          </Resource></ResourceList>
+        </MainAudioSequence>
+      </SequenceList>
+    </Segment>
+  </SegmentList>
+</CompositionPlaylist>"#;
+
+        let cpl = parse_imf_cpl(xml).unwrap();
+        assert_eq!(cpl.segment_count, 2);
+        assert_eq!(
+            cpl.total_duration, 10,
+            "4 frames in segment 1 plus 6 in segment 2"
+        );
+        let tracks: Vec<(&str, TrackType, Vec<u32>)> = cpl
+            .virtual_tracks
+            .iter()
+            .map(|track| {
+                let segments = track.resources.iter().map(|r| r.segment_index).collect();
+                (track.id.as_str(), track.track_type, segments)
+            })
+            .collect();
+        assert_eq!(
+            tracks,
+            vec![
+                (
+                    "aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa",
+                    TrackType::MainImage,
+                    vec![0, 1]
+                ),
+                (
+                    "bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb",
+                    TrackType::MainAudio,
+                    vec![0, 1]
+                ),
+            ]
+        );
+
+        let errors: Vec<String> = crate::validate::validate_imf_cpl_pure(&cpl)
+            .into_iter()
+            .filter(|note| note.severity == ImfSeverity::Error)
+            .map(|note| note.message)
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]

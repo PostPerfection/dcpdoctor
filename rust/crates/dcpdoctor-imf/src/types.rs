@@ -46,7 +46,7 @@ pub struct ImfCpl {
     pub integer_parse_failures: Vec<String>,
 }
 
-/// A virtual track (sequence) in the IMF CPL.
+/// A virtual track in the IMF CPL: every sequence that shares one TrackId.
 #[derive(Debug, Clone, Default)]
 pub struct VirtualTrack {
     pub id: String,
@@ -87,6 +87,7 @@ pub struct TrackResource {
     pub intrinsic_duration: u64,
     pub entry_point: u64,
     pub source_duration: u64,
+    pub segment_index: u32,
 }
 
 impl TrackResource {
