@@ -34,6 +34,7 @@ pub struct DetailedQcResult {
 enum TrackType {
     Picture,
     Sound,
+    ImmersiveAudio,
     Metadata,
 }
 
@@ -42,6 +43,7 @@ impl std::fmt::Display for TrackType {
         f.write_str(match self {
             TrackType::Picture => "picture",
             TrackType::Sound => "sound",
+            TrackType::ImmersiveAudio => "immersive audio",
             TrackType::Metadata => "metadata",
         })
     }
@@ -392,7 +394,10 @@ fn gather_track_info(dir: &std::path::Path) -> Vec<TrackInfo> {
         }
         let ext = path.extension().unwrap_or_default().to_string_lossy();
         let track_type = match ext.as_ref() {
-            // an MXF asdcplib does not read as PCM is the picture track
+            "mxf" if crate::immersive_audio::iab_package_kind(&path).is_some() => {
+                TrackType::ImmersiveAudio
+            }
+            // an MXF asdcplib reads as neither IAB nor PCM is the picture track
             "mxf" if crate::mxf::is_pcm_sound_essence(&path) => TrackType::Sound,
             "mxf" => TrackType::Picture,
             "xml" => TrackType::Metadata,
@@ -553,6 +558,42 @@ mod tests {
         assert!(
             html.contains("codestream checks did not run"),
             "the section must say why there is no table: {html}"
+        );
+    }
+
+    #[test]
+    fn an_atmos_track_is_listed_as_immersive_audio_and_left_out_of_the_forensics() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::track_fixtures::write_atmos_package(
+            dir.path(),
+            &crate::immersive_audio::tests::validation_stream_frames(1)[..2],
+        );
+        let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, PAYLOAD_BYTES); 3];
+        crate::j2k::frame_scan_tests::write_picture_mxf(dir.path(), "picture.mxf", &frames);
+
+        let output = dir.path().join("report.html");
+        let result = generate_detailed_qc(&DetailedQcOptions {
+            imp_dir: dir.path().to_path_buf(),
+            output_file: output.clone(),
+            title: "Forensics".into(),
+            client: String::new(),
+            include_loudness: false,
+            include_codestream_forensics: true,
+        });
+        assert!(result.success, "report failed: {}", result.error);
+
+        let html = std::fs::read_to_string(&output).unwrap();
+        let atmos_track = crate::track_fixtures::ATMOS_PACKAGE_TRACK;
+        assert!(
+            html.contains(&format!(
+                "<tr><td>immersive audio</td><td>{atmos_track}</td>"
+            )),
+            "{html}"
+        );
+        assert!(html.contains("<h3>picture.mxf</h3>"), "{html}");
+        assert!(
+            !html.contains(&format!("<h3>{atmos_track}</h3>")),
+            "an Atmos track has no codestream: {html}"
         );
     }
 
