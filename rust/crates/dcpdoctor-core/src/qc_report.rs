@@ -566,7 +566,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::track_fixtures::write_atmos_package(
             dir.path(),
-            &crate::immersive_audio::tests::validation_stream_frames(1)[..2],
+            &crate::immersive_audio::tests::validation_stream(1),
         );
         let frames = vec![(CONFORMANT_DECOMPOSITION_LEVELS, PAYLOAD_BYTES); 3];
         crate::j2k::frame_scan_tests::write_picture_mxf(dir.path(), "picture.mxf", &frames);

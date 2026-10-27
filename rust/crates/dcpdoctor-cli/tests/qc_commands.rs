@@ -280,6 +280,34 @@ fn validate_atmos_names_the_object_count_and_leaves_a_pcm_track_alone() {
         .stdout(predicates::str::contains("Immersive audio").not());
 }
 
+fn validation_stream_1() -> Vec<u8> {
+    use std::io::Read;
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../tests/fixtures/iab/IABValidationStream_1.iab.zip");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let mut stream = Vec::new();
+    archive
+        .by_index(0)
+        .unwrap()
+        .read_to_end(&mut stream)
+        .unwrap();
+    stream
+}
+
+#[test]
+fn validate_verbose_prints_the_iab_summary_of_an_atmos_track() {
+    let directory = TempDir::new().unwrap();
+    dcpdoctor_core::track_fixtures::write_atmos_package(directory.path(), &validation_stream_1());
+
+    cmd()
+        .args(["validate", directory.path().to_str().unwrap(), "--verbose"])
+        .assert()
+        .stdout(predicates::str::contains(
+            "iab_stream_summary - IAB stream in ATMOS.mxf: 48 of 48 frames parsed",
+        ));
+}
+
 #[test]
 fn av_sync_flags_the_reel_whose_sound_is_offset_and_clears_the_others() {
     use dcpdoctor_core::track_fixtures::{ReelTiming, write_reel_cpl};

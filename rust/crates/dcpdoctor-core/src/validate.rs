@@ -1857,7 +1857,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::track_fixtures::write_atmos_package(
             dir.path(),
-            &crate::immersive_audio::tests::validation_stream_frames(1),
+            &crate::immersive_audio::tests::validation_stream(1),
         );
 
         let checked = verify_dcp(

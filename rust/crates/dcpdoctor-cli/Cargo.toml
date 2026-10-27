@@ -26,6 +26,7 @@ scraper = "0.27"
 sha1.workspace = true
 tempfile = "3"
 uuid = "1"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [package.metadata.deb]
 name = "dcpdoctor"

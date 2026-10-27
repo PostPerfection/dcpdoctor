@@ -122,7 +122,7 @@ fn summary_message(file_name: &str, track_frame_count: u32, report: &StreamRepor
     )];
     if let Some(format) = first_frame_format {
         details.push(format!(
-            "{} kHz, {}-bit, {} fps, MaxRendered up to {largest_max_rendered}, at most {largest_bed_count} beds, {largest_bed_channel_count} bed channels and {largest_object_count} objects in a frame, largest frame {largest_frame_bytes} bytes",
+            "{} kHz, {}-bit, {} fps, MaxRendered up to {largest_max_rendered}, up to {largest_bed_count} bed(s), {largest_bed_channel_count} bed channels and {largest_object_count} objects a frame, largest frame {largest_frame_bytes} bytes",
             format.sample_rate.hertz() / 1000,
             format.bit_depth.bits(),
             frame_rate_name(format.frame_rate),
@@ -204,7 +204,7 @@ pub(crate) mod tests {
     use postkit::mxf_wrap::{MxfEncryption, MxfStandard};
     use std::io::Read;
 
-    pub(crate) fn validation_stream_frames(number: u32) -> Vec<Vec<u8>> {
+    pub(crate) fn validation_stream(number: u32) -> Vec<u8> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../tests/fixtures/iab")
             .join(format!("IABValidationStream_{number}.iab.zip"));
@@ -217,7 +217,11 @@ pub(crate) mod tests {
             .unwrap()
             .read_to_end(&mut stream)
             .unwrap();
-        postkit::iab::split_frames(&stream)
+        stream
+    }
+
+    pub(crate) fn validation_stream_frames(number: u32) -> Vec<Vec<u8>> {
+        postkit::iab::split_frames(&validation_stream(number))
             .unwrap()
             .into_iter()
             .map(<[u8]>::to_vec)

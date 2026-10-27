@@ -313,10 +313,11 @@ pub fn wrap_iab_frames<F: AsRef<[u8]>>(
 
 pub const ATMOS_PACKAGE_TRACK: &str = "ATMOS.mxf";
 
-// a DCP Atmos track and an ASSETMAP that lists it, the least verify_dcp reads track files from
-pub fn write_atmos_package<F: AsRef<[u8]>>(directory: &Path, frames: &[F]) {
+// a DCP Atmos track of the frames in a .iab stream and an ASSETMAP that lists it,
+// the least verify_dcp reads track files from
+pub fn write_atmos_package(directory: &Path, iab_stream: &[u8]) {
     let asset_id = wrap_iab_frames(
-        frames,
+        &postkit::iab::split_frames(iab_stream).unwrap(),
         &directory.join(ATMOS_PACKAGE_TRACK),
         MxfStandard::AsDcp,
         None,
