@@ -264,7 +264,7 @@ pub fn write_atmos_track(path: &Path, frames: u32, max_object_count: u16) {
     writer.finalize().unwrap();
 }
 
-// one IAB frame a picture frame at 24 fps, returns the asset id the MXF carries
+// one IAB frame a picture frame at 24 fps
 pub fn wrap_iab_frames<F: AsRef<[u8]>>(
     frames: &[F],
     output: &Path,
@@ -313,8 +313,7 @@ pub fn wrap_iab_frames<F: AsRef<[u8]>>(
 
 pub const ATMOS_PACKAGE_TRACK: &str = "ATMOS.mxf";
 
-// a DCP Atmos track of the frames in a .iab stream and an ASSETMAP that lists it,
-// the least verify_dcp reads track files from
+// a DCP Atmos track of a .iab stream's frames and an ASSETMAP listing it
 pub fn write_atmos_package(directory: &Path, iab_stream: &[u8]) {
     let asset_id = wrap_iab_frames(
         &postkit::iab::split_frames(iab_stream).unwrap(),
