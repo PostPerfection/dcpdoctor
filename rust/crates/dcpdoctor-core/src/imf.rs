@@ -146,7 +146,7 @@ pub fn validate_imp_with_progress(
     progress: &mut dyn FnMut(crate::VerifyProgress),
 ) -> Vec<Note> {
     let mut notes = Vec::new();
-    let picture_checks = PictureCheckOptions {
+    let essence_checks = EssenceCheckOptions {
         check_picture_details,
         scan_every_frame,
         keys,
@@ -247,7 +247,7 @@ pub fn validate_imp_with_progress(
             &cpl,
             imp_dir,
             cpl_path,
-            &picture_checks,
+            &essence_checks,
             &mut notes,
             progress,
         );
@@ -344,7 +344,7 @@ fn validate_track_file_refs(
     }
 }
 
-struct PictureCheckOptions<'a> {
+struct EssenceCheckOptions<'a> {
     check_picture_details: bool,
     scan_every_frame: bool,
     keys: &'a crate::kdm::ContentKeys,
@@ -354,7 +354,7 @@ fn validate_essence_descriptors(
     cpl: &ImfCpl,
     imp_dir: &Path,
     cpl_path: &Path,
-    picture_checks: &PictureCheckOptions,
+    essence_checks: &EssenceCheckOptions,
     notes: &mut Vec<Note>,
     progress: &mut dyn FnMut(crate::VerifyProgress),
 ) {
@@ -409,7 +409,7 @@ fn validate_essence_descriptors(
                         &mxf_info,
                         cpl,
                         &full_path,
-                        picture_checks,
+                        essence_checks,
                         notes,
                         progress,
                     );
@@ -456,15 +456,15 @@ fn validate_picture_essence(
     mxf: &crate::mxf::MxfInfo,
     cpl: &ImfCpl,
     mxf_path: &Path,
-    picture_checks: &PictureCheckOptions,
+    essence_checks: &EssenceCheckOptions,
     notes: &mut Vec<Note>,
     progress: &mut dyn FnMut(crate::VerifyProgress),
 ) {
-    let PictureCheckOptions {
+    let EssenceCheckOptions {
         check_picture_details,
         scan_every_frame,
         keys,
-    } = *picture_checks;
+    } = *essence_checks;
     // measured through asdcplib, so it runs even when ffprobe gave no descriptor
     if check_picture_details {
         match missing_content_key_note(mxf_path, keys) {
