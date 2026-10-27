@@ -72,6 +72,7 @@ DcpDoctor validates DCPs against SMPTE ST 429/ST 2067, Interop, and BV2.1 standa
 
 ### Dolby Atmos
 - **IAB detection**: Identifies Immersive Audio Bitstream essence from the MXF essence type, read through asdcplib. The IAB descriptor carries no object count, and the note says so. A Dolby Atmos track reports the object count its own descriptor declares
+- **IAB bitstream checks**: Every frame of a DCP Atmos track is checked against ST 2098-2, ST 429-18 and RDD 57 IAB Application Profile 1, and every frame of an IMP's IAB track against ST 2098-2 and ST 2067-201. Each finding is one `iab_constraint_violation` error or warning with its clause, its occurrence count, the number of frames it occurs in and the first of them. An `iab_stream_summary` gives the frame count, format, MaxRendered, the largest bed, object and frame sizes and the state of each constraint set. A frame that does not parse is an `iab_parse_error`. An encrypted Atmos track is checked with `--kdm` and `--recipient-key`. `--no-mxf` skips the checks
 
 ### Reel & Structure Analysis
 - **Reel continuity**: Validates sequential entry points across reels
