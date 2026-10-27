@@ -23,6 +23,7 @@ pub mod hdr_validate;
 pub mod hfr_stereo;
 pub mod imf;
 pub mod imf_compliance;
+pub mod immersive_audio;
 #[cfg(test)]
 mod imp_fixture;
 pub mod imp_info;
@@ -265,6 +266,11 @@ pub enum Code {
     // Auxiliary data (ST 429-18, e.g. Dolby Atmos IAB)
     AuxDataDetected,
 
+    // Immersive audio bitstream (ST 2098-2)
+    IabStreamSummary,
+    IabConstraintViolation,
+    IabParseError,
+
     // Package hygiene
     ForeignFileInPackage,
     EmptyFileInPackage,
@@ -415,6 +421,9 @@ impl Code {
             Code::SupplementalOplMissing => "supplemental_opl_missing",
             Code::SupplementalOvNotProvided => "supplemental_ov_not_provided",
             Code::AuxDataDetected => "aux_data_detected",
+            Code::IabStreamSummary => "iab_stream_summary",
+            Code::IabConstraintViolation => "iab_constraint_violation",
+            Code::IabParseError => "iab_parse_error",
             Code::ForeignFileInPackage => "foreign_file_in_package",
             Code::EmptyFileInPackage => "empty_file_in_package",
             Code::NonAsciiFilename => "non_ascii_filename",

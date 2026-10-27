@@ -28,4 +28,5 @@ x509-parser = { version = "0.16", features = ["verify"] }
 
 [dev-dependencies]
 dolby_vision = "3.4"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 

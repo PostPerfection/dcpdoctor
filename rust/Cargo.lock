@@ -716,6 +716,7 @@ dependencies = [
  "tracing",
  "uuid",
  "x509-parser",
+ "zip",
 ]
 
 [[package]]

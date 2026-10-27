@@ -1,9 +1,12 @@
 // writers for the synthetic DCP track files the QC tests drive, panicking on
 // failure because they only ever build fixtures
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use asdcplib::{LabelSet, Rational, WriterInfo};
+use postkit::mxf_wrap::{
+    EssenceType, McaConfig, MxfEncryption, MxfStandard, MxfWrapOptions, SoundfieldGroup, mxf_wrap,
+};
 
 const HEADER_BYTES: u32 = 16384;
 const SAMPLE_RATE: u32 = 48_000;
@@ -259,6 +262,80 @@ pub fn write_atmos_track(path: &Path, frames: u32, max_object_count: u16) {
         writer.write_frame(&frame, None, None).unwrap();
     }
     writer.finalize().unwrap();
+}
+
+// one IAB frame a picture frame at 24 fps, returns the asset id the MXF carries
+pub fn wrap_iab_frames<F: AsRef<[u8]>>(
+    frames: &[F],
+    output: &Path,
+    standard: MxfStandard,
+    encryption: Option<MxfEncryption>,
+) -> String {
+    let scratch = tempfile::tempdir().unwrap();
+    let input_files: Vec<PathBuf> = frames
+        .iter()
+        .enumerate()
+        .map(|(index, frame)| {
+            let path = scratch.path().join(format!("frame_{index:05}.iab"));
+            std::fs::write(&path, frame).unwrap();
+            path
+        })
+        .collect();
+    // the AS-02 writer refuses an IAB track without the language and soundfield group of its one label
+    let mca_config = (standard == MxfStandard::As02).then(|| McaConfig {
+        labels: String::new(),
+        spoken_language: Some("en-US".to_string()),
+        soundfield_group: Some(SoundfieldGroup {
+            title: "IAB".to_string(),
+            title_version: "1".to_string(),
+            audio_content_kind: "PRM".to_string(),
+            audio_element_kind: "FCMP".to_string(),
+        }),
+    });
+    let track_file = mxf_wrap(&MxfWrapOptions {
+        input_files,
+        output: output.to_path_buf(),
+        essence_type: EssenceType::Atmos,
+        standard,
+        fps_num: FRAME_RATE,
+        fps_den: 1,
+        partition_size: 1,
+        encryption,
+        mca_config,
+        resource_ids: vec![],
+        hdr: None,
+        asset_uuid: None,
+        timed_text_duration_frames: None,
+    });
+    assert!(track_file.success, "{}", track_file.error);
+    track_file.uuid
+}
+
+pub const ATMOS_PACKAGE_TRACK: &str = "ATMOS.mxf";
+
+// a DCP Atmos track and an ASSETMAP that lists it, the least verify_dcp reads track files from
+pub fn write_atmos_package<F: AsRef<[u8]>>(directory: &Path, frames: &[F]) {
+    let asset_id = wrap_iab_frames(
+        frames,
+        &directory.join(ATMOS_PACKAGE_TRACK),
+        MxfStandard::AsDcp,
+        None,
+    );
+    std::fs::write(
+        directory.join("ASSETMAP.xml"),
+        format!(
+            r#"<?xml version="1.0"?>
+<AssetMap xmlns="http://www.smpte-ra.org/schemas/429-9/2007/AM">
+  <Id>urn:uuid:{assetmap_id}</Id>
+  <AssetList>
+    <Asset><Id>urn:uuid:{asset_id}</Id>
+      <ChunkList><Chunk><Path>{ATMOS_PACKAGE_TRACK}</Path></Chunk></ChunkList></Asset>
+  </AssetList>
+</AssetMap>"#,
+            assetmap_id = uuid::Uuid::new_v4(),
+        ),
+    )
+    .unwrap();
 }
 
 // asdcplib has no IAB writer, so an AS-02 PCM file gets its descriptor set key
