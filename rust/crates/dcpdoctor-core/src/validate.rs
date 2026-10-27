@@ -1216,6 +1216,10 @@ pub fn verify_dcp_with_progress(
             for note in crate::mxf::check_sound_essence_mxf(&full_path, &content_keys) {
                 result.add(note);
             }
+            for note in crate::immersive_audio::check_immersive_audio_mxf(&full_path, &content_keys)
+            {
+                result.add(note);
+            }
 
             // Picture validation
             if let Some(ref pic) = mxf_info.picture
@@ -1839,6 +1843,46 @@ mod tests {
             ),
             "correctly named asset map with a matching Length must stay silent, got: {:?}",
             result.notes
+        );
+    }
+
+    const IAB_CODES: &[Code] = &[
+        Code::IabStreamSummary,
+        Code::IabConstraintViolation,
+        Code::IabParseError,
+    ];
+
+    #[test]
+    fn verify_dcp_checks_an_atmos_track_behind_the_picture_details_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::track_fixtures::write_atmos_package(
+            dir.path(),
+            &crate::immersive_audio::tests::validation_stream_frames(1),
+        );
+
+        let checked = verify_dcp(
+            dir.path(),
+            &VerifyOptions {
+                check_picture_details: true,
+                ..VerifyOptions::default()
+            },
+        );
+        let summary = checked
+            .notes
+            .iter()
+            .find(|n| n.code == Code::IabStreamSummary)
+            .unwrap_or_else(|| panic!("expected an IAB summary, got: {:?}", checked.notes));
+        assert!(
+            summary.message.contains("48 of 48 frames parsed"),
+            "{}",
+            summary.message
+        );
+
+        let unchecked = verify_dcp(dir.path(), &VerifyOptions::default());
+        assert!(
+            !unchecked.notes.iter().any(|n| IAB_CODES.contains(&n.code)),
+            "reading every frame stays behind the picture-details gate, got: {:?}",
+            unchecked.notes
         );
     }
 
@@ -3441,6 +3485,51 @@ mod tests {
                 .starts_with("[Photon] deep IMF checks did not finish"),
             "{}",
             note.message
+        );
+    }
+
+    #[test]
+    fn verify_imp_checks_an_iab_sequence_behind_the_picture_details_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        imp_fixture::write_imp_with_iab(
+            dir.path(),
+            &crate::immersive_audio::tests::validation_stream_frames(1)[..2],
+        );
+
+        let checked = verify_imp(
+            dir.path(),
+            &VerifyOptions {
+                scan_every_frame: false,
+                ..VerifyOptions::standard()
+            },
+            &mut |_| {},
+        );
+        let dlc = checked
+            .notes
+            .iter()
+            .find(|n| n.code == Code::IabConstraintViolation)
+            .unwrap_or_else(|| panic!("expected an IAB finding, got: {:?}", checked.notes));
+        assert!(
+            dlc.message
+                .contains("ST 2067-201: AudioDataDLC is not allowed")
+                && dlc.message.contains("in 2 frames"),
+            "{}",
+            dlc.message
+        );
+
+        let unchecked = verify_imp(
+            dir.path(),
+            &VerifyOptions {
+                check_picture_details: false,
+                scan_every_frame: false,
+                ..VerifyOptions::standard()
+            },
+            &mut |_| {},
+        );
+        assert!(
+            !unchecked.notes.iter().any(|n| IAB_CODES.contains(&n.code)),
+            "reading every frame stays behind the picture-details gate, got: {:?}",
+            unchecked.notes
         );
     }
 

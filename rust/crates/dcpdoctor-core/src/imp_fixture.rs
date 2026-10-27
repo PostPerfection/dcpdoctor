@@ -10,6 +10,7 @@ pub(crate) const DESCRIPTOR_ID: &str = "5e7fd9bc-dec0-4334-a452-197f4376d5aa";
 pub(crate) const CPL_FILE: &str = "CPL.xml";
 pub(crate) const PKL_FILE: &str = "PKL.xml";
 pub(crate) const PICTURE_FILE: &str = "VIDEO.mxf";
+pub(crate) const IAB_FILE: &str = "IAB.mxf";
 
 // AS-02 is the wrapping an IMP uses for picture essence
 pub(crate) fn write_as02_picture(
@@ -57,18 +58,24 @@ pub(crate) fn write_as02_picture(
 
 // the PKL carries the real size and SHA-1 of the files, so a mutation shows up
 pub(crate) fn write_imp(dir: &Path) {
-    write_imp_with_resource(
-        dir,
-        &format!("<SourceEncoding>urn:uuid:{DESCRIPTOR_ID}</SourceEncoding>"),
-    );
+    write_imp_with_resource(dir, &source_encoding_element(), None);
 }
 
 // what imfwizard writes for a sound resource, and what ST 2067-3 forbids
 pub(crate) fn write_imp_without_source_encoding(dir: &Path) {
-    write_imp_with_resource(dir, "");
+    write_imp_with_resource(dir, "", None);
 }
 
-fn write_imp_with_resource(dir: &Path, source_encoding: &str) {
+// the picture IMP plus an IAB sequence over these frames, wrapped as ST 2067-201
+pub(crate) fn write_imp_with_iab(dir: &Path, iab_frames: &[Vec<u8>]) {
+    write_imp_with_resource(dir, &source_encoding_element(), Some(iab_frames));
+}
+
+fn source_encoding_element() -> String {
+    format!("<SourceEncoding>urn:uuid:{DESCRIPTOR_ID}</SourceEncoding>")
+}
+
+fn write_imp_with_resource(dir: &Path, source_encoding: &str, iab_frames: Option<&[Vec<u8>]>) {
     write_as02_picture(
         &dir.join(PICTURE_FILE),
         PICTURE_ID.parse().unwrap(),
@@ -76,6 +83,35 @@ fn write_imp_with_resource(dir: &Path, source_encoding: &str) {
         2,
         4096,
     );
+    let iab_track = iab_frames.map(|frames| {
+        let track_id = crate::track_fixtures::wrap_iab_frames(
+            frames,
+            &dir.join(IAB_FILE),
+            postkit::mxf_wrap::MxfStandard::As02,
+            None,
+        );
+        (track_id, frames.len())
+    });
+    let iab_sequence = iab_track
+        .as_ref()
+        .map_or_else(String::new, |(track_id, duration)| {
+            format!(
+                r#"
+        <iab:IABSequence xmlns:iab="http://www.smpte-ra.org/ns/2067-201/2019">
+          <Id>urn:uuid:5b0c1d6e-2f3a-4b5c-8d7e-9f0a1b2c3d4e</Id>
+          <TrackId>urn:uuid:6c1d2e7f-3a4b-4c5d-9e8f-0a1b2c3d4e5f</TrackId>
+          <ResourceList>
+            <Resource xsi:type="TrackFileResourceType">
+              <Id>urn:uuid:7d2e3f80-4b5c-4d6e-8f90-1b2c3d4e5f60</Id>
+              <EditRate>24 1</EditRate>
+              <IntrinsicDuration>{duration}</IntrinsicDuration>
+              <SourceDuration>{duration}</SourceDuration>
+              <TrackFileId>urn:uuid:{track_id}</TrackFileId>
+            </Resource>
+          </ResourceList>
+        </iab:IABSequence>"#
+            )
+        });
 
     std::fs::write(
         dir.join(CPL_FILE),
@@ -111,7 +147,7 @@ fn write_imp_with_resource(dir: &Path, source_encoding: &str) {
               <TrackFileId>urn:uuid:{PICTURE_ID}</TrackFileId>
             </Resource>
           </ResourceList>
-        </cc:MainImageSequence>
+        </cc:MainImageSequence>{iab_sequence}
       </SequenceList>
     </Segment>
   </SegmentList>
@@ -120,8 +156,13 @@ fn write_imp_with_resource(dir: &Path, source_encoding: &str) {
     )
     .unwrap();
 
+    let mut track_files = vec![(CPL_ID, CPL_FILE), (PICTURE_ID, PICTURE_FILE)];
+    if let Some((track_id, _)) = &iab_track {
+        track_files.push((track_id.as_str(), IAB_FILE));
+    }
     let mut pkl_assets = String::new();
-    for (id, file) in [(CPL_ID, CPL_FILE), (PICTURE_ID, PICTURE_FILE)] {
+    let mut assetmap_assets = String::new();
+    for &(id, file) in &track_files {
         let path = dir.join(file);
         let mime = if file.ends_with(".mxf") {
             "application/mxf"
@@ -139,6 +180,13 @@ fn write_imp_with_resource(dir: &Path, source_encoding: &str) {
     </Asset>"#,
             hash = sha1_base64(&path).unwrap(),
             size = std::fs::metadata(&path).unwrap().len(),
+        ));
+        assetmap_assets.push_str(&format!(
+            r#"
+    <Asset>
+      <Id>urn:uuid:{id}</Id>
+      <ChunkList><Chunk><Path>{file}</Path></Chunk></ChunkList>
+    </Asset>"#
         ));
     }
     std::fs::write(
@@ -172,15 +220,7 @@ fn write_imp_with_resource(dir: &Path, source_encoding: &str) {
       <Id>urn:uuid:{PKL_ID}</Id>
       <PackingList>true</PackingList>
       <ChunkList><Chunk><Path>{PKL_FILE}</Path></Chunk></ChunkList>
-    </Asset>
-    <Asset>
-      <Id>urn:uuid:{CPL_ID}</Id>
-      <ChunkList><Chunk><Path>{CPL_FILE}</Path></Chunk></ChunkList>
-    </Asset>
-    <Asset>
-      <Id>urn:uuid:{PICTURE_ID}</Id>
-      <ChunkList><Chunk><Path>{PICTURE_FILE}</Path></Chunk></ChunkList>
-    </Asset>
+    </Asset>{assetmap_assets}
   </AssetList>
 </AssetMap>"#
         ),

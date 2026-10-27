@@ -417,6 +417,12 @@ fn validate_essence_descriptors(
                 TrackType::MainAudio => {
                     validate_audio_essence(&mxf_info, cpl, &full_path, cpl_path, notes);
                 }
+                TrackType::IAB if essence_checks.check_picture_details => {
+                    notes.extend(crate::immersive_audio::check_immersive_audio_mxf(
+                        &full_path,
+                        essence_checks.keys,
+                    ));
+                }
                 _ => {}
             }
         }
