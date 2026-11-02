@@ -11,7 +11,7 @@ const XMLLINT: &str = "xmllint";
 const SCHEMA_DIR_ENV: &str = "DCPDOCTOR_SCHEMA_DIR";
 
 // Linux desktop bundles put resources in /usr/lib/<productName from tauri.conf.json>
-const DESKTOP_PRODUCT_NAME: &str = "DcpDoctor";
+const DESKTOP_PRODUCT_NAMES: [&str; 2] = ["DcpDoctor", "DCP Wizard"];
 
 /// Root element of a SMPTE ST 428-7 timed-text document.
 const SMPTE_SUBTITLE_ROOT: &str = "SubtitleReel";
@@ -154,21 +154,20 @@ pub fn locate_schema_dir() -> Option<PathBuf> {
 }
 
 fn installed_schema_dir(exe_dir: &Path) -> Option<PathBuf> {
+    let desktop_bundles = DESKTOP_PRODUCT_NAMES
+        .iter()
+        .map(|product| exe_dir.join("../lib").join(product).join("schemas"));
     [
         // CLI archives, Windows installers
         exe_dir.join("schemas"),
         exe_dir.join("../schemas"),
         // CLI deb
         exe_dir.join("../share/dcpdoctor/schemas"),
-        // desktop deb, rpm and AppImage
-        exe_dir
-            .join("../lib")
-            .join(DESKTOP_PRODUCT_NAME)
-            .join("schemas"),
         // macOS app bundle
         exe_dir.join("../Resources/schemas"),
     ]
     .into_iter()
+    .chain(desktop_bundles)
     .find(|p| has_xsd(p))
 }
 
@@ -358,7 +357,12 @@ pub fn validate_schema(xml_file: &Path, schema_dir: &Path) -> SchemaValidationRe
         .arg("--noout");
     let catalog = schema_dir.join("catalog.xml");
     if catalog.exists() {
-        cmd.arg("--catalogs").env("XML_CATALOG_FILES", &catalog);
+        let catalog = std::path::absolute(&catalog).expect("the catalog path is not empty");
+        // libxml2 splits XML_CATALOG_FILES on spaces, which a file URL escapes
+        let catalog_url =
+            url::Url::from_file_path(catalog).expect("an absolute path makes a file URL");
+        cmd.arg("--catalogs")
+            .env("XML_CATALOG_FILES", catalog_url.as_str());
     }
     let output = cmd.arg(xml_file).output();
 
@@ -869,9 +873,30 @@ mod tests {
     }
 
     #[test]
+    fn schemas_installed_under_a_folder_with_a_space_resolve_their_imports() {
+        assert!(xmllint_available(), "this test needs xmllint installed");
+        let vendored = locate_schema_dir().expect("the repository vendors its XSDs");
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join("DCP Wizard").join("schemas");
+        std::fs::create_dir_all(&installed).unwrap();
+        for entry in std::fs::read_dir(&vendored).unwrap() {
+            let path = entry.unwrap().path();
+            std::fs::copy(&path, installed.join(path.file_name().unwrap())).unwrap();
+        }
+        let pkl = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/valid_smpte/pkl.xml");
+
+        let result = validate_schema(&pkl, &installed);
+
+        assert!(result.skipped.is_none(), "{:?}", result.skipped);
+        assert!(result.valid, "{:?}", result.errors);
+    }
+
+    #[test]
     fn each_release_layout_finds_the_schemas_it_ships() {
         let layouts = [
             ("usr/bin", "usr/lib/DcpDoctor/schemas"),
+            ("usr/bin", "usr/lib/DCP Wizard/schemas"),
             ("usr/bin", "usr/share/dcpdoctor/schemas"),
             (
                 "DcpDoctor.app/Contents/MacOS",

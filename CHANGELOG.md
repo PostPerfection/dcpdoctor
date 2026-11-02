@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- **XSD validation runs from a schema folder whose path has a space**: libxml2 splits `XML_CATALOG_FILES` on spaces, so under `C:\Program Files` or `/usr/lib/DCP Wizard` the catalog never loaded and the PKL schema failed on its xmldsig import. The catalog is now passed as a `file://` URL. The schema lookup also checks `/usr/lib/DCP Wizard/schemas`, where the DCP Wizard Linux packages install the XSDs.
 - **An IMF CPL with more than one Segment verifies**: the sequences that share a TrackId across segments are one virtual track, and its duration and the composition duration are the sums over the segments. A two-segment CPL used to fail with `MainImage virtual track duration (8) does not match CPL duration (4)` while Photon accepted it. A virtual track with no resources in some segment is a `missing_required_element` error (ST 2067-3 Section 6.9.3), and a track whose duration in a segment differs from the MainImage track's in that segment is a `cpl_mismatched_durations` error (Section 7.2). Messages name a virtual track by its TrackId where they named its Sequence Id, and `info` lists a track file used in several segments once.
 
 ### Added
